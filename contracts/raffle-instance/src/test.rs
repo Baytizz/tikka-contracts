@@ -1817,3 +1817,259 @@ fn test_bundle_pricing_applies() {
 
     assert_eq!(balance_before - balance_after, 11 * 80_000);
 }
+
+// ===========================================================================
+// Full lifecycle integration test (#440)
+//
+// Walks a complete, successful raffle from init through prize claim, asserting
+// token-balance and status transitions at each step, plus the core value
+// invariant `total_distributed == prize_amount - prize_claim_fees` (which is
+// `prize_amount` in this build, where the prize-claim fee is 0).
+// ===========================================================================
+
+/// Build a valid single-tier internal-randomness config for lifecycle tests.
+/// `max_tickets` doubles as the sell-out threshold so `finalize_raffle` can be
+/// driven purely by ticket exhaustion (no deadline advance needed).
+fn lifecycle_config(env: &Env, payment_token: &Address, treasury: &Address) -> RaffleConfig {
+    RaffleConfig {
+        description: String::from_str(env, "Full lifecycle"),
+        end_time: 0,
+        no_deadline: true,
+        max_tickets: 3,
+        max_tickets_per_tx: 3,
+        min_tickets: 1,
+        allow_multiple: true,
+        ticket_price: MIN_TICKET_PRICE,
+        payment_token: payment_token.clone(),
+        prize_amount: MIN_TICKET_PRICE * 100,
+        prizes: soroban_sdk::vec![env, 10000],
+        randomness_source: RandomnessSource::Internal,
+        oracle_address: None,
+        protocol_fee_bp: 100, // 1% ticket-purchase fee → treasury
+        treasury_address: Some(treasury.clone()),
+        swap_router: None,
+        tikka_token: None,
+        metadata_hash: BytesN::from_array(env, &[70u8; 32]),
+        claim_lockup_seconds: 0, // resolved to DEFAULT_CLAIM_LOCKUP_SECONDS
+        swap_deadline_seconds: 0,
+        early_bird_ticket_percentage: 0,
+        early_bird_discount_bp: 0,
+        category: None,
+    }
+}
+
+#[test]
+fn full_lifecycle_happy_path() {
+    let env = Env::default();
+    env.mock_all_auths();
+    env.ledger().set_timestamp(1_000);
+
+    // 1. Deploy the raffle instance.
+    let contract_id = env.register(Contract, ());
+    let client = ContractClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let creator = Address::generate(&env);
+    let treasury = Address::generate(&env);
+    let buyer_a = Address::generate(&env);
+    let buyer_b = Address::generate(&env);
+    let buyer_c = Address::generate(&env);
+
+    let token_admin = Address::generate(&env);
+    let payment_token = env
+        .register_stellar_asset_contract_v2(token_admin.clone())
+        .address();
+    let token = StellarAssetClient::new(&env, &payment_token);
+    let token_ro = soroban_sdk::token::Client::new(&env, &payment_token);
+    token.mint(&creator, &100_000_000);
+    token.mint(&buyer_a, &1_000_000);
+    token.mint(&buyer_b, &1_000_000);
+    token.mint(&buyer_c, &1_000_000);
+
+    // 2. Init the raffle (factory-mediated init emulated directly).
+    let config = lifecycle_config(&env, &payment_token, &treasury);
+    let prize_amount = config.prize_amount;
+    let ticket_price = config.ticket_price;
+    let fee_bp = config.protocol_fee_bp as i128;
+    client.init(&creator_factory_addr(&env), &admin, &creator, &config);
+
+    // Skip the factory cross-contract calls in buy_tickets.
+    env.as_contract(&contract_id, || {
+        env.storage().instance().remove(&DataKey::Factory);
+    });
+
+    assert_eq!(client.get_raffle().status, RaffleStatus::PendingPrize);
+
+    // 3. Creator deposits the prize → status becomes Active.
+    let creator_balance_before_deposit = token_ro.balance(&creator);
+    client.deposit_prize();
+    assert_eq!(client.get_raffle().status, RaffleStatus::Active);
+    assert_eq!(
+        token_ro.balance(&creator),
+        creator_balance_before_deposit - prize_amount
+    );
+    assert_eq!(token_ro.balance(&contract_id), prize_amount);
+
+    // 4. Three buyers each purchase one ticket. Each pays ticket_price; the
+    //    protocol fee (1%) is forwarded to the treasury on each purchase.
+    let per_ticket_fee = ticket_price * fee_bp / 10_000;
+    for (idx, buyer) in [&buyer_a, &buyer_b, &buyer_c].iter().enumerate() {
+        let sold = client.buy_tickets(buyer, &1);
+        assert_eq!(sold, idx as u32 + 1);
+    }
+    let raffle_after_sales = client.get_raffle();
+    assert_eq!(raffle_after_sales.tickets_sold, 3);
+    // Selling out flips the raffle into Drawing.
+    assert_eq!(raffle_after_sales.status, RaffleStatus::Drawing);
+    assert_eq!(token_ro.balance(&treasury), per_ticket_fee * 3);
+
+    // 5. Finalize → internal randomness picks the winner synchronously.
+    client.finalize_raffle();
+    let finalized = client.get_raffle();
+    assert_eq!(finalized.status, RaffleStatus::Finalized);
+    assert_eq!(finalized.winners.len(), 1);
+
+    // 6. Winner must be one of the three buyers.
+    let winner = finalized.winners.get(0).unwrap();
+    assert!(winner == buyer_a || winner == buyer_b || winner == buyer_c);
+
+    // 7. Claim is locked until the lockup elapses.
+    assert_eq!(
+        client.try_claim_prize(&winner, &0u32),
+        Err(Ok(Error::ClaimTooEarly))
+    );
+
+    // 8. Advance past the claim lockup, then claim.
+    let finalized_at = finalized.finalized_at.unwrap();
+    env.ledger()
+        .set_timestamp(finalized_at + DEFAULT_CLAIM_LOCKUP_SECONDS + 1);
+
+    let winner_balance_before = token_ro.balance(&winner);
+    let claimed = client.claim_prize(&winner, &0u32);
+
+    // 9. Single 100% tier with zero prize-claim fee → net == gross == prize.
+    let net_prize = prize_amount;
+    assert_eq!(claimed, net_prize);
+    assert_eq!(token_ro.balance(&winner), winner_balance_before + net_prize);
+
+    // 10. Fully-claimed raffle transitions to Claimed.
+    assert_eq!(client.get_raffle().status, RaffleStatus::Claimed);
+
+    // 11. Invariant: everything distributed from the prize pool equals the pool
+    //     minus prize-claim fees (which are 0 in this build).
+    let prize_claim_fees = prize_amount - claimed;
+    assert_eq!(prize_claim_fees, 0);
+    assert_eq!(claimed + prize_claim_fees, prize_amount);
+
+    // 12. Protocol (ticket) fees reached the treasury and nowhere else.
+    assert_eq!(token_ro.balance(&treasury), per_ticket_fee * 3);
+}
+
+/// A throwaway address standing in for the factory during `init`. The lifecycle
+/// test removes `DataKey::Factory` immediately afterwards so no cross-contract
+/// factory calls are attempted during ticket purchases.
+fn creator_factory_addr(env: &Env) -> Address {
+    Address::generate(env)
+}
+
+// ===========================================================================
+// buy_tickets budget benchmark near maximum ticket count (#449)
+//
+// Confirms a full `max_tickets_per_tx` batch of purchases near the 100_000
+// ticket ceiling stays within Soroban's per-invocation CPU/memory limits and
+// still triggers the transition into `Drawing` on the final batch.
+//
+// NOTE: The companion `get_tickets_page_is_efficient_for_large_raffles` test
+// from #449 is intentionally omitted — the raffle instance does not currently
+// expose a `get_tickets_page` view, so there is no function to benchmark. It
+// should be added alongside a paginated ticket-read view in a follow-up.
+// ===========================================================================
+
+/// Soroban per-transaction resource ceilings (mainnet network settings).
+const SOROBAN_CPU_INSTRUCTION_LIMIT: u64 = 100_000_000;
+const SOROBAN_MEMORY_LIMIT_BYTES: u64 = 40 * 1024 * 1024;
+
+#[test]
+fn buy_tickets_stays_within_compute_limits_near_max() {
+    let env = Env::default();
+    env.mock_all_auths();
+    env.ledger().set_timestamp(1_000);
+
+    let contract_id = env.register(Contract, ());
+    let client = ContractClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let creator = Address::generate(&env);
+    let buyer = Address::generate(&env);
+
+    let token_admin = Address::generate(&env);
+    let payment_token = env
+        .register_stellar_asset_contract_v2(token_admin.clone())
+        .address();
+    let token = StellarAssetClient::new(&env, &payment_token);
+    token.mint(&creator, &1_000_000_000_000);
+    token.mint(&buyer, &1_000_000_000_000);
+
+    let max_tickets = 100_000u32;
+    let per_tx = 100u32;
+    let config = RaffleConfig {
+        description: String::from_str(&env, "Max scale"),
+        end_time: 0,
+        no_deadline: true,
+        max_tickets,
+        max_tickets_per_tx: per_tx,
+        min_tickets: 1,
+        allow_multiple: true,
+        ticket_price: MIN_TICKET_PRICE,
+        payment_token: payment_token.clone(),
+        prize_amount: MIN_TICKET_PRICE * 1_000,
+        prizes: soroban_sdk::vec![&env, 10000],
+        randomness_source: RandomnessSource::Internal,
+        oracle_address: None,
+        protocol_fee_bp: 0,
+        treasury_address: None,
+        swap_router: None,
+        tikka_token: None,
+        metadata_hash: BytesN::from_array(&env, &[71u8; 32]),
+        claim_lockup_seconds: 0,
+        swap_deadline_seconds: 0,
+        early_bird_ticket_percentage: 0,
+        early_bird_discount_bp: 0,
+        category: None,
+    };
+
+    client.init(&creator_factory_addr(&env), &admin, &creator, &config);
+    env.as_contract(&contract_id, || {
+        env.storage().instance().remove(&DataKey::Factory);
+    });
+    client.deposit_prize();
+
+    // Fast-forward the sold counter to just below the ceiling so the next batch
+    // buys the final 100 tickets (99_901..=100_000) without materialising the
+    // preceding ~99_900 purchases.
+    env.as_contract(&contract_id, || {
+        let mut raffle = crate::read_raffle(&env).unwrap();
+        raffle.tickets_sold = max_tickets - per_tx; // 99_900
+        crate::write_raffle(&env, &raffle);
+    });
+
+    // Measure only the final batch purchase.
+    env.budget().reset_default();
+    let sold = client.buy_tickets(&buyer, &per_tx);
+    assert_eq!(sold, max_tickets); // 100_000
+
+    // The last batch must flip the raffle into Drawing.
+    assert_eq!(client.get_raffle().status, RaffleStatus::Drawing);
+
+    // Assert the invocation stayed within Soroban's compute/memory ceilings.
+    let cpu = env.budget().cpu_instruction_cost();
+    let mem = env.budget().memory_bytes_cost();
+    assert!(
+        cpu < SOROBAN_CPU_INSTRUCTION_LIMIT,
+        "buy_tickets CPU {cpu} exceeded Soroban limit {SOROBAN_CPU_INSTRUCTION_LIMIT}"
+    );
+    assert!(
+        mem < SOROBAN_MEMORY_LIMIT_BYTES,
+        "buy_tickets memory {mem} exceeded Soroban limit {SOROBAN_MEMORY_LIMIT_BYTES}"
+    );
+}

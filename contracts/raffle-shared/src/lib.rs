@@ -134,6 +134,12 @@ pub struct RaffleConfig {
     pub early_bird_ticket_percentage: u32,
     /// The discount amount specified in basis points.
     pub early_bird_discount_bp: u32,
+    /// Optional on-chain category/tag used for frontend filtering (e.g. "gaming",
+    /// "charity", "art"). When set it must be at most `MAX_CATEGORY_LENGTH` bytes
+    /// and contain only ASCII alphanumerics and hyphens. Validated in the raffle
+    /// instance's `init`; the factory maintains a per-category index so clients
+    /// can query raffles by category without an off-chain indexer. See #439.
+    pub category: Option<String>,
 }
 
 impl RaffleConfig {

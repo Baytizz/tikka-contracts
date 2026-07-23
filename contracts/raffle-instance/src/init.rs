@@ -1,5 +1,6 @@
-use soroban_sdk::{token, Address, BytesN, Env};
+use soroban_sdk::{token, Address, BytesN, Env, String};
 
+use raffle_shared::constants::MAX_CATEGORY_LENGTH;
 use raffle_shared::{RaffleConfig, RandomnessSource};
 
 use crate::events::{PrizeDeposited, RaffleCreated, RaffleStatusChanged};
@@ -81,6 +82,7 @@ pub(crate) fn init(
     if config.metadata_hash == BytesN::from_array(&env, &[0u8; 32]) {
         return Err(Error::InvalidParameters);
     }
+    validate_category(&config.category)?;
 
     validate_token_address(&env, &config.payment_token)?;
     let config = config.resolve_defaults();
@@ -138,6 +140,36 @@ pub(crate) fn init(
         randomness_source: config.randomness_source,
         metadata_hash: config.metadata_hash,
     }.publish(&env);
+
+    Ok(())
+}
+
+/// Validate the optional on-chain raffle category (#439).
+///
+/// A `None` category is always valid. When present, the category must be at
+/// most `MAX_CATEGORY_LENGTH` bytes and contain only ASCII alphanumerics and
+/// hyphens so it is safe to use as a storage-key namespace and a URL/filter
+/// token on the frontend. An empty category is rejected as meaningless.
+fn validate_category(category: &Option<String>) -> Result<(), Error> {
+    let Some(cat) = category else {
+        return Ok(());
+    };
+
+    let len = cat.len();
+    if len == 0 || len > MAX_CATEGORY_LENGTH {
+        return Err(Error::InvalidParameters);
+    }
+
+    // Copy the exact bytes out of the Soroban String and validate the charset.
+    let mut buf = [0u8; MAX_CATEGORY_LENGTH as usize];
+    let slice = &mut buf[..len as usize];
+    cat.copy_into_slice(slice);
+    for &b in slice.iter() {
+        let is_allowed = b.is_ascii_alphanumeric() || b == b'-';
+        if !is_allowed {
+            return Err(Error::InvalidParameters);
+        }
+    }
 
     Ok(())
 }

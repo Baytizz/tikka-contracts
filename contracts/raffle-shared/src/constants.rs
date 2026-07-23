@@ -21,6 +21,10 @@ pub const MAX_TICKETS_LIMIT: u32 = 100_000;
 /// Hard cap on the number of prize tiers per raffle.
 pub const MAX_PRIZES: u32 = 100;
 
+/// Maximum byte-length of an optional raffle category/tag string (#439).
+/// Categories are restricted to ASCII alphanumerics and hyphens.
+pub const MAX_CATEGORY_LENGTH: u32 = 32;
+
 /// Minimum ticket price in the payment token's base unit (stroops / smallest
 /// denomination).  Prevents dust-amount raffles that would be uneconomical.
 pub const MIN_TICKET_PRICE: i128 = 10_000;

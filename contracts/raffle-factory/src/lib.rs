@@ -73,6 +73,11 @@ pub enum DataKey {
     /// Per-creator raffle index: creator Address → Vec<Address> of raffle addresses.
     /// Appended to on every successful `create_raffle`.
     CreatorRaffles(Address),
+    /// Per-category raffle index (#439): category String → Vec<Address> of raffle
+    /// addresses. Appended to on every successful `create_raffle` whose config
+    /// carries a category, enabling `get_raffles_by_category` queries without an
+    /// off-chain indexer.
+    CategoryRaffles(soroban_sdk::String),
 }
 
 #[derive(Clone)]
@@ -478,6 +483,23 @@ impl RaffleFactory {
             .persistent()
             .set(&DataKey::CreatorRaffles(creator.clone()), &creator_raffles);
 
+        // --- per-category index (#439) ---
+        // If the raffle declares a category, append its address to that
+        // category's list so `get_raffles_by_category` can serve paginated
+        // results directly from on-chain state.  The category was validated
+        // (length + charset) by the instance's `init`, invoked above.
+        if let Some(ref category) = final_config.category {
+            let mut cat_raffles: Vec<Address> = env
+                .storage()
+                .persistent()
+                .get(&DataKey::CategoryRaffles(category.clone()))
+                .unwrap_or_else(|| Vec::new(&env));
+            cat_raffles.push_back(raffle_address.clone());
+            env.storage()
+                .persistent()
+                .set(&DataKey::CategoryRaffles(category.clone()), &cat_raffles);
+        }
+
         // Increment the live-count for stats.
         let live_count: u32 = env
             .storage()
@@ -672,6 +694,48 @@ impl RaffleFactory {
         let mut items: Vec<Address> = Vec::new(&env);
         for i in offset..end {
             items.push_back(creator_raffles.get(i).unwrap());
+        }
+
+        let has_more = end < total;
+        PageResultRaffles {
+            items,
+            total,
+            has_more,
+        }
+    }
+
+    /// Return a paginated list of raffle addresses tagged with `category` (#439).
+    ///
+    /// `params.offset` is an index into the category's raffle list.
+    /// `params.limit` is clamped by `effective_limit` (1–200, default 100).
+    /// An unknown category simply yields an empty page.
+    pub fn get_raffles_by_category(
+        env: Env,
+        category: soroban_sdk::String,
+        params: PaginationParams,
+    ) -> PageResultRaffles {
+        let category_raffles: Vec<Address> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::CategoryRaffles(category))
+            .unwrap_or_else(|| Vec::new(&env));
+
+        let total = category_raffles.len();
+        let lim = effective_limit(params.limit);
+        let offset = params.offset;
+
+        if offset >= total {
+            return PageResultRaffles {
+                items: Vec::new(&env),
+                total,
+                has_more: false,
+            };
+        }
+
+        let end = offset.saturating_add(lim).min(total);
+        let mut items: Vec<Address> = Vec::new(&env);
+        for i in offset..end {
+            items.push_back(category_raffles.get(i).unwrap());
         }
 
         let has_more = end < total;
@@ -1790,5 +1854,244 @@ mod tests {
         // Old admin tries to accept — should fail because require_auth checks caller == PendingAdmin
         env.mock_auths(&[&admin]);
         assert!(client.try_accept_factory_admin().is_err());
+    }
+
+    // -----------------------------------------------------------------------
+    // Rate limiter tests (#447)
+    //
+    // The rate limiter lives inside `create_raffle` and gates non-whitelisted
+    // creators to at most one creation per `MinCreationDelay` seconds.  These
+    // tests exercise the full `create_raffle` path (deploying a real instance
+    // via the test shim) so the guard is validated end-to-end.
+    // -----------------------------------------------------------------------
+
+    /// A complete, valid `RaffleConfig` for rate-limiter tests.  Prize tiers sum
+    /// to 10_000 bp and `prize_amount >= ticket_price`, satisfying instance init.
+    fn rate_limit_config(env: &Env, payment_token: &Address, desc: &str) -> RaffleConfig {
+        RaffleConfig {
+            description: String::from_str(env, desc),
+            end_time: 0,
+            no_deadline: true,
+            max_tickets: 10,
+            max_tickets_per_tx: 10,
+            min_tickets: 1,
+            allow_multiple: true,
+            ticket_price: 10_000,
+            payment_token: payment_token.clone(),
+            prize_amount: 10_000,
+            prizes: SdkVec::from_array(env, [10_000u32]),
+            randomness_source: RandomnessSource::Internal,
+            oracle_address: None,
+            protocol_fee_bp: 0,
+            treasury_address: None,
+            swap_router: None,
+            tikka_token: None,
+            metadata_hash: BytesN::from_array(env, &[1u8; 32]),
+            claim_lockup_seconds: 0,
+            swap_deadline_seconds: 0,
+            early_bird_ticket_percentage: 0,
+            early_bird_discount_bp: 0,
+            category: None,
+        }
+    }
+
+    /// Register a payment token the instance init will accept.
+    fn make_token(env: &Env) -> Address {
+        let token_admin = Address::generate(env);
+        env.register_stellar_asset_contract_v2(token_admin)
+            .address()
+    }
+
+    #[test]
+    fn non_whitelisted_creator_is_rate_limited() {
+        let env = Env::default();
+        env.mock_all_auths();
+        env.ledger().set_timestamp(1_000);
+
+        let (client, _admin, _treasury) = setup_factory(&env);
+        // Use a real, non-zero delay (setup_factory zeroes it by default).
+        let delay: u64 = 300;
+        client.set_creation_delay(&delay);
+
+        let creator = Address::generate(&env);
+        let token = make_token(&env);
+
+        // 1. First creation succeeds.
+        client.create_raffle(&creator, &rate_limit_config(&env, &token, "r1"));
+
+        // 2. Immediate second creation is rate-limited.
+        assert_eq!(
+            client.try_create_raffle(&creator, &rate_limit_config(&env, &token, "r2")),
+            Err(Ok(ContractError::RateLimitExceeded))
+        );
+
+        // 3. Advance time by exactly MinCreationDelay.
+        env.ledger().set_timestamp(1_000 + delay);
+
+        // 4. Creation succeeds again once the window has elapsed.
+        client.create_raffle(&creator, &rate_limit_config(&env, &token, "r3"));
+    }
+
+    #[test]
+    fn whitelisted_partner_bypasses_rate_limit() {
+        let env = Env::default();
+        env.mock_all_auths();
+        env.ledger().set_timestamp(1_000);
+
+        let (client, _admin, _treasury) = setup_factory(&env);
+        client.set_creation_delay(&300u64);
+
+        let creator = Address::generate(&env);
+        let token = make_token(&env);
+
+        // Whitelist the creator, then create twice back-to-back with no time
+        // advance — both must succeed because the whitelist bypasses the limiter.
+        client.set_whitelist_status(&creator, &true);
+        client.create_raffle(&creator, &rate_limit_config(&env, &token, "w1"));
+        client.create_raffle(&creator, &rate_limit_config(&env, &token, "w2"));
+    }
+
+    #[test]
+    fn set_creation_delay_affects_rate_limiter() {
+        let env = Env::default();
+        env.mock_all_auths();
+        env.ledger().set_timestamp(1_000);
+
+        let (client, _admin, _treasury) = setup_factory(&env);
+        client.set_creation_delay(&60u64);
+
+        let creator = Address::generate(&env);
+        let token = make_token(&env);
+
+        // 1. Create at t=1000.
+        client.create_raffle(&creator, &rate_limit_config(&env, &token, "d1"));
+
+        // 2. Advance 59 seconds — still inside the window, second creation fails.
+        env.ledger().set_timestamp(1_000 + 59);
+        assert_eq!(
+            client.try_create_raffle(&creator, &rate_limit_config(&env, &token, "d2")),
+            Err(Ok(ContractError::RateLimitExceeded))
+        );
+
+        // 3. Advance 1 more second (60 total) — the window has elapsed, succeeds.
+        env.ledger().set_timestamp(1_000 + 60);
+        client.create_raffle(&creator, &rate_limit_config(&env, &token, "d3"));
+    }
+
+    // -----------------------------------------------------------------------
+    // Category index tests (#439)
+    // -----------------------------------------------------------------------
+
+    /// Seed the per-category index directly in storage (mirrors
+    /// `seed_creator_index`) so `get_raffles_by_category` can be validated
+    /// without going through the `create_raffle` deploy shim.
+    fn seed_category_index(env: &Env, factory_id: &Address, category: &str, addrs: &[Address]) {
+        let cat = String::from_str(env, category);
+        env.as_contract(factory_id, || {
+            let mut v: Vec<Address> = Vec::new(env);
+            for a in addrs {
+                v.push_back(a.clone());
+            }
+            env.storage()
+                .persistent()
+                .set(&DataKey::CategoryRaffles(cat.clone()), &v);
+        });
+    }
+
+    #[test]
+    fn get_raffles_by_category_unknown_is_empty() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, _admin, _treasury) = setup_factory(&env);
+
+        let page = client.get_raffles_by_category(
+            &String::from_str(&env, "gaming"),
+            &raffle_shared::PaginationParams { limit: 10, offset: 0 },
+        );
+        assert_eq!(page.items.len(), 0u32);
+        assert_eq!(page.total, 0u32);
+        assert!(!page.has_more);
+    }
+
+    #[test]
+    fn get_raffles_by_category_returns_only_matching() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, _admin, _treasury) = setup_factory(&env);
+
+        // 3 raffles tagged "gaming", 2 tagged "art".
+        let gaming = [
+            Address::generate(&env),
+            Address::generate(&env),
+            Address::generate(&env),
+        ];
+        let art = [Address::generate(&env), Address::generate(&env)];
+
+        seed_category_index(&env, &client.address, "gaming", &gaming);
+        seed_category_index(&env, &client.address, "art", &art);
+
+        let gaming_page = client.get_raffles_by_category(
+            &String::from_str(&env, "gaming"),
+            &raffle_shared::PaginationParams { limit: 10, offset: 0 },
+        );
+        assert_eq!(gaming_page.total, 3u32);
+        assert_eq!(gaming_page.items.len(), 3u32);
+        assert!(!gaming_page.has_more);
+        for (i, addr) in gaming.iter().enumerate() {
+            assert_eq!(gaming_page.items.get(i as u32).unwrap(), addr.clone());
+        }
+
+        let art_page = client.get_raffles_by_category(
+            &String::from_str(&env, "art"),
+            &raffle_shared::PaginationParams { limit: 10, offset: 0 },
+        );
+        assert_eq!(art_page.total, 2u32);
+        assert_eq!(art_page.items.len(), 2u32);
+        assert!(!art_page.has_more);
+
+        // A category with no raffles yields an empty page.
+        let charity_page = client.get_raffles_by_category(
+            &String::from_str(&env, "charity"),
+            &raffle_shared::PaginationParams { limit: 10, offset: 0 },
+        );
+        assert_eq!(charity_page.total, 0u32);
+        assert_eq!(charity_page.items.len(), 0u32);
+    }
+
+    #[test]
+    fn get_raffles_by_category_paginates() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, _admin, _treasury) = setup_factory(&env);
+
+        let addrs = [
+            Address::generate(&env),
+            Address::generate(&env),
+            Address::generate(&env),
+            Address::generate(&env),
+            Address::generate(&env),
+        ];
+        seed_category_index(&env, &client.address, "gaming", &addrs);
+
+        // Page 0: offset=0, limit=3 → items 0,1,2; has_more=true.
+        let p0 = client.get_raffles_by_category(
+            &String::from_str(&env, "gaming"),
+            &raffle_shared::PaginationParams { limit: 3, offset: 0 },
+        );
+        assert_eq!(p0.items.len(), 3u32);
+        assert_eq!(p0.total, 5u32);
+        assert!(p0.has_more);
+        assert_eq!(p0.items.get(0).unwrap(), addrs[0].clone());
+        assert_eq!(p0.items.get(2).unwrap(), addrs[2].clone());
+
+        // Page 1: offset=3, limit=3 → items 3,4; has_more=false.
+        let p1 = client.get_raffles_by_category(
+            &String::from_str(&env, "gaming"),
+            &raffle_shared::PaginationParams { limit: 3, offset: 3 },
+        );
+        assert_eq!(p1.items.len(), 2u32);
+        assert!(!p1.has_more);
+        assert_eq!(p1.items.get(0).unwrap(), addrs[3].clone());
+        assert_eq!(p1.items.get(1).unwrap(), addrs[4].clone());
     }
 }
