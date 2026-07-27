@@ -69,6 +69,9 @@ pub(crate) fn init(
     if config.protocol_fee_bp > 10000 {
         return Err(Error::InvalidParameters);
     }
+    if config.protocol_fee_bp > 0 && config.treasury_address.is_none() {
+        return Err(Error::InvalidParameters);
+    }
     if config.randomness_source == RandomnessSource::External {
         match &config.oracle_address {
             None => return Err(Error::InvalidParameters),

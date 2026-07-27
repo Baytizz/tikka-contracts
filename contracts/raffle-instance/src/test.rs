@@ -21,6 +21,227 @@ fn assert_drawing_lock_cleared(env: &Env, contract_id: &Address) {
 }
 
 #[test]
+fn protocol_fee_requires_treasury_for_init() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let factory = Address::generate(&env);
+    let admin = Address::generate(&env);
+    let creator = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let payment_token = env
+        .register_stellar_asset_contract_v2(token_admin.clone())
+        .address();
+    let contract_id = env.register(RaffleInstance, ());
+    let client = RaffleInstanceClient::new(&env, &contract_id);
+
+    let config = RaffleConfig {
+        description: String::from_str(&env, "Fee treasury test"),
+        end_time: 0,
+        no_deadline: true,
+        max_tickets: 2,
+        max_tickets_per_tx: 2,
+        min_tickets: 1,
+        allow_multiple: true,
+        ticket_price: MIN_TICKET_PRICE,
+        payment_token: payment_token.clone(),
+        prize_amount: MIN_TICKET_PRICE * 2,
+        prizes: soroban_sdk::vec![&env, 10000],
+        randomness_source: RandomnessSource::Internal,
+        oracle_address: None,
+        protocol_fee_bp: 100,
+        treasury_address: None,
+        swap_router: None,
+        tikka_token: None,
+        metadata_hash: BytesN::from_array(&env, &[21; 32]),
+        claim_lockup_seconds: 0,
+        swap_deadline_seconds: 0,
+        early_bird_ticket_percentage: 0,
+        early_bird_discount_bp: 0,
+    };
+
+    let result = client.try_init(&factory, &admin, &creator, &config);
+    assert_eq!(result.err(), Some(Ok(Error::InvalidParameters)));
+}
+
+#[test]
+fn end_time_boundary_is_strict_for_sales_and_finalization() {
+    fn run_case(timestamp: u64, buy_should_succeed: bool) {
+        let env = Env::default();
+        env.mock_all_auths();
+        env.ledger().set_timestamp(timestamp);
+
+        let factory = Address::generate(&env);
+        let admin = Address::generate(&env);
+        let creator = Address::generate(&env);
+        let buyer = Address::generate(&env);
+        let token_admin = Address::generate(&env);
+        let payment_token = env
+            .register_stellar_asset_contract_v2(token_admin.clone())
+            .address();
+        let token_client = StellarAssetClient::new(&env, &payment_token);
+        token_client.mint(&creator, &1_000_000);
+        token_client.mint(&buyer, &1_000_000);
+
+        let contract_id = env.register(RaffleInstance, ());
+        let client = RaffleInstanceClient::new(&env, &contract_id);
+
+        let config = RaffleConfig {
+            description: String::from_str(&env, "Boundary test"),
+            end_time: 1_000,
+            no_deadline: false,
+            max_tickets: 2,
+            max_tickets_per_tx: 2,
+            min_tickets: 1,
+            allow_multiple: true,
+            ticket_price: MIN_TICKET_PRICE,
+            payment_token: payment_token.clone(),
+            prize_amount: MIN_TICKET_PRICE * 10,
+            prizes: soroban_sdk::vec![&env, 10000],
+            randomness_source: RandomnessSource::Internal,
+            oracle_address: None,
+            protocol_fee_bp: 0,
+            treasury_address: None,
+            swap_router: None,
+            tikka_token: None,
+            metadata_hash: BytesN::from_array(&env, &[22; 32]),
+            claim_lockup_seconds: 0,
+            swap_deadline_seconds: 0,
+            early_bird_ticket_percentage: 0,
+            early_bird_discount_bp: 0,
+        };
+
+        client.init(&factory, &admin, &creator, &config);
+        client.deposit_prize();
+
+        let buy_result = client.try_buy_tickets(&buyer, &1);
+        assert_eq!(buy_result.is_ok(), buy_should_succeed);
+
+        let finalize_result = client.try_finalize_raffle();
+        if buy_should_succeed {
+            assert_eq!(finalize_result.err(), Some(Ok(Error::InvalidStateTransition)));
+        } else {
+            assert!(finalize_result.is_ok());
+        }
+    }
+
+    run_case(999, true);
+    run_case(1_000, false);
+    run_case(1_001, false);
+}
+
+#[test]
+fn no_deadline_raffle_ignores_end_time_boundary() {
+    let env = Env::default();
+    env.mock_all_auths();
+    env.ledger().set_timestamp(1_001);
+
+    let factory = Address::generate(&env);
+    let admin = Address::generate(&env);
+    let creator = Address::generate(&env);
+    let buyer = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let payment_token = env
+        .register_stellar_asset_contract_v2(token_admin.clone())
+        .address();
+    let token_client = StellarAssetClient::new(&env, &payment_token);
+    token_client.mint(&creator, &1_000_000);
+    token_client.mint(&buyer, &1_000_000);
+
+    let contract_id = env.register(RaffleInstance, ());
+    let client = RaffleInstanceClient::new(&env, &contract_id);
+
+    let config = RaffleConfig {
+        description: String::from_str(&env, "No deadline test"),
+        end_time: 1_000,
+        no_deadline: true,
+        max_tickets: 2,
+        max_tickets_per_tx: 2,
+        min_tickets: 1,
+        allow_multiple: true,
+        ticket_price: MIN_TICKET_PRICE,
+        payment_token: payment_token.clone(),
+        prize_amount: MIN_TICKET_PRICE * 10,
+        prizes: soroban_sdk::vec![&env, 10000],
+        randomness_source: RandomnessSource::Internal,
+        oracle_address: None,
+        protocol_fee_bp: 0,
+        treasury_address: None,
+        swap_router: None,
+        tikka_token: None,
+        metadata_hash: BytesN::from_array(&env, &[23; 32]),
+        claim_lockup_seconds: 0,
+        swap_deadline_seconds: 0,
+        early_bird_ticket_percentage: 0,
+        early_bird_discount_bp: 0,
+    };
+
+    client.init(&factory, &admin, &creator, &config);
+    client.deposit_prize();
+    let bought = client.buy_tickets(&buyer, &1);
+    assert_eq!(bought, 1);
+}
+
+#[test]
+fn claim_rejects_when_contract_balance_cannot_cover_prize() {
+    let env = Env::default();
+    env.mock_all_auths();
+    env.ledger().set_timestamp(1_000);
+
+    let factory = Address::generate(&env);
+    let admin = Address::generate(&env);
+    let creator = Address::generate(&env);
+    let winner = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let payment_token = env
+        .register_stellar_asset_contract_v2(token_admin.clone())
+        .address();
+    let token_client = StellarAssetClient::new(&env, &payment_token);
+    token_client.mint(&creator, &1_000_000);
+    token_client.mint(&winner, &1_000_000);
+
+    let contract_id = env.register(RaffleInstance, ());
+    let client = RaffleInstanceClient::new(&env, &contract_id);
+
+    let config = RaffleConfig {
+        description: String::from_str(&env, "Solvency test"),
+        end_time: 0,
+        no_deadline: true,
+        max_tickets: 1,
+        max_tickets_per_tx: 1,
+        min_tickets: 1,
+        allow_multiple: true,
+        ticket_price: MIN_TICKET_PRICE,
+        payment_token: payment_token.clone(),
+        prize_amount: MIN_TICKET_PRICE * 10,
+        prizes: soroban_sdk::vec![&env, 10000],
+        randomness_source: RandomnessSource::Internal,
+        oracle_address: None,
+        protocol_fee_bp: 0,
+        treasury_address: None,
+        swap_router: None,
+        tikka_token: None,
+        metadata_hash: BytesN::from_array(&env, &[24; 32]),
+        claim_lockup_seconds: 0,
+        swap_deadline_seconds: 0,
+        early_bird_ticket_percentage: 0,
+        early_bird_discount_bp: 0,
+    };
+
+    client.init(&factory, &admin, &creator, &config);
+    client.deposit_prize();
+    client.buy_tickets(&winner, &1);
+    client.finalize_raffle();
+
+    let contract_balance = token_client.balance(&contract_id);
+    token_client.transfer(&contract_id, &creator, &contract_balance);
+
+    env.ledger().set_timestamp(1_000 + DEFAULT_CLAIM_LOCKUP_SECONDS + 1);
+    let result = client.try_claim_prize(&winner, &0u32);
+    assert_eq!(result.err(), Some(Ok(Error::InsufficientFunds)));
+}
+
+#[test]
 fn test_oracle_fallback_with_ledger_delays() {
     let env = Env::default();
     env.mock_all_auths();
