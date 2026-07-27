@@ -79,6 +79,24 @@ pub enum RandomnessType {
     Fallback = 2,
 }
 
+/// Configuration for a recurring (subscription) raffle.
+///
+/// Enables automatic creation of new raffle instances at a fixed interval
+/// without manual re-deployment.  Designed for weekly / monthly raffles.
+#[derive(Clone)]
+#[contracttype]
+pub struct RecurringRaffleConfig {
+    /// The base raffle configuration reused for every round.
+    pub base_config: RaffleConfig,
+    /// Seconds between successive raffle rounds (e.g. 604800 for weekly).
+    pub interval_seconds: u64,
+    /// Maximum number of rounds (0 = infinite).
+    pub max_rounds: u32,
+    /// If true, the creator must pre-authorise the prize funds (not yet
+    /// implemented — reserved for future use).
+    pub auto_fund: bool,
+}
+
 /// Configuration payload used when creating a new raffle.
 ///
 /// Values are validated by contract initialization before the raffle becomes

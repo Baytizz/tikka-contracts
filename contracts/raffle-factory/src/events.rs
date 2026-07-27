@@ -150,3 +150,34 @@ pub struct FactoryUpgraded {
     pub new_wasm_hash: BytesN<32>,
     pub timestamp: u64,
 }
+
+#[derive(Clone)]
+#[contractevent]
+pub struct RecurringRaffleCreated {
+    pub recurring_id: u32,
+    pub creator: Address,
+    pub interval_seconds: u64,
+    pub max_rounds: u32,
+    pub auto_fund: bool,
+    pub next_due: u64,
+    pub timestamp: u64,
+}
+
+#[derive(Clone)]
+#[contractevent]
+pub struct RecurringRoundTriggered {
+    pub recurring_id: u32,
+    pub round: u32,
+    pub raffle_address: Address,
+    pub next_due: u64,
+    pub timestamp: u64,
+}
+
+#[derive(Clone)]
+#[contractevent]
+pub struct RecurringRaffleCancelled {
+    pub recurring_id: u32,
+    pub cancelled_by: Address,
+    pub rounds_completed: u32,
+    pub timestamp: u64,
+}
