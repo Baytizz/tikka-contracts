@@ -2073,3 +2073,4 @@ fn buy_tickets_stays_within_compute_limits_near_max() {
         "buy_tickets memory {mem} exceeded Soroban limit {SOROBAN_MEMORY_LIMIT_BYTES}"
     );
 }
+}

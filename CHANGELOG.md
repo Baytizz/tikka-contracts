@@ -7,6 +7,7 @@ Versioning: [Semantic Versioning](https://semver.org/)
 ## [Unreleased]
 
 ### Added
+- Contributor docs: `docs/DEPLOYMENT.md`, `docs/STORAGE.md`, `docs/RANDOMNESS.md`, and `docs/FAQ.md`.
 - Architecture documentation with factory -> instance -> oracle flow and state-machine diagrams (`docs/ARCHITECTURE.md`).
 - Comprehensive rustdoc comments for all public `raffle-shared` enums, structs, fields, constants, and functions.
 - Pull request template requiring changelog updates for non-trivial changes.

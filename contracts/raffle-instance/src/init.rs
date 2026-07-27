@@ -105,6 +105,7 @@ pub(crate) fn init(
         allow_multiple: config.allow_multiple,
         ticket_price: config.ticket_price,
         payment_token: config.payment_token.clone(),
+        prize_token: config.payment_token.clone(),
         prize_amount: config.prize_amount,
         prizes: config.prizes.clone(),
         tickets_sold: 0,
@@ -122,6 +123,8 @@ pub(crate) fn init(
         claim_lockup_seconds: config.claim_lockup_seconds,
         swap_deadline_seconds: config.swap_deadline_seconds,
         ticket_sales_paused: false,
+        early_bird_ticket_percentage: config.early_bird_ticket_percentage,
+        early_bird_discount_bp: config.early_bird_discount_bp,
     };
     write_raffle(&env, &raffle);
     env.storage().instance().set(&DataKey::Factory, &factory);

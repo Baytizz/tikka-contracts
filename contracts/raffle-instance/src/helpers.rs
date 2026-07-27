@@ -138,13 +138,13 @@ pub(crate) fn calculate_tier_prize(raffle: &Raffle, tier_index: u32) -> Result<i
     if tier_index == last_tier_index {
         let mut allocated = 0i128;
         for i in 0..last_tier_index {
-            let bp = raffle.prizes.get(i).unwrap();
+            let bp = raffle.prizes.get(i).ok_or(Error::InvalidIndex)?;
             let amt = raffle.prize_amount.checked_mul(bp as i128).ok_or(Error::ArithmeticOverflow)? / 10000;
             allocated = allocated.checked_add(amt).ok_or(Error::ArithmeticOverflow)?;
         }
         return raffle.prize_amount.checked_sub(allocated).ok_or(Error::ArithmeticOverflow);
     }
-    let bp = raffle.prizes.get(tier_index).unwrap();
+    let bp = raffle.prizes.get(tier_index).ok_or(Error::InvalidIndex)?;
     raffle.prize_amount.checked_mul(bp as i128).ok_or(Error::ArithmeticOverflow).map(|a| a / 10000)
 }
 

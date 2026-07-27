@@ -89,12 +89,6 @@ pub trait WinnerSelectionStrategy {
 /// **For low-stakes raffles only** — see [`build_internal_seed`] for the full
 /// security caveat.
 pub struct PrngWinnerSelection {
-    _timestamp: u64,
-    _sequence: u32,
-    raffle_id: Address,
-    tickets_sold: u32,
-    pub timestamp: u64,
-    pub sequence: u32,
     pub raffle_id: Address,
     pub tickets_sold: u32,
 }
@@ -102,8 +96,6 @@ pub struct PrngWinnerSelection {
 impl PrngWinnerSelection {
     pub fn new(raffle_id: Address, tickets_sold: u32) -> Self {
         Self {
-            _timestamp: timestamp,
-            _sequence: sequence,
             raffle_id,
             tickets_sold,
         }
@@ -250,7 +242,7 @@ impl WinnerSelectionStrategy for OracleSeedWinnerSelection {
                 };
                 let mut found = false;
                 for i in 0..indices.len() {
-                    if indices.get(i).unwrap() == candidate {
+                    if indices.get(i) == Some(candidate) {
                         found = true;
                         break;
                     }

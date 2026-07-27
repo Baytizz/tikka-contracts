@@ -2,13 +2,9 @@
 #![cfg_attr(not(test), deny(clippy::unwrap_used))]
 
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, xdr::ToXdr, Address, Bytes, BytesN, Env,
-    contract, contracterror, contractimpl, contracttype, token, Address, Bytes, BytesN, Env,
-    IntoVal, Symbol, Vec,
+    contract, contracterror, contractimpl, contracttype, token, xdr::ToXdr, Address, Bytes, BytesN,
+    Env, IntoVal, Symbol, Vec,
 };
-
-#[cfg(not(test))]
-use soroban_sdk::xdr::ToXdr;
 
 #[cfg(test)]
 use soroban_sdk::testutils::Address as _;
@@ -112,7 +108,11 @@ pub enum ContractError {
 pub struct RaffleFactory;
 
 raffle_shared::impl_require_admin!(ContractError, ContractError::NotAuthorized);
-raffle_shared::impl_require_not_paused!(ContractError, ContractError::ContractPaused, require_factory_not_paused);
+raffle_shared::impl_require_not_paused!(
+    ContractError,
+    ContractError::ContractPaused,
+    require_factory_not_paused
+);
 
 fn maybe_create_checkpoint(env: &Env, raffle_count: u32) {
     if raffle_count == 0 || !raffle_count.is_multiple_of(CHECKPOINT_INTERVAL) {
@@ -150,7 +150,6 @@ fn maybe_create_checkpoint(env: &Env, raffle_count: u32) {
         ledger_timestamp,
         aggregate_hash: aggregate_hash.into(),
     }
-    .publish(&env);
     .publish(env);
 }
 
@@ -409,10 +408,6 @@ impl RaffleFactory {
             .ok_or(ContractError::NotAuthorized)?;
         let factory_address = env.current_contract_address();
 
-        let salt = env
-            .crypto()
-            .sha256(&(creator.clone(), final_config.description.clone()).to_xdr(&env));
-
         #[cfg(not(test))]
         let raffle_address = {
             let wasm_hash: BytesN<32> = env
@@ -448,6 +443,7 @@ impl RaffleFactory {
             id
         };
 
+        let category = final_config.category.clone();
         env.invoke_contract::<()>(
             &raffle_address,
             &Symbol::new(&env, "init"),
@@ -488,7 +484,7 @@ impl RaffleFactory {
         // category's list so `get_raffles_by_category` can serve paginated
         // results directly from on-chain state.  The category was validated
         // (length + charset) by the instance's `init`, invoked above.
-        if let Some(ref category) = final_config.category {
+        if let Some(ref category) = category {
             let mut cat_raffles: Vec<Address> = env
                 .storage()
                 .persistent()
@@ -693,7 +689,9 @@ impl RaffleFactory {
         let end = offset.saturating_add(lim).min(total);
         let mut items: Vec<Address> = Vec::new(&env);
         for i in offset..end {
-            items.push_back(creator_raffles.get(i).unwrap());
+            if let Some(addr) = creator_raffles.get(i) {
+                items.push_back(addr);
+            }
         }
 
         let has_more = end < total;
@@ -735,7 +733,9 @@ impl RaffleFactory {
         let end = offset.saturating_add(lim).min(total);
         let mut items: Vec<Address> = Vec::new(&env);
         for i in offset..end {
-            items.push_back(category_raffles.get(i).unwrap());
+            if let Some(addr) = category_raffles.get(i) {
+                items.push_back(addr);
+            }
         }
 
         let has_more = end < total;
@@ -986,15 +986,6 @@ impl RaffleFactory {
         let raffle_address: Address = env
             .storage()
             .persistent()
-            .get(&DataKey::RaffleInstances)
-            .unwrap_or_else(|| Vec::new(&env));
-
-        if raffle_id >= instances.len() {
-            return Err(ContractError::InvalidRaffleId);
-        }
-
-        let raffle_address = instances.get(raffle_id).unwrap();
-
             .get(&DataKey::RaffleById(raffle_id))
             .ok_or(ContractError::InvalidRaffleId)?;
 
@@ -1613,7 +1604,10 @@ mod tests {
 
         let page = client.get_raffles_by_creator(
             &creator,
-            &raffle_shared::PaginationParams { limit: 10, offset: 0 },
+            &raffle_shared::PaginationParams {
+                limit: 10,
+                offset: 0,
+            },
         );
         assert_eq!(page.items.len(), 0u32);
         assert_eq!(page.total, 0u32);
@@ -1649,7 +1643,10 @@ mod tests {
         // Creator A: full page.
         let page_a = client.get_raffles_by_creator(
             &creator_a,
-            &raffle_shared::PaginationParams { limit: 10, offset: 0 },
+            &raffle_shared::PaginationParams {
+                limit: 10,
+                offset: 0,
+            },
         );
         assert_eq!(page_a.total, 5u32);
         assert_eq!(page_a.items.len(), 5u32);
@@ -1661,7 +1658,10 @@ mod tests {
         // Creator B: full page.
         let page_b = client.get_raffles_by_creator(
             &creator_b,
-            &raffle_shared::PaginationParams { limit: 10, offset: 0 },
+            &raffle_shared::PaginationParams {
+                limit: 10,
+                offset: 0,
+            },
         );
         assert_eq!(page_b.total, 3u32);
         assert_eq!(page_b.items.len(), 3u32);
@@ -1690,7 +1690,10 @@ mod tests {
         // Page 0: offset=0, limit=3 → items 0,1,2; has_more=true.
         let p0 = client.get_raffles_by_creator(
             &creator,
-            &raffle_shared::PaginationParams { limit: 3, offset: 0 },
+            &raffle_shared::PaginationParams {
+                limit: 3,
+                offset: 0,
+            },
         );
         assert_eq!(p0.items.len(), 3u32);
         assert_eq!(p0.total, 5u32);
@@ -1701,7 +1704,10 @@ mod tests {
         // Page 1: offset=3, limit=3 → items 3,4; has_more=false.
         let p1 = client.get_raffles_by_creator(
             &creator,
-            &raffle_shared::PaginationParams { limit: 3, offset: 3 },
+            &raffle_shared::PaginationParams {
+                limit: 3,
+                offset: 3,
+            },
         );
         assert_eq!(p1.items.len(), 2u32);
         assert_eq!(p1.total, 5u32);
@@ -1712,7 +1718,10 @@ mod tests {
         // Out-of-range offset → empty, has_more=false.
         let p_oor = client.get_raffles_by_creator(
             &creator,
-            &raffle_shared::PaginationParams { limit: 10, offset: 99 },
+            &raffle_shared::PaginationParams {
+                limit: 10,
+                offset: 99,
+            },
         );
         assert_eq!(p_oor.items.len(), 0u32);
         assert!(!p_oor.has_more);
@@ -1720,7 +1729,10 @@ mod tests {
         // Exact boundary: offset=5 (== total) → empty.
         let p_exact = client.get_raffles_by_creator(
             &creator,
-            &raffle_shared::PaginationParams { limit: 10, offset: 5 },
+            &raffle_shared::PaginationParams {
+                limit: 10,
+                offset: 5,
+            },
         );
         assert_eq!(p_exact.items.len(), 0u32);
         assert!(!p_exact.has_more);
@@ -1744,14 +1756,20 @@ mod tests {
         // A sees only its own raffles.
         let pa = client.get_raffles_by_creator(
             &creator_a,
-            &raffle_shared::PaginationParams { limit: 10, offset: 0 },
+            &raffle_shared::PaginationParams {
+                limit: 10,
+                offset: 0,
+            },
         );
         assert_eq!(pa.total, 2u32);
 
         // B sees only its own raffle.
         let pb = client.get_raffles_by_creator(
             &creator_b,
-            &raffle_shared::PaginationParams { limit: 10, offset: 0 },
+            &raffle_shared::PaginationParams {
+                limit: 10,
+                offset: 0,
+            },
         );
         assert_eq!(pb.total, 1u32);
         assert_eq!(pb.items.get(0).unwrap(), b_addrs[0].clone());
@@ -2006,7 +2024,10 @@ mod tests {
 
         let page = client.get_raffles_by_category(
             &String::from_str(&env, "gaming"),
-            &raffle_shared::PaginationParams { limit: 10, offset: 0 },
+            &raffle_shared::PaginationParams {
+                limit: 10,
+                offset: 0,
+            },
         );
         assert_eq!(page.items.len(), 0u32);
         assert_eq!(page.total, 0u32);
@@ -2032,7 +2053,10 @@ mod tests {
 
         let gaming_page = client.get_raffles_by_category(
             &String::from_str(&env, "gaming"),
-            &raffle_shared::PaginationParams { limit: 10, offset: 0 },
+            &raffle_shared::PaginationParams {
+                limit: 10,
+                offset: 0,
+            },
         );
         assert_eq!(gaming_page.total, 3u32);
         assert_eq!(gaming_page.items.len(), 3u32);
@@ -2043,7 +2067,10 @@ mod tests {
 
         let art_page = client.get_raffles_by_category(
             &String::from_str(&env, "art"),
-            &raffle_shared::PaginationParams { limit: 10, offset: 0 },
+            &raffle_shared::PaginationParams {
+                limit: 10,
+                offset: 0,
+            },
         );
         assert_eq!(art_page.total, 2u32);
         assert_eq!(art_page.items.len(), 2u32);
@@ -2052,7 +2079,10 @@ mod tests {
         // A category with no raffles yields an empty page.
         let charity_page = client.get_raffles_by_category(
             &String::from_str(&env, "charity"),
-            &raffle_shared::PaginationParams { limit: 10, offset: 0 },
+            &raffle_shared::PaginationParams {
+                limit: 10,
+                offset: 0,
+            },
         );
         assert_eq!(charity_page.total, 0u32);
         assert_eq!(charity_page.items.len(), 0u32);
@@ -2076,7 +2106,10 @@ mod tests {
         // Page 0: offset=0, limit=3 → items 0,1,2; has_more=true.
         let p0 = client.get_raffles_by_category(
             &String::from_str(&env, "gaming"),
-            &raffle_shared::PaginationParams { limit: 3, offset: 0 },
+            &raffle_shared::PaginationParams {
+                limit: 3,
+                offset: 0,
+            },
         );
         assert_eq!(p0.items.len(), 3u32);
         assert_eq!(p0.total, 5u32);
@@ -2087,7 +2120,10 @@ mod tests {
         // Page 1: offset=3, limit=3 → items 3,4; has_more=false.
         let p1 = client.get_raffles_by_category(
             &String::from_str(&env, "gaming"),
-            &raffle_shared::PaginationParams { limit: 3, offset: 3 },
+            &raffle_shared::PaginationParams {
+                limit: 3,
+                offset: 3,
+            },
         );
         assert_eq!(p1.items.len(), 2u32);
         assert!(!p1.has_more);

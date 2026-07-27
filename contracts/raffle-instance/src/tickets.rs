@@ -124,7 +124,17 @@ pub(crate) fn buy_tickets(env: Env, buyer: Address, quantity: u32) -> Result<u32
         env.storage().instance().set(&DataKey::AccumulatedFees, &(prev + protocol_fee));
     }
 
-    TicketPurchased { buyer, ticket_ids, quantity, ticket_price: raffle.ticket_price, total_paid: total_price, protocol_fee, timestamp }.publish(&env);
+    TicketPurchased {
+        buyer,
+        ticket_ids,
+        quantity,
+        ticket_price: raffle.ticket_price,
+        effective_ticket_price: raffle.ticket_price,
+        total_paid: total_price,
+        protocol_fee,
+        timestamp,
+    }
+    .publish(&env);
     Ok(raffle.tickets_sold)
 }
 
