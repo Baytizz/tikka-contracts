@@ -142,6 +142,19 @@ pub struct RaffleConfig {
     pub category: Option<String>,
     /// When true, each address may win at most one prize tier (#485).
     pub unique_winners: bool,
+    /// Optional tiered bundle pricing for ticket purchases.
+    pub bundles: Vec<TicketBundle>,
+    /// Optional prize token override (defaults to `payment_token`).
+    pub prize_token: Option<Address>,
+    /// Optional NFT contract for ticket receipts.
+    pub nft_contract: Option<Address>,
+}
+
+#[derive(Clone)]
+#[contracttype]
+pub struct TicketBundle {
+    pub quantity: u32,
+    pub price_per_ticket: i128,
 }
 
 impl RaffleConfig {

@@ -2,13 +2,9 @@
 #![cfg_attr(not(test), deny(clippy::unwrap_used))]
 
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, xdr::ToXdr, Address, Bytes, BytesN, Env,
-    contract, contracterror, contractimpl, contracttype, token, Address, Bytes, BytesN, Env,
-    IntoVal, Symbol, Vec,
+    contract, contracterror, contractimpl, contracttype, token, xdr::ToXdr, Address, Bytes, BytesN,
+    Env, IntoVal, Symbol, Vec,
 };
-
-#[cfg(not(test))]
-use soroban_sdk::xdr::ToXdr;
 
 #[cfg(test)]
 use soroban_sdk::testutils::Address as _;
@@ -113,6 +109,8 @@ pub enum ContractError {
     TreasuryNotSet = 19,
 }
 
+pub const LEADERBOARD_CAP: u32 = 10;
+
 #[contract]
 pub struct RaffleFactory;
 
@@ -155,7 +153,6 @@ fn maybe_create_checkpoint(env: &Env, raffle_count: u32) {
         ledger_timestamp,
         aggregate_hash: aggregate_hash.into(),
     }
-    .publish(&env);
     .publish(env);
 }
 
@@ -456,7 +453,7 @@ impl RaffleFactory {
         env.invoke_contract::<()>(
             &raffle_address,
             &Symbol::new(&env, "init"),
-            (factory_address, admin, creator.clone(), final_config).into_val(&env),
+            (factory_address, admin, creator.clone(), final_config.clone()).into_val(&env),
         );
 
         // --- O(1) stable-map registration ---
@@ -982,8 +979,6 @@ impl RaffleFactory {
 
         Ok(())
     }
-
-    const LEADERBOARD_CAP: u32 = 10;
 
     fn upsert_leaderboard(
         env: &Env,

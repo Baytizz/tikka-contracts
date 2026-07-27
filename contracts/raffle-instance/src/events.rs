@@ -1,4 +1,3 @@
-use raffle_shared::{CancelReason, RandomnessSource, RandomnessType};
 use raffle_shared::{CancelReason, FailureReason, RandomnessSource, RandomnessType};
 use soroban_sdk::{contractevent, Address, BytesN, String, Vec};
 
