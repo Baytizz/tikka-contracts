@@ -284,6 +284,10 @@ See `CONTRIBUTING.md` for contribution guidelines and PR expectations.
 ## 📚 Documentation
 
 -   **Architecture Diagram**: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
+-   **Deployment**: [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md)
+-   **Storage & TTL**: [`docs/STORAGE.md`](docs/STORAGE.md)
+-   **Randomness modes**: [`docs/RANDOMNESS.md`](docs/RANDOMNESS.md)
+-   **Contributor FAQ**: [`docs/FAQ.md`](docs/FAQ.md)
 -   **Stellar Soroban**: https://developers.stellar.org/docs/build/smart-contracts/overview
 -   **Soroban Examples**: https://github.com/stellar/soroban-examples
 -   **Fee Model**: [Tikka Protocol Fee Model](docs/FEE_MODEL.md)

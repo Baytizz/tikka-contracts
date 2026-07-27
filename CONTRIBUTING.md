@@ -9,6 +9,8 @@ Thanks for your interest in contributing to Tikka! This project targets Stellar/
 3. Run `cargo fmt --all` to format code before committing.
 4. Run tests locally before opening a PR.
 
+Setup problems (missing WASM target, Stellar CLI vs SDK 23 mismatch, Node 20 for `oracle/`, `stellar` vs `soroban` naming, deploy script paths) are answered in [`docs/FAQ.md`](docs/FAQ.md).
+
 ## Development Expectations
 
 -   Keep changes scoped and easy to review.
