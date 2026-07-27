@@ -1,6 +1,6 @@
 # Tikka - Decentralized Raffle Platform
 
-![Tikka Logo](https://via.placeholder.com/200x100/4F46E5/FFFFFF?text=TIKKA)
+![Tikka Logo](docs/assets/tikka-logo.svg)
 
 ## 🎯 What is Tikka?
 
