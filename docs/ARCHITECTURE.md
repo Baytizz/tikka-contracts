@@ -28,11 +28,11 @@ graph TB
 ### Flow explanation
 
 1. A creator calls `create_raffle` on the factory with `RaffleConfig`.
-2. The factory deploys a new raffle instance and returns the new instance address.
-3. Users buy tickets directly on the raffle instance contract.
-4. When finalization starts, the instance emits randomness request events to the network.
-5. The oracle service polls those events and calls `provide_randomness` back on the instance.
-6. The instance finalizes winners, emits finalization events, and winners claim prizes.
+1. The factory deploys a new raffle instance and returns the new instance address.
+1. Users buy tickets directly on the raffle instance contract.
+1. When finalization starts, the instance emits randomness request events to the network.
+1. The oracle service polls those events and calls `provide_randomness` back on the instance.
+1. The instance finalizes winners, emits finalization events, and winners claim prizes.
 
 ## RaffleStatus State Machine
 
