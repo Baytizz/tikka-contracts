@@ -165,6 +165,8 @@ pub struct Ticket {
     pub purchase_time: u64,
     /// Human-facing ticket number used in draw/result UX.
     pub ticket_number: u32,
+    /// The address that paid for this ticket.
+    pub payer: Address,
 }
 
 /// Audit data proving how a draw outcome was derived.

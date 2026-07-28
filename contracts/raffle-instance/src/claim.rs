@@ -61,14 +61,14 @@ pub(crate) fn refund_ticket(env: Env, ticket_id: u32) -> Result<i128, Error> {
 
     let _guard = Guard::new(&env)?;
     let ticket: crate::Ticket = env.storage().persistent().get(&DataKey::Ticket(ticket_id)).ok_or(Error::TicketNotFound)?;
-    ticket.owner.require_auth();
+    ticket.payer.require_auth();
 
     if env.storage().persistent().has(&DataKey::TicketRefunded(ticket_id)) { return Err(Error::PrizeAlreadyClaimed); }
     env.storage().persistent().set(&DataKey::TicketRefunded(ticket_id), &true);
 
     let tc = token::Client::new(&env, &raffle.payment_token);
-    let _ = tc.try_transfer(&env.current_contract_address(), &ticket.owner, &raffle.ticket_price).map_err(|_| Error::TokenTransferFailed)?;
+    let _ = tc.try_transfer(&env.current_contract_address(), &ticket.payer, &raffle.ticket_price).map_err(|_| Error::TokenTransferFailed)?;
 
-    TicketRefunded { buyer: ticket.owner, ticket_number: ticket.ticket_number, amount: raffle.ticket_price, timestamp: env.ledger().timestamp() }.publish(&env);
+    TicketRefunded { buyer: ticket.payer, ticket_number: ticket.ticket_number, amount: raffle.ticket_price, timestamp: env.ledger().timestamp() }.publish(&env);
     Ok(raffle.ticket_price)
 }

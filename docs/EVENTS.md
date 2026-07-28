@@ -400,6 +400,26 @@ Emitted when a buyer successfully purchases one or more tickets.
 
 ---
 
+## TicketGifted
+
+Emitted when a buyer successfully purchases one or more tickets for a recipient.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `buyer` | `Address` | Address that paid for the tickets |
+| `recipient` | `Address` | Address receiving the tickets |
+| `ticket_ids` | `Vec<u32>` | List of ticket IDs assigned (1-indexed, sequential within this purchase) |
+| `quantity` | `u32` | Number of tickets purchased in this transaction |
+| `ticket_price` | `i128` | Price per ticket in stroops of `payment_token` |
+| `total_paid` | `i128` | Total amount transferred from buyer |
+| `protocol_fee` | `i128` | Amount immediately sent to treasury as protocol fee |
+| `timestamp` | `u64` | Ledger timestamp of the purchase |
+
+**Emitted by:** `buy_tickets_for`
+**When:** After successful token transfer from buyer to contract, ticket records written, and state committed for the recipient.
+
+---
+
 ## TicketTransferred
 
 Emitted when a ticket is transferred from one address to another.
