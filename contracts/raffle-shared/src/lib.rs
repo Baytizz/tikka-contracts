@@ -140,6 +140,11 @@ pub struct RaffleConfig {
     /// instance's `init`; the factory maintains a per-category index so clients
     /// can query raffles by category without an off-chain indexer. See #439.
     pub category: Option<String>,
+    /// Seconds after `finalized_at` before unclaimed prizes may be swept to
+    /// treasury via `sweep_unclaimed`.  `0` means prizes never expire
+    /// (admin must use `emergency_withdraw` as a last resort).
+    /// When non-zero, must be ≥ `claim_lockup_seconds`.
+    pub claim_expiry_seconds: u64,
 }
 
 impl RaffleConfig {
@@ -165,6 +170,21 @@ pub struct Ticket {
     pub purchase_time: u64,
     /// Human-facing ticket number used in draw/result UX.
     pub ticket_number: u32,
+}
+
+/// A single winner entry combining address, claim state, and prize tier in one
+/// struct.  Replaces the old parallel-array pattern (`winners: Vec<Address>` +
+/// `claimed_winners: Vec<bool>`) which required strict index alignment across
+/// finalization, claim, and re-draw paths and was a classic desync bug source.
+///
+/// `prize_index` is the 0-based index into `RaffleConfig::prizes` that this
+/// winner is entitled to claim.
+#[derive(Clone)]
+#[contracttype]
+pub struct Winner {
+    pub address: Address,
+    pub claimed: bool,
+    pub prize_index: u32,
 }
 
 /// Audit data proving how a draw outcome was derived.

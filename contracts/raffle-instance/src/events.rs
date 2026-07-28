@@ -282,7 +282,7 @@ pub struct AdminChanged {
     pub timestamp: u64,
 }
 
-/// Emitted once per ticket after an NFT receipt is successfully minted
+/// Emitted once per NFT receipt is successfully minted
 /// by the configured `nft_contract`.
 #[derive(Clone)]
 #[contractevent]
@@ -296,4 +296,22 @@ pub struct TicketNftMinted {
     /// The NFT contract that performed the mint.
     pub nft_contract: Address,
     pub timestamp: u64,
+}
+
+/// Emitted once per unclaimed winner when `sweep_unclaimed` runs after
+/// `claim_expiry_seconds` has elapsed since finalization.  The prize share
+/// is transferred to the raffle's `treasury_address`.
+#[derive(Clone)]
+#[contractevent]
+pub struct PrizeSwept {
+    /// Original winner address whose unclaimed prize was swept.
+    pub winner: Address,
+    /// Prize tier index (0-based, matches `prizes` array).
+    pub tier_index: u32,
+    /// Treasury address that received the swept prize.
+    pub treasury: Address,
+    /// Amount transferred to treasury.
+    pub amount: i128,
+    /// Ledger timestamp of the sweep.
+    pub swept_at: u64,
 }

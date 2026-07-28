@@ -3,7 +3,7 @@ use soroban_sdk::{token, Address, BytesN, Env, Vec};
 use crate::events::{RaffleFinalized, RaffleStatusChanged, WinnerDrawn};
 use crate::randomness::{OracleSeedWinnerSelection, WinnerSelectionStrategy};
 use crate::{
-    DataKey, Error, FairnessMetadata, Raffle, RaffleStatus, RandomnessType, Ticket,
+    DataKey, Error, FairnessMetadata, Raffle, RaffleStatus, RandomnessType, Ticket, Winner,
 };
 
 pub(crate) fn read_raffle(env: &Env) -> Result<Raffle, Error> {
@@ -158,17 +158,14 @@ pub(crate) fn do_finalize_with_seed(
 
     let selector = OracleSeedWinnerSelection::new(seed);
     let winning_ticket_ids = selector.select_winner_indices(env, total_tickets, raffle.prizes.len());
-    let mut winners = Vec::new(env);
+    let mut winners: Vec<Winner> = Vec::new(env);
 
     for i in 0..winning_ticket_ids.len() {
         let idx = winning_ticket_ids.get(i).ok_or(Error::InvalidIndex)?;
-        let winner = get_ticket_owner(env, idx + 1).ok_or(Error::TicketNotFound)?;
-        winners.push_back(winner.clone());
-        WinnerDrawn { winner, ticket_id: idx, tier_index: i, timestamp: env.ledger().timestamp() }.publish(env);
+        let address = get_ticket_owner(env, idx + 1).ok_or(Error::TicketNotFound)?;
+        winners.push_back(Winner { address: address.clone(), claimed: false, prize_index: i });
+        WinnerDrawn { winner: address, ticket_id: idx, tier_index: i, timestamp: env.ledger().timestamp() }.publish(env);
     }
-
-    let mut claimed_winners = Vec::new(env);
-    for _ in 0..raffle.prizes.len() { claimed_winners.push_back(false); }
 
     env.storage().persistent().set(&DataKey::RandomnessSeed, &FairnessMetadata {
         seed,
@@ -178,9 +175,9 @@ pub(crate) fn do_finalize_with_seed(
         draw_sequence: env.ledger().sequence(),
     });
 
+    let winner_addresses: Vec<Address> = winners.iter().map(|w| w.address.clone()).collect();
     raffle.status = RaffleStatus::Finalized;
-    raffle.winners = winners.clone();
-    raffle.claimed_winners = claimed_winners;
+    raffle.winners = winners;
     raffle.finalized_at = Some(env.ledger().timestamp());
     write_raffle(env, &raffle);
 
@@ -191,7 +188,7 @@ pub(crate) fn do_finalize_with_seed(
 
     RaffleFinalized {
         raffle_id: env.current_contract_address(),
-        winners, winning_ticket_ids,
+        winners: winner_addresses, winning_ticket_ids,
         total_tickets_sold: raffle.tickets_sold,
         randomness_source: raffle.randomness_source.clone(),
         randomness_type,

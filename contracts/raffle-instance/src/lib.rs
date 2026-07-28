@@ -12,6 +12,7 @@ use soroban_sdk::{
 };
 
 mod admin;
+mod claim;
 mod draw;
 mod events;
 mod helpers;
@@ -20,7 +21,7 @@ mod tickets;
 
 use raffle_shared::{
     CancelReason, FailureReason, FairnessData, RaffleConfig, RaffleStatus, RandomnessSource,
-    RandomnessType, Ticket,
+    RandomnessType, Ticket, Winner,
 };
 
 use self::randomness::{
@@ -74,8 +75,10 @@ pub struct Raffle {
     pub tickets_sold: u32,
     pub status: RaffleStatus,
     pub prize_deposited: bool,
-    pub winners: Vec<Address>,
-    pub claimed_winners: Vec<bool>,
+    /// Unified winner list.  Each entry carries the winner's address, claim
+    /// state, and prize tier in a single struct — eliminating the old
+    /// parallel-array pattern (`winners: Vec<Address>` + `claimed_winners: Vec<bool>`).
+    pub winners: Vec<Winner>,
     pub randomness_source: RandomnessSource,
     pub oracle_address: Option<Address>,
     pub protocol_fee_bp: u32,
@@ -90,6 +93,9 @@ pub struct Raffle {
     pub early_bird_ticket_percentage: u32,
     /// The discount amount specified in basis points.
     pub early_bird_discount_bp: u32,
+    /// Seconds after `finalized_at` before unclaimed prizes may be swept to treasury.
+    /// `0` means never expires.  When non-zero, must be ≥ `claim_lockup_seconds`.
+    pub claim_expiry_seconds: u64,
 }
 
 #[contracttype]
@@ -538,7 +544,6 @@ impl Contract {
             status: RaffleStatus::PendingPrize,
             prize_deposited: false,
             winners: Vec::new(&env),
-            claimed_winners: Vec::new(&env),
             randomness_source: config.randomness_source.clone(),
             oracle_address: config.oracle_address,
             protocol_fee_bp: config.protocol_fee_bp,
@@ -551,6 +556,7 @@ impl Contract {
             ticket_sales_paused: false,
             early_bird_ticket_percentage: config.early_bird_ticket_percentage,
             early_bird_discount_bp: config.early_bird_discount_bp,
+            claim_expiry_seconds: config.claim_expiry_seconds,
         };
         write_raffle(&env, &raffle);
         env.storage().instance().set(&DataKey::Factory, &factory);
@@ -1091,85 +1097,13 @@ impl Contract {
     }
 
     pub fn claim_prize(env: Env, winner: Address, tier_index: u32) -> Result<i128, Error> {
-        winner.require_auth();
-        let _guard = Guard::new(&env)?;
-        let mut raffle = read_raffle(&env)?;
+        crate::claim::claim_prize(env, winner, tier_index)
+    }
 
-        if raffle.status != RaffleStatus::Finalized {
-            return Err(Error::InvalidStatus);
-        }
-
-        // #259: enforce the configurable lockup delay.
-        if let Some(finalized_at) = raffle.finalized_at {
-            if env.ledger().timestamp() < finalized_at + raffle.claim_lockup_seconds {
-                return Err(Error::ClaimTooEarly);
-            }
-        }
-
-        if tier_index >= raffle.winners.len() {
-            return Err(Error::InvalidParameters);
-        }
-
-        if raffle.winners.get(tier_index).ok_or(Error::InvalidIndex)? != winner {
-            return Err(Error::NotWinner);
-        }
-
-        if raffle
-            .claimed_winners
-            .get(tier_index)
-            .ok_or(Error::InvalidIndex)?
-        {
-            return Err(Error::PrizeAlreadyClaimed);
-        }
-
-        let prize_bp = raffle.prizes.get(tier_index).ok_or(Error::InvalidIndex)?;
-        let amount = raffle
-            .prize_amount
-            .checked_mul(prize_bp as i128)
-            .ok_or(Error::ArithmeticOverflow)?
-            / 10000;
-        let amount = calculate_tier_prize(&raffle, tier_index)?;
-        if amount <= 0 {
-            return Err(Error::ZeroPrize);
-        }
-
-        raffle.claimed_winners.set(tier_index, true);
-
-        let mut all_claimed = true;
-        for claimed in raffle.claimed_winners.iter() {
-            if !claimed {
-                all_claimed = false;
-                break;
-            }
-        }
-        if all_claimed {
-            raffle.status = RaffleStatus::Claimed;
-            RaffleStatusChanged {
-                old_status: RaffleStatus::Finalized,
-                new_status: RaffleStatus::Claimed,
-                timestamp: env.ledger().timestamp(),
-            }
-            .publish(&env);
-        }
-        write_raffle(&env, &raffle);
-
-        let token_client = token::Client::new(&env, &raffle.prize_token);
-        let _ = token_client
-            .try_transfer(&env.current_contract_address(), &winner, &amount)
-            .map_err(|_| Error::TokenTransferFailed)?;
-
-        PrizeClaimed {
-            winner,
-            tier_index,
-            payment_token: raffle.prize_token.clone(),
-            gross_amount: amount,
-            net_amount: amount,
-            platform_fee: 0,
-            claimed_at: env.ledger().timestamp(),
-        }
-        .publish(&env);
-
-        Ok(amount)
+    /// Permissionless sweep of unclaimed prizes to treasury after `claim_expiry_seconds`
+    /// has elapsed since finalization.  Returns the number of prizes swept.
+    pub fn sweep_unclaimed(env: Env) -> Result<u32, Error> {
+        crate::claim::sweep_unclaimed(env)
     }
 
     pub fn withdraw_fees(env: Env, recipient: Address, amount: i128) -> Result<(), Error> {
