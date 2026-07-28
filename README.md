@@ -15,6 +15,13 @@ Tikka is a decentralized raffle platform built on Stellar using Soroban smart co
 - Deterministic replay for identical raffle and ledger inputs
 - Intended for low-stakes raffles; high-stakes draws should use oracle randomness
 
+### **👤 Creator Profiles**
+
+- **Display Names**: Creators can set on-chain display names for brand identity
+- **Verified Badges**: Admin-granted verified status for trusted organizers
+- **Track Record**: Automatic counting of raffles created per organizer
+- **Trust Signals**: Frontends can display creator reputation without off-chain databases
+
 ### **💰 Token-Based Tickets and Prizes**
 
 - **Ticket Purchases**: Any Stellar asset contract

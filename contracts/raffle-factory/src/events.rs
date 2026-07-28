@@ -150,3 +150,20 @@ pub struct FactoryUpgraded {
     pub new_wasm_hash: BytesN<32>,
     pub timestamp: u64,
 }
+
+#[derive(Clone)]
+#[contractevent]
+pub struct ProfileNameSet {
+    pub creator: Address,
+    pub name: soroban_sdk::String,
+    pub timestamp: u64,
+}
+
+#[derive(Clone)]
+#[contractevent]
+pub struct VerifiedStatusSet {
+    pub creator: Address,
+    pub verified: bool,
+    pub set_by: Address,
+    pub timestamp: u64,
+}

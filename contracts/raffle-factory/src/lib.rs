@@ -15,7 +15,7 @@ use raffle_shared::{
     effective_limit, AdminOp, FairnessData, PageResultRaffles, PaginationParams, RaffleConfig,
 };
 
-use raffle_shared::constants::{CHECKPOINT_INTERVAL, MAX_PROTOCOL_FEE_BP, TIMELOCK_DELAY_SECONDS};
+use raffle_shared::constants::{CHECKPOINT_INTERVAL, MAX_PROTOCOL_FEE_BP, TIMELOCK_DELAY_SECONDS, MAX_DESCRIPTION_LENGTH};
 
 /// A timelocked administrative operation queued for future execution.
 ///
@@ -37,6 +37,28 @@ pub struct PendingOp {
     pub effective_timestamp: u64,
     /// Address of the admin who proposed this operation.
     pub proposed_by: Address,
+}
+
+/// On-chain creator profile with display name, verified badge, and track record.
+///
+/// Creators can self-set a display name via [`RaffleFactory::set_profile_name`],
+/// and the admin can grant a verified badge via [`RaffleFactory::set_verified`].
+/// The `raffles_created` counter is automatically incremented on each successful
+/// [`RaffleFactory::create_raffle`] call.
+///
+/// Frontends can query profiles with [`RaffleFactory::get_profile`] to show
+/// creator reputation, verified status, and activity level without off-chain
+/// infrastructure.
+#[derive(Clone)]
+#[contracttype]
+pub struct CreatorProfile {
+    /// Self-set display name (max length [`MAX_DESCRIPTION_LENGTH`]).
+    /// Empty string if never set.
+    pub name: soroban_sdk::String,
+    /// Admin-granted verified badge. `true` indicates a trusted/reputable organizer.
+    pub verified: bool,
+    /// Number of raffles this creator has successfully launched.
+    pub raffles_created: u32,
 }
 
 /// A periodic state snapshot recording factory health at a milestone raffle
@@ -140,6 +162,9 @@ pub enum DataKey {
     /// carries a category, enabling `get_raffles_by_category` queries without an
     /// off-chain indexer.
     CategoryRaffles(soroban_sdk::String),
+    /// Creator profile keyed by creator Address. Stores display name,
+    /// verified status, and raffle creation count.
+    CreatorProfile(Address),
 }
 
 /// A read-only snapshot of key factory metrics returned by
@@ -806,6 +831,21 @@ impl RaffleFactory {
 
         maybe_create_checkpoint(&env, count);
 
+        // Increment the creator's raffle count in their profile
+        let mut profile: CreatorProfile = env
+            .storage()
+            .persistent()
+            .get(&DataKey::CreatorProfile(creator.clone()))
+            .unwrap_or(CreatorProfile {
+                name: soroban_sdk::String::from_str(&env, ""),
+                verified: false,
+                raffles_created: 0,
+            });
+        profile.raffles_created = profile.raffles_created.saturating_add(1);
+        env.storage()
+            .persistent()
+            .set(&DataKey::CreatorProfile(creator.clone()), &profile);
+
         Ok(raffle_address)
     }
 
@@ -1377,6 +1417,147 @@ impl RaffleFactory {
         .publish(&env);
 
         Ok(())
+    }
+
+    /// Set the display name for the caller's creator profile.
+    ///
+    /// Creators can self-service update their profile name to provide a
+    /// human-readable identity for frontends. The name is capped at
+    /// [`MAX_DESCRIPTION_LENGTH`] (1 000 bytes).
+    ///
+    /// # Auth
+    ///
+    /// Requires authorization from the creator address whose profile is being
+    /// updated.
+    ///
+    /// # Parameters
+    ///
+    /// - `creator` — Address of the profile owner.
+    /// - `name` — Display name string (max 1 000 bytes).
+    ///
+    /// # Errors
+    ///
+    /// - [`ContractError::InvalidParameters`] — name exceeds
+    ///   [`MAX_DESCRIPTION_LENGTH`].
+    ///
+    /// # Events
+    ///
+    /// Emits [`events::ProfileNameSet`] on success.
+    pub fn set_profile_name(
+        env: Env,
+        creator: Address,
+        name: soroban_sdk::String,
+    ) -> Result<(), ContractError> {
+        creator.require_auth();
+
+        if name.len() > MAX_DESCRIPTION_LENGTH {
+            return Err(ContractError::InvalidParameters);
+        }
+
+        let mut profile: CreatorProfile = env
+            .storage()
+            .persistent()
+            .get(&DataKey::CreatorProfile(creator.clone()))
+            .unwrap_or(CreatorProfile {
+                name: soroban_sdk::String::from_str(&env, ""),
+                verified: false,
+                raffles_created: 0,
+            });
+
+        profile.name = name.clone();
+        env.storage()
+            .persistent()
+            .set(&DataKey::CreatorProfile(creator.clone()), &profile);
+
+        events::ProfileNameSet {
+            creator,
+            name,
+            timestamp: env.ledger().timestamp(),
+        }
+        .publish(&env);
+
+        Ok(())
+    }
+
+    /// Grant or revoke the verified badge for a creator profile.
+    ///
+    /// The admin can set the `verified` flag on any creator's profile to
+    /// signal trustworthiness and reputation to frontends. This provides a
+    /// lightweight on-chain trust signal without requiring off-chain
+    /// infrastructure.
+    ///
+    /// # Auth
+    ///
+    /// Requires authorization from the current admin address.
+    ///
+    /// # Parameters
+    ///
+    /// - `creator` — Address of the profile to update.
+    /// - `verified` — `true` to grant the badge, `false` to revoke it.
+    ///
+    /// # Errors
+    ///
+    /// - [`ContractError::NotAuthorized`] — caller is not the admin.
+    ///
+    /// # Events
+    ///
+    /// Emits [`events::VerifiedStatusSet`] on success.
+    pub fn set_verified(
+        env: Env,
+        creator: Address,
+        verified: bool,
+    ) -> Result<(), ContractError> {
+        let admin = require_admin(&env)?;
+
+        let mut profile: CreatorProfile = env
+            .storage()
+            .persistent()
+            .get(&DataKey::CreatorProfile(creator.clone()))
+            .unwrap_or(CreatorProfile {
+                name: soroban_sdk::String::from_str(&env, ""),
+                verified: false,
+                raffles_created: 0,
+            });
+
+        profile.verified = verified;
+        env.storage()
+            .persistent()
+            .set(&DataKey::CreatorProfile(creator.clone()), &profile);
+
+        events::VerifiedStatusSet {
+            creator,
+            verified,
+            set_by: admin,
+            timestamp: env.ledger().timestamp(),
+        }
+        .publish(&env);
+
+        Ok(())
+    }
+
+    /// Retrieve the creator profile for a given address.
+    ///
+    /// Returns the on-chain profile containing the creator's display name,
+    /// verified status, and number of raffles created. If no profile exists
+    /// for the address, returns a default profile with an empty name,
+    /// `verified = false`, and `raffles_created = 0`.
+    ///
+    /// # Parameters
+    ///
+    /// - `creator` — Address to query.
+    ///
+    /// # Returns
+    ///
+    /// [`CreatorProfile`] containing name, verified badge, and track record.
+    pub fn get_profile(env: Env, creator: Address) -> CreatorProfile {
+        env.storage()
+            .persistent()
+            .get(&DataKey::CreatorProfile(creator))
+            .unwrap_or(CreatorProfile {
+                name: soroban_sdk::String::from_str(&env, ""),
+                verified: false,
+                raffles_created: 0,
+            })
     }
 }
 
@@ -2486,4 +2667,111 @@ mod tests {
         assert_eq!(p1.items.get(0).unwrap(), addrs[3].clone());
         assert_eq!(p1.items.get(1).unwrap(), addrs[4].clone());
     }
+
+    // -----------------------------------------------------------------------
+    // Creator profile tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_get_profile_empty_default() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, _admin, _treasury) = setup_factory(&env);
+        let creator = Address::generate(&env);
+
+        let profile = client.get_profile(&creator);
+        assert_eq!(profile.name, String::from_str(&env, ""));
+        assert!(!profile.verified);
+        assert_eq!(profile.raffles_created, 0u32);
+    }
+
+    #[test]
+    fn test_set_profile_name_basic() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, _admin, _treasury) = setup_factory(&env);
+        let creator = Address::generate(&env);
+
+        let name = String::from_str(&env, "Alice's Raffles");
+        client.set_profile_name(&creator, &name);
+
+        let profile = client.get_profile(&creator);
+        assert_eq!(profile.name, name);
+        assert!(!profile.verified);
+        assert_eq!(profile.raffles_created, 0u32);
+    }
+
+    #[test]
+    fn test_set_profile_name_rejects_too_long() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, _admin, _treasury) = setup_factory(&env);
+        let creator = Address::generate(&env);
+
+        // Build a string > MAX_DESCRIPTION_LENGTH (1000 bytes)
+        let long_name = String::from_str(&env, &"x".repeat(1001));
+        assert_eq!(
+            client.try_set_profile_name(&creator, &long_name),
+            Err(Ok(ContractError::InvalidParameters))
+        );
+    }
+
+    #[test]
+    fn test_set_verified_by_admin() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, _admin, _treasury) = setup_factory(&env);
+        let creator = Address::generate(&env);
+
+        client.set_verified(&creator, &true);
+
+        let profile = client.get_profile(&creator);
+        assert_eq!(profile.name, String::from_str(&env, ""));
+        assert!(profile.verified);
+        assert_eq!(profile.raffles_created, 0u32);
+
+        // Revoke verified status
+        client.set_verified(&creator, &false);
+        let profile_after = client.get_profile(&creator);
+        assert!(!profile_after.verified);
+    }
+
+    #[test]
+    fn test_profile_raffles_created_increments() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, admin, treasury) = setup_factory(&env);
+        let creator = Address::generate(&env);
+
+        // Create 3 raffles via the test helper
+        create_raffles_via_factory(&env, &client, &admin, &treasury, &creator, 3);
+
+        let profile = client.get_profile(&creator);
+        assert_eq!(profile.raffles_created, 3u32);
+    }
+
+    #[test]
+    fn test_profile_complete_workflow() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, admin, treasury) = setup_factory(&env);
+        let creator = Address::generate(&env);
+
+        // 1. Set profile name
+        let name = String::from_str(&env, "Trusted Organizer");
+        client.set_profile_name(&creator, &name);
+
+        // 2. Admin verifies the creator
+        client.set_verified(&creator, &true);
+
+        // 3. Creator creates raffles
+        create_raffles_via_factory(&env, &client, &admin, &treasury, &creator, 5);
+
+        // 4. Frontend queries the profile
+        let profile = client.get_profile(&creator);
+        assert_eq!(profile.name, name);
+        assert!(profile.verified);
+        assert_eq!(profile.raffles_created, 5u32);
+    }
 }
+
