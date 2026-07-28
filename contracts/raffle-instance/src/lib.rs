@@ -668,7 +668,11 @@ impl Contract {
             .get(&DataKey::TicketCount(buyer.clone()))
             .unwrap_or(0);
 
-        if snapshot_sold + quantity > raffle.max_tickets {
+        if snapshot_sold
+            .checked_add(quantity)
+            .ok_or(Error::ArithmeticOverflow)?
+            > raffle.max_tickets
+        {
             return Err(Error::TicketsSoldOut);
         }
 
@@ -685,7 +689,8 @@ impl Contract {
         let effective_price = if raffle.early_bird_ticket_percentage > 0 {
             let early_bird_cap = raffle.max_tickets * raffle.early_bird_ticket_percentage / 100;
             if raffle.tickets_sold < early_bird_cap {
-                raffle.ticket_price
+                raffle
+                    .ticket_price
                     .checked_mul((10000 - raffle.early_bird_discount_bp) as i128)
                     .ok_or(Error::ArithmeticOverflow)?
                     / 10000
@@ -697,7 +702,7 @@ impl Contract {
         };
         let total_price = effective_price
             .checked_mul(quantity as i128)
-            .ok_or(Error::InvalidParameters)?;
+            .ok_or(Error::ArithmeticOverflow)?;
 
         let protocol_fee = total_price
             .checked_mul(raffle.protocol_fee_bp as i128)
@@ -719,7 +724,11 @@ impl Contract {
         }
 
         // Final availability check against persisted values
-        if persisted_sold + quantity > persisted_raffle.max_tickets {
+        if persisted_sold
+            .checked_add(quantity)
+            .ok_or(Error::ArithmeticOverflow)?
+            > persisted_raffle.max_tickets
+        {
             return Err(Error::TicketsSoldOut);
         }
 
@@ -739,7 +748,10 @@ impl Contract {
         // Now commit all changes atomically
         let mut ticket_ids = Vec::new(&env);
         for i in 0..quantity {
-            let ticket_id = snapshot_sold + i + 1;
+            let ticket_id = snapshot_sold
+                .checked_add(i)
+                .and_then(|v| v.checked_add(1))
+                .ok_or(Error::ArithmeticOverflow)?;
             let ticket = Ticket {
                 id: ticket_id,
                 owner: buyer.clone(),
@@ -770,9 +782,13 @@ impl Contract {
         // Update ticket count and raffle sold
         env.storage().persistent().set(
             &DataKey::TicketCount(buyer.clone()),
-            &(current_count + quantity),
+            &current_count
+                .checked_add(quantity)
+                .ok_or(Error::ArithmeticOverflow)?,
         );
-        raffle.tickets_sold = snapshot_sold + quantity;
+        raffle.tickets_sold = snapshot_sold
+            .checked_add(quantity)
+            .ok_or(Error::ArithmeticOverflow)?;
 
         if raffle.tickets_sold >= raffle.max_tickets {
             transition_to_drawing(&env, &mut raffle, timestamp)?;
@@ -995,7 +1011,13 @@ impl Contract {
         helpers::do_finalize_with_seed(&env, raffle, seed, RandomnessType::Prng)
     }
 
-    pub fn provide_randomness(env: Env, random_seed: u64, public_key: BytesN<32>, proof: BytesN<64>, request_id: u64) -> Result<Address, Error> {
+    pub fn provide_randomness(
+        env: Env,
+        random_seed: u64,
+        public_key: BytesN<32>,
+        proof: BytesN<64>,
+        request_id: u64,
+    ) -> Result<Address, Error> {
         self::draw::provide_randomness(env, random_seed, public_key, proof, request_id)
     }
 
@@ -1448,10 +1470,7 @@ impl Contract {
 
         // #406: Ticket holders may refund as soon as an admin cancel is
         // *scheduled*, without waiting for the timelock to execute the cancel.
-        let cancel_scheduled = env
-            .storage()
-            .instance()
-            .has(&DataKey::PendingAdminCancel);
+        let cancel_scheduled = env.storage().instance().has(&DataKey::PendingAdminCancel);
 
         // #258: status check BEFORE require_auth to prevent double-spend on
         // status transitions that occur between auth and the gate.
