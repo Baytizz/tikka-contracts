@@ -33,5 +33,5 @@ cargo test -p raffle-instance
 
 ## Code of Conduct
 
-Be respectful and constructive in discussions. Harassment or abuse is not tolerated.
+Please read and follow our [Code of Conduct](CODE_OF_CONDUCT.md).
 

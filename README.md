@@ -280,17 +280,23 @@ For local setup, build, and test workflows, see `DEVELOPMENT.md`.
 ## 🤝 Contributing
 
 See `CONTRIBUTING.md` for contribution guidelines and PR expectations.
+Please also read our [Code of Conduct](CODE_OF_CONDUCT.md).
 
 ## 📚 Documentation
 
--   **Architecture Diagram**: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
--   **Deployment**: [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md)
--   **Storage & TTL**: [`docs/STORAGE.md`](docs/STORAGE.md)
--   **Randomness modes**: [`docs/RANDOMNESS.md`](docs/RANDOMNESS.md)
--   **Contributor FAQ**: [`docs/FAQ.md`](docs/FAQ.md)
+-   **Documentation Index**: [`docs/README.md`](docs/README.md) — Complete guide to all documentation files
+-   **Architecture Diagram**: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — Factory → instance → oracle flow and state machine
+-   **Deployment**: [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) — Deploy contracts to testnet/mainnet using scripts
+-   **Storage & TTL**: [`docs/STORAGE.md`](docs/STORAGE.md) — Storage layout, tiers, and TTL bump policies
+-   **Randomness modes**: [`docs/RANDOMNESS.md`](docs/RANDOMNESS.md) — Internal, External, and CommitReveal randomness
+-   **Commit-Reveal Protocol**: [`docs/COMMIT_REVEAL.md`](docs/COMMIT_REVEAL.md) — Multi-phase commit-reveal randomness details
+-   **Error Codes**: [`docs/ERRORS.md`](docs/ERRORS.md) — Complete error code reference for frontend integration
+-   **Events Reference**: [`docs/EVENTS.md`](docs/EVENTS.md) — All events emitted by factory and instance contracts
+-   **Contributor FAQ**: [`docs/FAQ.md`](docs/FAQ.md) — Troubleshooting common setup and build issues
+-   **Fee Model**: [`docs/FEE_MODEL.md`](docs/FEE_MODEL.md) — Protocol fee collection and revenue distribution
+-   **Migration Guide**: [`docs/MIGRATION-426.md`](docs/MIGRATION-426.md) — Storage layout migration for PR #426
 -   **Stellar Soroban**: https://developers.stellar.org/docs/build/smart-contracts/overview
 -   **Soroban Examples**: https://github.com/stellar/soroban-examples
--   **Fee Model**: [Tikka Protocol Fee Model](docs/FEE_MODEL.md)
 
 ## 📄 License
 
