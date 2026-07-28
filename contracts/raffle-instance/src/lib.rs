@@ -19,6 +19,12 @@ mod randomness;
 mod tickets;
 
 use raffle_shared::{
+    constants::{
+        DEFAULT_CLAIM_LOCKUP_SECONDS, DEFAULT_SWAP_DEADLINE_SECONDS, EMERGENCY_WITHDRAW_DELAY_SECONDS,
+        MAX_CLAIM_LOCKUP_SECONDS, MAX_DESCRIPTION_LENGTH, MAX_PRIZES, MAX_PRIZE_AMOUNT,
+        MAX_PROTOCOL_FEE_BP, MAX_SWAP_DEADLINE_SECONDS, MAX_TICKETS_LIMIT, MIN_TICKET_PRICE,
+        ORACLE_TIMEOUT_LEDGERS,
+    },
     CancelReason, FailureReason, FairnessData, RaffleConfig, RaffleStatus, RandomnessSource,
     RandomnessType, Ticket,
 };
@@ -36,19 +42,7 @@ use crate::events::{
     TokensRescued, WinnerDrawn,
 };
 
-const ORACLE_TIMEOUT_LEDGERS: u32 = 200;
 const RANDOMNESS_MIN_DELAY_LEDGERS: u32 = 10;
-pub const MAX_DESCRIPTION_LENGTH: u32 = 1000;
-pub const MAX_TICKETS_LIMIT: u32 = 100_000;
-pub const MAX_PRIZES: u32 = 100;
-pub const MIN_TICKET_PRICE: i128 = 10_000;
-pub const MAX_PRIZE_AMOUNT: i128 = 1_000_000_000_000_000_000_000;
-pub const DEFAULT_CLAIM_LOCKUP_SECONDS: u64 = 3_600;
-pub const MAX_CLAIM_LOCKUP_SECONDS: u64 = 604_800;
-pub const DEFAULT_SWAP_DEADLINE_SECONDS: u64 = 300;
-pub const MAX_SWAP_DEADLINE_SECONDS: u64 = 3_600;
-pub const EMERGENCY_WITHDRAW_DELAY_SECONDS: u64 = 90 * 24 * 3600;
-pub const MAX_PROTOCOL_FEE_BP: u32 = 2_000;
 
 #[contract]
 pub struct Contract;
