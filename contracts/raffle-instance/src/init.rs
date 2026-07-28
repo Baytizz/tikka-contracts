@@ -87,10 +87,10 @@ pub(crate) fn init(
     validate_token_address(&env, &config.payment_token)?;
     let config = config.resolve_defaults();
 
-    if config.claim_lockup_seconds > MAX_CLAIM_LOCKUP_SECONDS {
+    if config.claim_lockup_seconds.unwrap() > MAX_CLAIM_LOCKUP_SECONDS {
         return Err(Error::InvalidParameters);
     }
-    if config.swap_deadline_seconds > MAX_SWAP_DEADLINE_SECONDS {
+    if config.swap_deadline_seconds.unwrap() > MAX_SWAP_DEADLINE_SECONDS {
         return Err(Error::InvalidParameters);
     }
 
@@ -120,8 +120,8 @@ pub(crate) fn init(
         swap_router: config.swap_router,
         tikka_token: config.tikka_token,
         finalized_at: None,
-        claim_lockup_seconds: config.claim_lockup_seconds,
-        swap_deadline_seconds: config.swap_deadline_seconds,
+        claim_lockup_seconds: config.claim_lockup_seconds.unwrap(),
+        swap_deadline_seconds: config.swap_deadline_seconds.unwrap(),
         ticket_sales_paused: false,
         early_bird_ticket_percentage: config.early_bird_ticket_percentage,
         early_bird_discount_bp: config.early_bird_discount_bp,

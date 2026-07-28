@@ -166,7 +166,8 @@ pub struct Raffle {
     pub tikka_token: Option<Address>,
     pub finalized_at: Option<u64>,
     pub winner_ticket_id: Option<u32>,
-    pub claim_lockup_seconds: u64,
+    pub claim_lockup_seconds: Option<u64>,
+    pub swap_deadline_seconds: Option<u64>,
 }
 ```
 

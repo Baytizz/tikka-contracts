@@ -702,6 +702,8 @@ impl Contract {
         let protocol_fee = total_price
             .checked_mul(raffle.protocol_fee_bp as i128)
             .ok_or(Error::ArithmeticOverflow)?
+            .checked_add(9999)
+            .ok_or(Error::ArithmeticOverflow)?
             / 10000;
         let _net_amount = total_price - protocol_fee;
 
@@ -1133,6 +1135,16 @@ impl Contract {
             return Err(Error::ZeroPrize);
         }
 
+        let protocol_fee = amount
+            .checked_mul(raffle.protocol_fee_bp as i128)
+            .ok_or(Error::ArithmeticOverflow)?
+            .checked_add(9999)
+            .ok_or(Error::ArithmeticOverflow)?
+            / 10000;
+        let net_amount = amount
+            .checked_sub(protocol_fee)
+            .ok_or(Error::ArithmeticOverflow)?;
+
         raffle.claimed_winners.set(tier_index, true);
 
         let mut all_claimed = true;
@@ -1154,17 +1166,28 @@ impl Contract {
         write_raffle(&env, &raffle);
 
         let token_client = token::Client::new(&env, &raffle.prize_token);
-        let _ = token_client
-            .try_transfer(&env.current_contract_address(), &winner, &amount)
-            .map_err(|_| Error::TokenTransferFailed)?;
+        
+        if net_amount > 0 {
+            let _ = token_client
+                .try_transfer(&env.current_contract_address(), &winner, &net_amount)
+                .map_err(|_| Error::TokenTransferFailed)?;
+        }
+
+        if protocol_fee > 0 {
+            if let Some(treasury) = &raffle.treasury_address {
+                token_client.transfer(&env.current_contract_address(), treasury, &protocol_fee);
+            }
+            let prev: i128 = env.storage().instance().get(&DataKey::AccumulatedFees).unwrap_or(0);
+            env.storage().instance().set(&DataKey::AccumulatedFees, &(prev + protocol_fee));
+        }
 
         PrizeClaimed {
             winner,
             tier_index,
             payment_token: raffle.prize_token.clone(),
             gross_amount: amount,
-            net_amount: amount,
-            platform_fee: 0,
+            net_amount,
+            platform_fee: protocol_fee,
             claimed_at: env.ledger().timestamp(),
         }
         .publish(&env);
