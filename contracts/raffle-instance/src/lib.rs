@@ -583,9 +583,6 @@ impl Contract {
             return Err(Error::PrizeAlreadyDeposited);
         }
 
-        let _old_status = raffle.status.clone();
-        raffle.prize_deposited = true;
-        write_raffle(&env, &raffle);
         let old_status = raffle.status.clone();
 
         // Move tokens first. If the transfer fails we want the contract state
@@ -893,7 +890,6 @@ impl Contract {
         // #169: zero tickets sold is always a failure regardless of min_tickets,
         // ensuring the creator can recover their deposited prize via refund_prize.
         if raffle.tickets_sold == 0 || raffle.tickets_sold < raffle.min_tickets {
-            let _old_status = raffle.status.clone();
             raffle.status = RaffleStatus::Failed;
             write_raffle(&env, &raffle);
 
@@ -1241,7 +1237,6 @@ impl Contract {
         }
 
         let was_drawing = raffle.status == RaffleStatus::Drawing;
-        let _old_status = raffle.status.clone();
         raffle.status = RaffleStatus::Cancelled;
         write_raffle(&env, &raffle);
 
@@ -1346,11 +1341,6 @@ impl Contract {
         write_raffle(&env, &raffle);
 
         let token_client = token::Client::new(&env, &raffle.payment_token);
-        token_client.transfer(
-            &env.current_contract_address(),
-            &raffle.creator,
-            &raffle.prize_amount,
-        );
         let _ = token_client
             .try_transfer(
                 &env.current_contract_address(),
@@ -1484,11 +1474,6 @@ impl Contract {
             .set(&DataKey::TicketRefunded(ticket_id), &true);
 
         let token_client = token::Client::new(&env, &raffle.payment_token);
-        token_client.transfer(
-            &env.current_contract_address(),
-            &ticket.owner,
-            &raffle.ticket_price,
-        );
         let _ = token_client
             .try_transfer(
                 &env.current_contract_address(),
