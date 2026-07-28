@@ -10,78 +10,78 @@ Tikka is a decentralized raffle platform built on Stellar using Soroban smart co
 
 ### **🎲 On-Chain Winner Selection**
 
--   Internal draws use Soroban `env.prng()` with a multi-source seed:
+- Internal draws use Soroban `env.prng()` with a multi-source seed:
     `timestamp + sequence + raffle_id + tickets_sold`
--   Deterministic replay for identical raffle and ledger inputs
--   Intended for low-stakes raffles; high-stakes draws should use oracle randomness
+- Deterministic replay for identical raffle and ledger inputs
+- Intended for low-stakes raffles; high-stakes draws should use oracle randomness
 
 ### **💰 Token-Based Tickets and Prizes**
 
--   **Ticket Purchases**: Any Stellar asset contract
--   **Prizes**: Same asset used for ticket purchases
--   **Flexible Pricing**: Set ticket prices and prize amount per raffle
+- **Ticket Purchases**: Any Stellar asset contract
+- **Prizes**: Same asset used for ticket purchases
+- **Flexible Pricing**: Set ticket prices and prize amount per raffle
 
 ### **🔒 Escrowed Prizes**
 
--   Prizes are held in the smart contract until finalization
--   Winners claim prizes after the raffle ends
+- Prizes are held in the smart contract until finalization
+- Winners claim prizes after the raffle ends
 
 ### **📊 Basic Raffle Analytics**
 
--   Total tickets sold per raffle
--   Winner tracking and claim status
+- Total tickets sold per raffle
+- Winner tracking and claim status
 
 ## 🏗️ How Tikka Works
 
 ### **1. Raffle Creation**
 
-```
+```text
 Creator → Create Raffle → Set Parameters
 ```
 
--   Raffle creators specify:
-    -   Description and end time
-    -   Maximum ticket count
-    -   Ticket price and payment asset
-    -   Whether multiple tickets per person are allowed
-    -   Prize amount (in the same payment asset)
+- Raffle creators specify:
+  - Description and end time
+  - Maximum ticket count
+  - Ticket price and payment asset
+  - Whether multiple tickets per person are allowed
+  - Prize amount (in the same payment asset)
 
 ### **2. Prize Escrow**
 
-```
+```text
 Creator → Deposit Prize → Contract Escrow
 ```
 
--   Prizes are transferred to the smart contract
--   Contract holds the prize until raffle finalization
+- Prizes are transferred to the smart contract
+- Contract holds the prize until raffle finalization
 
 ### **3. Ticket Sales**
 
-```
+```text
 Participants → Buy Tickets → Contract Validation → Ticket Issuance
 ```
 
--   Users purchase tickets with the raffle asset
--   Contract validates payment and issues tickets
--   One ticket equals one entry in the raffle
+- Users purchase tickets with the raffle asset
+- Contract validates payment and issues tickets
+- One ticket equals one entry in the raffle
 
 ### **4. Winner Selection**
 
-```
+```text
 Raffle Ends → Finalize → Select Winner
 ```
 
--   Winner is selected from sold tickets
--   Internal mode uses Soroban PRNG seeded with multiple ledger and raffle fields
--   External/oracle mode remains available for stronger trust assumptions
+- Winner is selected from sold tickets
+- Internal mode uses Soroban PRNG seeded with multiple ledger and raffle fields
+- External/oracle mode remains available for stronger trust assumptions
 
 ### **5. Prize Distribution**
 
-```
+```text
 Winner Selected → Claim Prize
 ```
 
--   Winners claim their prizes
+- Winners claim their prizes
 
 ### **Raffle Flow Diagram**
 
@@ -111,8 +111,8 @@ flowchart TD
 
 ### **Smart Contract Stack**
 
--   **Soroban (Rust)**: Smart contract implementation
--   **Stellar**: Network and asset contracts
+- **Soroban (Rust)**: Smart contract implementation
+- **Stellar**: Network and asset contracts
 
 ### **Core Contracts**
 
@@ -170,12 +170,15 @@ pub struct Raffle {
 }
 ```
 
-### **Contract Constraints (Demo)**
+### **Contract Constraints**
 
--   Only one winner per raffle
--   Prize and ticket payments use the same Stellar asset
--   Internal PRNG is suitable for low-stakes raffles (e.g., sub-500 XLM prizes)
--   For high-stakes raffles, prefer the external oracle/VRF randomness path
+- Up to **100 prize tiers** per raffle (`MAX_PRIZES = 100`), supporting multi-winner raffles
+- Up to **100,000 tickets** per raffle (`MAX_TICKETS_LIMIT = 100,000`)
+- Minimum ticket price of **10,000 base units** (`MIN_TICKET_PRICE = 10_000`)
+- Maximum prize pool of **1e21 base units** (`MAX_PRIZE_AMOUNT = 1_000_000_000_000_000_000_000`)
+- Maximum protocol fee of **20%** (`MAX_PROTOCOL_FEE_BP = 2_000` basis points)
+- Prize and ticket payments use the same Stellar asset
+- Internal PRNG is suitable for low-stakes raffles; for high-stakes raffles, prefer the external oracle/VRF randomness path
 
 ## 🔒 Metadata Integrity (metadata_hash)
 
@@ -243,24 +246,22 @@ stellar contract invoke ... -- \
 
 ---
 
-
-
 ### **Stellar Testnet**
 
--   **Contract Address**: `CCTCPMI66REXIJQPVOPNTNUZBCMSRM7TZLMIPQROZIID44XNP2P2MKFZ`
+- **Contract Address**: `CCTCPMI66REXIJQPVOPNTNUZBCMSRM7TZLMIPQROZIID44XNP2P2MKFZ`
 
 ## 🚀 Getting Started
 
 ### **Prerequisites**
 
--   Rust toolchain
--   Stellar CLI v23.x, matching this workspace's Soroban SDK 23.x dependency
--   Node.js 20.x for the oracle service in `oracle/`
+- Rust toolchain
+- Stellar CLI v23.x, matching this workspace's Soroban SDK 23.x dependency
+- Node.js 20.x for the oracle service in `oracle/`
 
 ### **Run Tests**
 
 ```bash
-cargo test -p raffle
+cargo test -p raffle-factory
 cargo test -p raffle-instance
 cargo test -p raffle-shared
 ```
@@ -268,7 +269,7 @@ cargo test -p raffle-shared
 ### **Build the Contract**
 
 ```bash
-cargo build -p raffle
+cargo build -p raffle-factory
 cargo build -p raffle-instance
 cargo build -p raffle-shared
 ```
@@ -284,19 +285,19 @@ Please also read our [Code of Conduct](CODE_OF_CONDUCT.md).
 
 ## 📚 Documentation
 
--   **Documentation Index**: [`docs/README.md`](docs/README.md) — Complete guide to all documentation files
--   **Architecture Diagram**: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — Factory → instance → oracle flow and state machine
--   **Deployment**: [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) — Deploy contracts to testnet/mainnet using scripts
--   **Storage & TTL**: [`docs/STORAGE.md`](docs/STORAGE.md) — Storage layout, tiers, and TTL bump policies
--   **Randomness modes**: [`docs/RANDOMNESS.md`](docs/RANDOMNESS.md) — Internal, External, and CommitReveal randomness
--   **Commit-Reveal Protocol**: [`docs/COMMIT_REVEAL.md`](docs/COMMIT_REVEAL.md) — Multi-phase commit-reveal randomness details
--   **Error Codes**: [`docs/ERRORS.md`](docs/ERRORS.md) — Complete error code reference for frontend integration
--   **Events Reference**: [`docs/EVENTS.md`](docs/EVENTS.md) — All events emitted by factory and instance contracts
--   **Contributor FAQ**: [`docs/FAQ.md`](docs/FAQ.md) — Troubleshooting common setup and build issues
--   **Fee Model**: [`docs/FEE_MODEL.md`](docs/FEE_MODEL.md) — Protocol fee collection and revenue distribution
--   **Migration Guide**: [`docs/MIGRATION-426.md`](docs/MIGRATION-426.md) — Storage layout migration for PR #426
--   **Stellar Soroban**: https://developers.stellar.org/docs/build/smart-contracts/overview
--   **Soroban Examples**: https://github.com/stellar/soroban-examples
+- **Documentation Index**: [`docs/README.md`](docs/README.md) — Complete guide to all documentation files
+- **Architecture Diagram**: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — Factory → instance → oracle flow and state machine
+- **Deployment**: [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) — Deploy contracts to testnet/mainnet using scripts
+- **Storage & TTL**: [`docs/STORAGE.md`](docs/STORAGE.md) — Storage layout, tiers, and TTL bump policies
+- **Randomness modes**: [`docs/RANDOMNESS.md`](docs/RANDOMNESS.md) — Internal, External, and CommitReveal randomness
+- **Commit-Reveal Protocol**: [`docs/COMMIT_REVEAL.md`](docs/COMMIT_REVEAL.md) — Multi-phase commit-reveal randomness details
+- **Error Codes**: [`docs/ERRORS.md`](docs/ERRORS.md) — Complete error code reference for frontend integration
+- **Events Reference**: [`docs/EVENTS.md`](docs/EVENTS.md) — All events emitted by factory and instance contracts
+- **Contributor FAQ**: [`docs/FAQ.md`](docs/FAQ.md) — Troubleshooting common setup and build issues
+- **Fee Model**: [`docs/FEE_MODEL.md`](docs/FEE_MODEL.md) — Protocol fee collection and revenue distribution
+- **Migration Guide**: [`docs/MIGRATION-426.md`](docs/MIGRATION-426.md) — Storage layout migration for PR #426
+- **Stellar Soroban**: https://developers.stellar.org/docs/build/smart-contracts/overview
+- **Soroban Examples**: https://github.com/stellar/soroban-examples
 
 ## 📄 License
 
@@ -304,9 +305,9 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ## 🆘 Support
 
--   **Documentation**: Check our guides
--   **Issues**: Report bugs and feature requests
--   **Community**: Join our Discord for discussions
+- **Documentation**: Check our guides
+- **Issues**: Report bugs and feature requests
+- **Community**: Join our Discord for discussions
 
 ---
 
