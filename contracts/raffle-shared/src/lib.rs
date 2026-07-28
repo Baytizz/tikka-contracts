@@ -96,6 +96,9 @@ pub struct RaffleConfig {
     pub max_tickets: u32,
     /// Maximum tickets a single address may purchase per transaction.
     pub max_tickets_per_tx: u32,
+    /// Maximum total tickets a single address may own (0 = unlimited).
+    /// When set, must be <= max_tickets. Supersedes allow_multiple.
+    pub max_tickets_per_address: u32,
     /// Minimum number of tickets required for a successful draw.
     pub min_tickets: u32,
     /// Whether one address may own multiple tickets.
