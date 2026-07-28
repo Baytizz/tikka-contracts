@@ -2073,4 +2073,150 @@ fn buy_tickets_stays_within_compute_limits_near_max() {
         "buy_tickets memory {mem} exceeded Soroban limit {SOROBAN_MEMORY_LIMIT_BYTES}"
     );
 }
+
+// ===========================================================================
+// claim_lockup_seconds boundary validation tests
+// ===========================================================================
+
+#[test]
+fn test_init_claim_lockup_seconds_at_bound_succeeds() {
+    let env = Env::default();
+    env.mock_all_auths();
+    env.ledger().set_timestamp(1_000);
+
+    let contract_id = env.register(Contract, ());
+    let client = ContractClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let creator = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let payment_token = env
+        .register_stellar_asset_contract_v2(token_admin)
+        .address();
+
+    let config = RaffleConfig {
+        description: String::from_str(&env, "Claim lockup at bound"),
+        end_time: 0,
+        no_deadline: true,
+        max_tickets: 10,
+        max_tickets_per_tx: 10,
+        min_tickets: 1,
+        allow_multiple: true,
+        ticket_price: MIN_TICKET_PRICE,
+        payment_token: payment_token.clone(),
+        prize_amount: MIN_TICKET_PRICE * 10,
+        prizes: soroban_sdk::vec![&env, 10000],
+        randomness_source: RandomnessSource::Internal,
+        oracle_address: None,
+        protocol_fee_bp: 0,
+        treasury_address: None,
+        swap_router: None,
+        tikka_token: None,
+        metadata_hash: BytesN::from_array(&env, &[1u8; 32]),
+        claim_lockup_seconds: MAX_CLAIM_LOCKUP_SECONDS,
+        swap_deadline_seconds: 0,
+        early_bird_ticket_percentage: 0,
+        early_bird_discount_bp: 0,
+        category: None,
+    };
+
+    client.init(&creator_factory_addr(&env), &admin, &creator, &config);
+    let raffle = client.get_raffle();
+    assert_eq!(raffle.claim_lockup_seconds, MAX_CLAIM_LOCKUP_SECONDS);
 }
+
+#[test]
+fn test_init_claim_lockup_seconds_above_bound_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+    env.ledger().set_timestamp(1_000);
+
+    let contract_id = env.register(Contract, ());
+    let client = ContractClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let creator = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let payment_token = env
+        .register_stellar_asset_contract_v2(token_admin)
+        .address();
+
+    let config = RaffleConfig {
+        description: String::from_str(&env, "Claim lockup above bound"),
+        end_time: 0,
+        no_deadline: true,
+        max_tickets: 10,
+        max_tickets_per_tx: 10,
+        min_tickets: 1,
+        allow_multiple: true,
+        ticket_price: MIN_TICKET_PRICE,
+        payment_token: payment_token.clone(),
+        prize_amount: MIN_TICKET_PRICE * 10,
+        prizes: soroban_sdk::vec![&env, 10000],
+        randomness_source: RandomnessSource::Internal,
+        oracle_address: None,
+        protocol_fee_bp: 0,
+        treasury_address: None,
+        swap_router: None,
+        tikka_token: None,
+        metadata_hash: BytesN::from_array(&env, &[1u8; 32]),
+        claim_lockup_seconds: MAX_CLAIM_LOCKUP_SECONDS + 1,
+        swap_deadline_seconds: 0,
+        early_bird_ticket_percentage: 0,
+        early_bird_discount_bp: 0,
+        category: None,
+    };
+
+    let result = client.try_init(&creator_factory_addr(&env), &admin, &creator, &config);
+    assert_eq!(result, Err(Ok(Error::InvalidParameters)));
+}
+
+#[test]
+fn test_init_claim_lockup_seconds_mid_range_succeeds() {
+    let env = Env::default();
+    env.mock_all_auths();
+    env.ledger().set_timestamp(1_000);
+
+    let contract_id = env.register(Contract, ());
+    let client = ContractClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let creator = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let payment_token = env
+        .register_stellar_asset_contract_v2(token_admin)
+        .address();
+
+    let mid_range_lockup: u64 = 86_400; // 1 day
+    let config = RaffleConfig {
+        description: String::from_str(&env, "Claim lockup mid-range"),
+        end_time: 0,
+        no_deadline: true,
+        max_tickets: 10,
+        max_tickets_per_tx: 10,
+        min_tickets: 1,
+        allow_multiple: true,
+        ticket_price: MIN_TICKET_PRICE,
+        payment_token: payment_token.clone(),
+        prize_amount: MIN_TICKET_PRICE * 10,
+        prizes: soroban_sdk::vec![&env, 10000],
+        randomness_source: RandomnessSource::Internal,
+        oracle_address: None,
+        protocol_fee_bp: 0,
+        treasury_address: None,
+        swap_router: None,
+        tikka_token: None,
+        metadata_hash: BytesN::from_array(&env, &[1u8; 32]),
+        claim_lockup_seconds: mid_range_lockup,
+        swap_deadline_seconds: 0,
+        early_bird_ticket_percentage: 0,
+        early_bird_discount_bp: 0,
+        category: None,
+    };
+
+    client.init(&creator_factory_addr(&env), &admin, &creator, &config);
+    let raffle = client.get_raffle();
+    assert_eq!(raffle.claim_lockup_seconds, mid_range_lockup);
+}
+}
+
