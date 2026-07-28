@@ -8,7 +8,7 @@ use soroban_sdk::{
     xdr::ToXdr,
     Address, Bytes, BytesN, Env, String,
 };
-use raffle_shared::{DEFAULT_CLAIM_LOCKUP_SECONDS, DEFAULT_SWAP_DEADLINE_SECONDS};
+use raffle_shared::{DEFAULT_CLAIM_LOCKUP_SECONDS, DEFAULT_SWAP_DEADLINE_SECONDS, Ticket};
 
 fn assert_drawing_lock_cleared(env: &Env, contract_id: &Address) {
     let is_set: bool = env.as_contract(contract_id, || {
@@ -18,6 +18,18 @@ fn assert_drawing_lock_cleared(env: &Env, contract_id: &Address) {
             .unwrap_or(false)
     });
     assert!(!is_set, "DrawingLock must be cleared");
+}
+
+#[test]
+fn ticket_number_matches_monotonic_id() {
+    let env = Env::default();
+    let owner = Address::generate(&env);
+
+    let ticket = Ticket::new(7, owner, 123);
+
+    assert_eq!(ticket.id, 7);
+    assert_eq!(ticket.ticket_number, 7);
+    assert_eq!(ticket.ticket_number, ticket.id);
 }
 
 #[test]
