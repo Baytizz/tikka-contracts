@@ -8,6 +8,8 @@ Thanks for your interest in contributing to Tikka! This project targets Stellar/
 2. Make your changes with clear, focused commits.
 3. Run `cargo fmt --all` to format code before committing.
 4. Run tests locally before opening a PR.
+5. Install the recommended VS Code extensions when prompted and keep format-on-save enabled.
+6. Install the local hooks with `pip install pre-commit && pre-commit install`.
 
 Setup problems (missing WASM target, Stellar CLI vs SDK 23 mismatch, Node 20 for `oracle/`, `stellar` vs `soroban` naming, deploy script paths) are answered in [`docs/FAQ.md`](docs/FAQ.md).
 
