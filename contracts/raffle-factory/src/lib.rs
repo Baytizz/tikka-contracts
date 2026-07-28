@@ -17,27 +17,67 @@ use raffle_shared::{
 
 use raffle_shared::constants::{CHECKPOINT_INTERVAL, MAX_PROTOCOL_FEE_BP, TIMELOCK_DELAY_SECONDS};
 
+/// A timelocked administrative operation queued for future execution.
+///
+/// Created by [`RaffleFactory::set_config`] and stored under
+/// [`DataKey::PendingOp`] until either executed by
+/// [`RaffleFactory::execute_config_change`] or cancelled by
+/// [`RaffleFactory::cancel_config_change`].
+///
+/// See also: [`docs/EVENTS.md`](../../../docs/EVENTS.md) — `AdminOpProposed`,
+/// `AdminOpExecuted`, `AdminOpCancelled`.
 #[derive(Clone)]
 #[contracttype]
 pub struct PendingOp {
+    /// The operation payload to apply once the timelock elapses.
     pub op: AdminOp,
+    /// Unix timestamp (seconds) at which the operation becomes executable.
+    /// Equals the ledger timestamp at proposal time plus
+    /// [`TIMELOCK_DELAY_SECONDS`] (48 hours).
     pub effective_timestamp: u64,
+    /// Address of the admin who proposed this operation.
     pub proposed_by: Address,
 }
 
+/// A periodic state snapshot recording factory health at a milestone raffle
+/// count.
+///
+/// A checkpoint is automatically created every
+/// [`CHECKPOINT_INTERVAL`] (1 000) total raffles. The
+/// `aggregate_hash` is a SHA-256 digest of `raffle_count ‖ ledger_sequence ‖
+/// ledger_timestamp`, giving indexers a compact, tamper-evident anchor.
+///
+/// Retrieve checkpoints with [`RaffleFactory::get_checkpoint`] and
+/// [`RaffleFactory::get_latest_checkpoint_index`].
+///
+/// See also: [`docs/EVENTS.md`](../../../docs/EVENTS.md) — `CheckpointCreated`.
 #[derive(Clone)]
 #[contracttype]
 pub struct StateCheckpoint {
+    /// Sequential 1-based checkpoint index (`raffle_count / CHECKPOINT_INTERVAL`).
     pub index: u32,
+    /// Total number of raffles created when this checkpoint was taken.
     pub raffle_count: u32,
+    /// Ledger timestamp (Unix seconds) when this checkpoint was recorded.
     pub ledger_timestamp: u64,
+    /// SHA-256 digest of `raffle_count ‖ ledger_sequence ‖ ledger_timestamp`.
+    /// Used by off-chain monitors to detect storage tampering.
     pub aggregate_hash: BytesN<32>,
 }
 
+/// Persistent storage keys used by the factory contract.
+///
+/// Each variant maps to exactly one storage slot, keeping reads and writes
+/// O(1). The stable-map design (`RaffleById` / `NextRaffleId`) means that
+/// adding or removing a raffle never touches any other raffle's slot.
 #[derive(Clone)]
 #[contracttype]
 pub enum DataKey {
+    /// Flag set to `true` after the first successful [`RaffleFactory::init_factory`]
+    /// call. Guards against re-initialization.
     Initialized,
+    /// Current admin [`Address`]. Updated by a completed two-step transfer or
+    /// directly by [`RaffleFactory::accept_factory_admin`].
     Admin,
     /// Stable map: stable_id (u32) → raffle Address.
     /// Replaces the old RaffleInstances Vec — each entry is an independent
@@ -48,21 +88,47 @@ pub enum DataKey {
     NextRaffleId,
     /// Number of live (non-tombstoned) raffles.  Used for stats only.
     RaffleCount,
+    /// WASM hash of the raffle-instance contract deployed by
+    /// [`RaffleFactory::create_raffle`].
     InstanceWasmHash,
+    /// Protocol fee in basis points applied to every new raffle instance.
     ProtocolFeeBP,
+    /// Treasury [`Address`] that receives protocol fees.
     Treasury,
+    /// Boolean pause flag stored in instance storage. When `true`,
+    /// [`RaffleFactory::create_raffle`] is blocked.
     Paused,
+    /// Pending admin [`Address`] set by
+    /// [`RaffleFactory::transfer_factory_admin`]; cleared on acceptance or
+    /// cancellation.
     PendingAdmin,
+    /// Timelocked operation keyed by its auto-incrementing `op_id`.
     PendingOp(u32),
+    /// Monotonic counter that assigns unique IDs to pending operations.
     OpCounter,
+    /// State checkpoint keyed by its sequential index.
     Checkpoint(u32),
+    /// Index of the most recently written [`StateCheckpoint`].
     LatestCheckpointIndex,
+    /// Cumulative count of all raffles ever created (never decremented).
+    /// Used as input to the checkpoint trigger.
     TotalRafflesCreated,
+    /// Per-address flag (`true`) recording that an address has participated.
+    /// Used to maintain the unique-participant count without double-counting.
     UniqueParticipant(Address),
+    /// Running count of unique participant addresses across all raffles.
     TotalUniqueParticipants,
+    /// Minimum seconds between raffle creations for non-whitelisted creators.
+    /// Defaults to 300 s when absent.
     MinCreationDelay,
+    /// Unix timestamp of the most recent successful raffle creation for each
+    /// non-whitelisted creator address. Used by the rate limiter.
     LastCreationTime(Address),
+    /// Whitelist flag for partner addresses. When `true`, the address bypasses
+    /// the creation rate limiter entirely.
     WhitelistedPartner(Address),
+    /// Cumulative ticket-sale volume denominated in a specific asset. Updated
+    /// by [`RaffleFactory::record_volume`] on every ticket purchase.
     TotalVolumePerAsset(Address),
     /// Kept for test-only address generation; not used for indexing.
     RaffleInstancesCount,
@@ -76,31 +142,68 @@ pub enum DataKey {
     CategoryRaffles(soroban_sdk::String),
 }
 
+/// A read-only snapshot of key factory metrics returned by
+/// [`RaffleFactory::get_protocol_stats`].
 #[derive(Clone)]
 #[contracttype]
 pub struct ProtocolStats {
+    /// Cumulative number of raffle instances ever created by this factory.
     pub total_raffles_created: u32,
+    /// Current protocol fee in basis points (100 = 1 %).
     pub protocol_fee_bp: u32,
+    /// Whether the factory is currently paused (`create_raffle` is blocked).
     pub paused: bool,
+    /// Number of unique participant addresses tracked across all raffles.
     pub total_unique_participants: u32,
 }
 
+/// Errors returned by the factory contract.
+///
+/// Each variant maps to a unique `u32` discriminant so that Stellar clients and
+/// off-chain integrations can match on numeric codes without parsing strings.
+/// See [`docs/ERRORS.md`](../../../docs/ERRORS.md) for the complete reference.
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
 pub enum ContractError {
+    /// `init_factory` was called on an already-initialized contract. Code 1.
     AlreadyInitialized = 1,
+    /// Caller is not the admin or the operation requires admin authorization.
+    /// Code 2.
     NotAuthorized = 2,
+    /// The factory is paused; raffle creation is blocked until unpaused.
+    /// Code 3.
     ContractPaused = 3,
+    /// A supplied parameter is out of range or otherwise invalid (e.g., fee
+    /// exceeds [`MAX_PROTOCOL_FEE_BP`], zero/self address). Code 4.
     InvalidParameters = 4,
+    /// The requested raffle stable-ID does not map to an existing contract.
+    /// Code 5.
     RaffleNotFound = 5,
+    /// A two-step admin transfer is already in progress; the current proposal
+    /// must be accepted or cancelled before a new one can be opened. Code 11.
     AdminTransferPending = 11,
+    /// `accept_factory_admin` was called but there is no pending transfer.
+    /// Code 12.
     NoPendingTransfer = 12,
+    /// A non-whitelisted creator attempted to create a raffle before the
+    /// [`MinCreationDelay`](DataKey::MinCreationDelay) window elapsed. Code 13.
     RateLimitExceeded = 13,
+    /// `execute_config_change` or `cancel_config_change` was called with an
+    /// `op_id` that has no pending operation. Code 14.
     NoPendingOp = 14,
+    /// `execute_config_change` was called before `effective_timestamp` was
+    /// reached. Code 15.
     TimelockNotElapsed = 15,
+    /// `clean_old_raffle` was called with an ID that is not in the stable-map
+    /// (never assigned or already tombstoned). Code 16.
     InvalidRaffleId = 16,
+    /// Reserved for future use — a raffle does not meet eligibility criteria
+    /// for the requested operation. Code 17.
     RaffleNotEligible = 17,
+    /// A `checked_add` overflow occurred while accumulating volume. Code 18.
     ArithmeticOverflow = 18,
+    /// `create_raffle` could not read the treasury address (factory not fully
+    /// initialized). Code 19.
     TreasuryNotSet = 19,
 }
 
@@ -182,6 +285,35 @@ fn require_valid_role_address(env: &Env, address: &Address) -> Result<(), Contra
 
 #[contractimpl]
 impl RaffleFactory {
+    /// Initialize the factory contract.
+    ///
+    /// Must be called exactly once immediately after deployment. Subsequent
+    /// calls return [`ContractError::AlreadyInitialized`].
+    ///
+    /// # Parameters
+    ///
+    /// - `admin` — Privileged address that may call admin-only functions.
+    ///   Must not be the zero contract address or the factory's own address.
+    /// - `wasm_hash` — WASM hash of the raffle-instance contract that will be
+    ///   deployed by [`create_raffle`](Self::create_raffle).
+    /// - `protocol_fee_bp` — Initial protocol fee in basis points
+    ///   (max [`MAX_PROTOCOL_FEE_BP`] = 2 000, i.e. 20 %).
+    /// - `treasury` — Address that receives protocol fees. Must not be the
+    ///   zero contract address or the factory's own address.
+    ///
+    /// # Errors
+    ///
+    /// - [`ContractError::AlreadyInitialized`] — factory was already
+    ///   initialized.
+    /// - [`ContractError::InvalidParameters`] — `protocol_fee_bp` exceeds the
+    ///   cap, or `admin`/`treasury` is the zero address or the factory itself.
+    ///
+    /// # Events
+    ///
+    /// Emits [`events::FactoryInitialized`] on success.
+    ///
+    /// See also: [`docs/EVENTS.md`](../../../docs/EVENTS.md) —
+    /// `FactoryInitialized`.
     pub fn init_factory(
         env: Env,
         admin: Address,
@@ -220,6 +352,42 @@ impl RaffleFactory {
         Ok(())
     }
 
+    /// Propose a protocol-configuration change under a 48-hour timelock.
+    ///
+    /// The change is **not** applied immediately. It is stored as a
+    /// [`PendingOp`] and becomes executable only after
+    /// [`TIMELOCK_DELAY_SECONDS`] (48 hours) have elapsed. Call
+    /// [`execute_config_change`](Self::execute_config_change) with the
+    /// returned `op_id` to apply it, or
+    /// [`cancel_config_change`](Self::cancel_config_change) to discard it.
+    ///
+    /// # Auth
+    ///
+    /// Requires authorization from the current admin address.
+    ///
+    /// # Parameters
+    ///
+    /// - `protocol_fee_bp` — New protocol fee in basis points (max
+    ///   [`MAX_PROTOCOL_FEE_BP`] = 2 000).
+    /// - `treasury` — New treasury address. Must not be the zero contract
+    ///   address or the factory's own address.
+    ///
+    /// # Returns
+    ///
+    /// The auto-incremented `op_id` that identifies this pending operation.
+    ///
+    /// # Errors
+    ///
+    /// - [`ContractError::NotAuthorized`] — caller is not the admin.
+    /// - [`ContractError::InvalidParameters`] — fee exceeds cap or treasury
+    ///   address is invalid.
+    ///
+    /// # Events
+    ///
+    /// Emits [`events::AdminOpProposed`] on success.
+    ///
+    /// See also: [`docs/EVENTS.md`](../../../docs/EVENTS.md) —
+    /// `AdminOpProposed`.
     pub fn set_config(
         env: Env,
         protocol_fee_bp: u32,
@@ -262,6 +430,40 @@ impl RaffleFactory {
         Ok(op_id)
     }
 
+    /// Apply a timelocked configuration change that has passed its delay.
+    ///
+    /// Reads the [`PendingOp`] stored under `op_id`, verifies the timelock has
+    /// elapsed, applies the change to persistent storage, and removes the
+    /// pending entry.
+    ///
+    /// Supported operations:
+    /// - [`AdminOp::SetConfig`] — updates `protocol_fee_bp` and `treasury`.
+    /// - [`AdminOp::UpdateWasmHash`] — rotates the instance WASM hash used for
+    ///   future deploys.
+    ///
+    /// # Auth
+    ///
+    /// Requires authorization from the current admin address.
+    ///
+    /// # Parameters
+    ///
+    /// - `op_id` — Identifier returned by [`set_config`](Self::set_config).
+    ///
+    /// # Errors
+    ///
+    /// - [`ContractError::NotAuthorized`] — caller is not the admin.
+    /// - [`ContractError::NoPendingOp`] — no pending operation for `op_id`.
+    /// - [`ContractError::TimelockNotElapsed`] — the 48-hour delay has not
+    ///   passed yet.
+    /// - [`ContractError::InvalidParameters`] — embedded parameters are
+    ///   invalid (fee cap, address checks).
+    ///
+    /// # Events
+    ///
+    /// Emits [`events::AdminOpExecuted`] on success.
+    ///
+    /// See also: [`docs/EVENTS.md`](../../../docs/EVENTS.md) —
+    /// `AdminOpExecuted`.
     pub fn execute_config_change(env: Env, op_id: u32) -> Result<(), ContractError> {
         let admin = require_admin(&env)?;
 
@@ -310,6 +512,30 @@ impl RaffleFactory {
         Ok(())
     }
 
+    /// Cancel a pending timelocked configuration change.
+    ///
+    /// Removes the [`PendingOp`] stored under `op_id` without applying it.
+    /// The operation cannot be recovered after cancellation.
+    ///
+    /// # Auth
+    ///
+    /// Requires authorization from the current admin address.
+    ///
+    /// # Parameters
+    ///
+    /// - `op_id` — Identifier returned by [`set_config`](Self::set_config).
+    ///
+    /// # Errors
+    ///
+    /// - [`ContractError::NotAuthorized`] — caller is not the admin.
+    /// - [`ContractError::NoPendingOp`] — no pending operation for `op_id`.
+    ///
+    /// # Events
+    ///
+    /// Emits [`events::AdminOpCancelled`] on success.
+    ///
+    /// See also: [`docs/EVENTS.md`](../../../docs/EVENTS.md) —
+    /// `AdminOpCancelled`.
     pub fn cancel_config_change(env: Env, op_id: u32) -> Result<(), ContractError> {
         let admin = require_admin(&env)?;
 
@@ -331,10 +557,16 @@ impl RaffleFactory {
         Ok(())
     }
 
+    /// Return the pending operation for `op_id`, or `None` if it has been
+    /// executed, cancelled, or never created.
     pub fn get_pending_op(env: Env, op_id: u32) -> Option<PendingOp> {
         env.storage().persistent().get(&DataKey::PendingOp(op_id))
     }
 
+    /// Return the current operation counter value.
+    ///
+    /// The next call to [`set_config`](Self::set_config) will produce an
+    /// `op_id` equal to this value plus one.
     pub fn get_op_counter(env: Env) -> u32 {
         env.storage()
             .persistent()
@@ -342,6 +574,61 @@ impl RaffleFactory {
             .unwrap_or(0u32)
     }
 
+    /// Deploy a new raffle-instance contract and register it with the factory.
+    ///
+    /// This is the primary entry point for raffle creators. The function:
+    ///
+    /// 1. Checks the factory is not paused.
+    /// 2. Enforces the creation rate limiter for non-whitelisted creators
+    ///    (default 300 s cooldown, configurable via
+    ///    [`set_creation_delay`](Self::set_creation_delay)).
+    /// 3. Injects the current `protocol_fee_bp` and `treasury` into the config.
+    /// 4. Deploys a new raffle-instance WASM contract (address derived from
+    ///    `creator` + `description` SHA-256 salt).
+    /// 5. Calls `init` on the deployed instance.
+    /// 6. Registers the address in the O(1) stable-ID map and the per-creator
+    ///    index. If the config declares a `category`, also appends to the
+    ///    per-category index.
+    /// 7. Triggers a [`StateCheckpoint`] every
+    ///    [`CHECKPOINT_INTERVAL`] total raffles.
+    ///
+    /// # Auth
+    ///
+    /// Requires authorization from `creator`.
+    ///
+    /// # Parameters
+    ///
+    /// - `creator` — Address that will own the raffle and receive any creator
+    ///   privileges within the instance.
+    /// - `config` — Full raffle configuration. `protocol_fee_bp` and
+    ///   `treasury_address` fields are **overwritten** by the factory's stored
+    ///   values regardless of what the caller provides.
+    ///
+    /// # Returns
+    ///
+    /// The [`Address`] of the newly deployed raffle-instance contract.
+    ///
+    /// # Errors
+    ///
+    /// - [`ContractError::ContractPaused`] — factory is paused.
+    /// - [`ContractError::RateLimitExceeded`] — non-whitelisted creator is
+    ///   within the cooldown window (also emits [`events::CreationRateLimited`]).
+    /// - [`ContractError::TreasuryNotSet`] — factory treasury address not
+    ///   initialized.
+    /// - [`ContractError::NotAuthorized`] — factory admin address missing
+    ///   (should not occur after `init_factory`).
+    /// - [`ContractError::InvalidParameters`] — WASM hash not set (production
+    ///   only).
+    ///
+    /// # Events
+    ///
+    /// - [`events::CreationRateLimited`] when a non-whitelisted creator is
+    ///   rate-limited (returned together with
+    ///   [`ContractError::RateLimitExceeded`]).
+    /// - The deployed instance emits `RaffleCreated` on its own `init` call.
+    ///
+    /// See also: [`docs/EVENTS.md`](../../../docs/EVENTS.md) —
+    /// `CreationRateLimited`.
     pub fn create_raffle(
         env: Env,
         creator: Address,
@@ -522,6 +809,11 @@ impl RaffleFactory {
         Ok(raffle_address)
     }
 
+    /// Return a snapshot of key factory metrics.
+    ///
+    /// This is a read-only call with no auth requirement. All fields default to
+    /// zero/false when the factory has just been initialized and no raffles have
+    /// been created.
     pub fn get_protocol_stats(env: Env) -> ProtocolStats {
         let total_raffles_created: u32 = env
             .storage()
@@ -577,6 +869,10 @@ impl RaffleFactory {
             .unwrap_or(0u32)
     }
 
+    /// Return the cumulative ticket-sale volume for a specific `asset` token.
+    ///
+    /// Returns `0` when no volume has been recorded for `asset`. No auth
+    /// required.
     pub fn get_total_volume(env: Env, asset: Address) -> i128 {
         env.storage()
             .persistent()
@@ -584,6 +880,22 @@ impl RaffleFactory {
             .unwrap_or(0)
     }
 
+    /// Accumulate `amount` into the running volume counter for `asset`.
+    ///
+    /// Called by raffle instances on every successful ticket purchase to
+    /// update the factory-level per-asset volume metric. This is an internal
+    /// cross-contract call — end users do not call it directly.
+    ///
+    /// # Auth
+    ///
+    /// No explicit admin check; the instance is trusted by the factory because
+    /// the factory deployed it. The instance itself validates that the caller
+    /// is the ticket buyer.
+    ///
+    /// # Errors
+    ///
+    /// - [`ContractError::ArithmeticOverflow`] — adding `amount` to the
+    ///   current total would exceed `i128::MAX`.
     pub fn record_volume(env: Env, asset: Address, amount: i128) -> Result<(), ContractError> {
         let total_volume: i128 = env
             .storage()
@@ -599,6 +911,12 @@ impl RaffleFactory {
         Ok(())
     }
 
+    /// Return the current admin address.
+    ///
+    /// # Errors
+    ///
+    /// - [`ContractError::NotAuthorized`] — admin key is missing (factory not
+    ///   initialized).
     pub fn get_admin(env: Env) -> Result<Address, ContractError> {
         env.storage()
             .persistent()
@@ -606,6 +924,25 @@ impl RaffleFactory {
             .ok_or(ContractError::NotAuthorized)
     }
 
+    /// Return a paginated slice of all live raffle addresses.
+    ///
+    /// Iterates over the stable-ID space `[offset, offset + limit)` and
+    /// returns only slots that still hold a live address (tombstoned entries
+    /// from [`clean_old_raffle`](Self::clean_old_raffle) are silently skipped).
+    /// Each iteration step is a single O(1) storage lookup.
+    ///
+    /// # Parameters
+    ///
+    /// - `params.offset` — First stable-ID to include. Acts as a cursor into
+    ///   the ever-increasing ID space (not the live-raffle count).
+    /// - `params.limit` — Maximum results per page. Clamped to
+    ///   `[1, MAX_PAGE_LIMIT]`; `0` uses `DEFAULT_PAGE_LIMIT` (100).
+    ///
+    /// # Returns
+    ///
+    /// A [`PageResultRaffles`] whose `total` field reflects the number of
+    /// **live** raffles (not the total IDs ever assigned), and `has_more` is
+    /// `true` when the stable-ID space extends beyond the returned window.
     pub fn get_raffles_page(env: Env, params: PaginationParams) -> PageResultRaffles {
         // `NextRaffleId` is the exclusive upper bound on all ever-assigned IDs.
         // It equals the total number of raffles ever created (including any that
@@ -746,6 +1083,25 @@ impl RaffleFactory {
         }
     }
 
+    /// Pause the factory, blocking new raffle creation.
+    ///
+    /// While paused, [`create_raffle`](Self::create_raffle) returns
+    /// [`ContractError::ContractPaused`]. All other reads and admin operations
+    /// remain available.
+    ///
+    /// # Auth
+    ///
+    /// Requires authorization from the current admin address.
+    ///
+    /// # Errors
+    ///
+    /// - [`ContractError::NotAuthorized`] — caller is not the admin.
+    ///
+    /// # Events
+    ///
+    /// Emits [`events::ContractPaused`].
+    ///
+    /// See also: [`docs/EVENTS.md`](../../../docs/EVENTS.md) — `ContractPaused`.
     pub fn pause_factory(env: Env) -> Result<(), ContractError> {
         let admin = require_admin(&env)?;
         env.storage().instance().set(&DataKey::Paused, &true);
