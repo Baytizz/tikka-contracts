@@ -40,6 +40,10 @@ Explains the Tikka protocol fee model, including fee collection points at ticket
 **Audience:** Contributors  
 Troubleshooting guide for common setup problems encountered during development. Covers WASM target issues, Stellar CLI version skew, Node.js requirements, environment variable configuration, and package naming after the factory rename. First stop when encountering build or deployment errors.
 
+### [TESTING.md](TESTING.md)
+**Audience:** Contributors  
+How to run and extend unit, integration, and fuzz tests across contracts (`cargo test -p …`), the oracle Jest suite (`npm test`), and `cargo-fuzz` targets. Documents `test.rs` helper conventions and when to add a fuzz harness versus a focused unit test.
+
 ### [MIGRATION-426.md](MIGRATION-426.md)
 **Audience:** Contributors, Operators, Auditors  
 Migration guide for PR #426, which changed the factory contract storage from a `Vec`-based layout to a stable-index map. Documents the complexity improvements, stable ID system, new public entry points, and provides testnet migration steps. Historical reference for understanding storage evolution.
@@ -48,10 +52,11 @@ Migration guide for PR #426, which changed the factory contract storage from a `
 
 1. **Start here:** [ARCHITECTURE.md](ARCHITECTURE.md) — Understand the big picture and component relationships
 2. **Development setup:** [FAQ.md](FAQ.md) — Review common setup issues before you encounter them
-3. **Deployment:** [DEPLOYMENT.md](DEPLOYMENT.md) — Learn how to build and deploy contracts
-4. **Core protocol:** [RANDOMNESS.md](RANDOMNESS.md) — Understand winner selection security
-5. **Storage:** [STORAGE.md](STORAGE.md) — Learn about storage layout and TTL management
-6. **Integration:** [EVENTS.md](EVENTS.md) and [ERRORS.md](ERRORS.md) — Reference for building integrations
+3. **Testing:** [TESTING.md](TESTING.md) — Run unit, integration, oracle, and fuzz tests
+4. **Deployment:** [DEPLOYMENT.md](DEPLOYMENT.md) — Learn how to build and deploy contracts
+5. **Core protocol:** [RANDOMNESS.md](RANDOMNESS.md) — Understand winner selection security
+6. **Storage:** [STORAGE.md](STORAGE.md) — Learn about storage layout and TTL management
+7. **Integration:** [EVENTS.md](EVENTS.md) and [ERRORS.md](ERRORS.md) — Reference for building integrations
 
 For auditors, add [COMMIT_REVEAL.md](COMMIT_REVEAL.md) and [FEE_MODEL.md](FEE_MODEL.md) to understand protocol specifics and economic design.
 

@@ -24,6 +24,8 @@ cargo test -p raffle-factory
 cargo test -p raffle-instance
 ```
 
+For the full testing guide (unit, integration, oracle Jest, and fuzz), see [`docs/TESTING.md`](docs/TESTING.md).
+
 ## Pull Requests
 
 -   Provide a concise summary of what changed and why.
