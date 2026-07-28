@@ -219,12 +219,22 @@ pub struct PageResultTickets {
     pub has_more: bool,
 }
 
+#[derive(Clone)]
+#[contracttype]
+pub enum ConfigKey {
+    Treasury,
+    Oracle,
+    SwapRouter,
+}
+
 /// Administrative operations that can be timelocked or proposed.
 #[derive(Clone)]
 #[contracttype]
 pub enum AdminOp {
-    /// Update protocol configuration entry `u32` with a new address value.
-    SetConfig(u32, Address),
+    /// Update a protocol configuration address.
+    SetConfig(ConfigKey, Address),
+    /// Update the protocol fee basis points.
+    SetProtocolFeeBP(u32),
     /// Rotate target contract WASM hash for upgrades.
     UpdateWasmHash(BytesN<32>),
 }
