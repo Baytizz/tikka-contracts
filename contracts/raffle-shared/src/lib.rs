@@ -326,3 +326,48 @@ macro_rules! impl_require_not_paused {
         }
     };
 }
+
+#[cfg(test)]
+mod effective_limit_tests {
+    use super::{effective_limit, DEFAULT_PAGE_LIMIT, MAX_PAGE_LIMIT};
+
+    #[test]
+    fn zero_requests_default_page_limit() {
+        assert_eq!(effective_limit(0), DEFAULT_PAGE_LIMIT);
+    }
+
+    #[test]
+    fn one_is_unchanged() {
+        assert_eq!(effective_limit(1), 1);
+    }
+
+    #[test]
+    fn ninety_nine_is_unchanged() {
+        assert_eq!(effective_limit(99), 99);
+    }
+
+    #[test]
+    fn default_page_limit_is_unchanged() {
+        assert_eq!(effective_limit(DEFAULT_PAGE_LIMIT), DEFAULT_PAGE_LIMIT);
+    }
+
+    #[test]
+    fn one_below_max_is_unchanged() {
+        assert_eq!(effective_limit(MAX_PAGE_LIMIT - 1), MAX_PAGE_LIMIT - 1);
+    }
+
+    #[test]
+    fn max_page_limit_is_unchanged() {
+        assert_eq!(effective_limit(MAX_PAGE_LIMIT), MAX_PAGE_LIMIT);
+    }
+
+    #[test]
+    fn one_above_max_clamps_to_max() {
+        assert_eq!(effective_limit(MAX_PAGE_LIMIT + 1), MAX_PAGE_LIMIT);
+    }
+
+    #[test]
+    fn u32_max_clamps_to_max() {
+        assert_eq!(effective_limit(u32::MAX), MAX_PAGE_LIMIT);
+    }
+}
