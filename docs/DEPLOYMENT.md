@@ -34,9 +34,11 @@ Every script under `scripts/` loads `.env` when present (`export $(cat .env | xa
 | `RAFFLE_CONTRACT_ADDRESS` | `invoke.sh`, `verify.sh` | Contract ID to invoke or verify (`C...`) |
 | `STELLAR_NETWORK` | `invoke.sh`, `verify.sh` | Network name (`testnet` default, or `mainnet`) |
 | `STELLAR_RPC_URL` | oracle / manual CLI | Soroban RPC endpoint |
-| `STELLAR_HORIZON_URL` | optional | Horizon endpoint |
 | `FACTORY_CONTRACT_ID` | oracle service | Factory ID the oracle listens on |
-| `ORACLE_ADDRESS` / `ORACLE_SECRET_KEY` | oracle / External raffles | Oracle identity for `provide_randomness` |
+| `ORACLE_SECRET_KEY` | oracle service | Oracle secret used to sign `provide_randomness` |
+| `POLL_INTERVAL_MS` | oracle service | Primary event poll interval (ms) |
+| `ORACLE_POLL_INTERVAL_MS` | oracle service | Fallback / listener poll interval (ms) |
+| `LOG_LEVEL` | oracle service | Oracle log verbosity |
 | `ADMIN_ADDRESS` | manual init | Factory admin G-address |
 
 > **Security:** Never commit `.env` or secret keys. `DEPLOYER_SECRET_KEY` and `ORACLE_SECRET_KEY` must stay local or in a secrets manager.

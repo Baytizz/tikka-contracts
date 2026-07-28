@@ -17,11 +17,9 @@ The oracle requires a secure keypair to sign reveal transactions. The `KeyServic
 | `RAFFLE_CONTRACT_ADDRESS` | Integration tests | Deployed raffle instance contract |
 | `RANDOMNESS_REQUEST_ID` | Integration tests | Pending randomness request id |
 | `RANDOMNESS_SEED` | No | Seed value for integration tests |
-| `POLL_INTERVAL_MS` | No | Event poller interval (default: `5000`) |
-| `ORACLE_POLL_INTERVAL_MS` | No | Backward-compatible poll interval alias |
+| `POLL_INTERVAL_MS` | No | Primary event poller interval (default: `5000`) |
+| `ORACLE_POLL_INTERVAL_MS` | No | Fallback poll interval; also read by `event-listener.service.ts` |
 | `LOG_LEVEL` | No | Log verbosity (`info` by default) |
-| `ORACLE_CHECKPOINT_PATH` | No | Ledger checkpoint file for restart recovery |
-| `ORACLE_ADDRESS` | Event listener | This oracle's public key (`G...`) |
 
 ### Local Development (Environment Variables)
 
@@ -30,7 +28,7 @@ For local development or testing, provide the secret key via environment variabl
 ```sh
 ORACLE_SECRET_KEY="S..."
 STELLAR_RPC_URL="https://soroban-testnet.stellar.org"
-ORACLE_ADDRESS="G..."
+FACTORY_CONTRACT_ID="C..."
 ```
 
 The `KeyService` validates the key on startup and never logs the private key.
