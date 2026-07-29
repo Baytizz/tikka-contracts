@@ -1825,6 +1825,15 @@ impl Contract {
         Ok(())
     }
 
+    /// Sweep residual payment-token balance to the treasury after the raffle is
+    /// fully settled (`Claimed` or `Cancelled` with no outstanding prize or
+    /// ticket-refund entitlements).
+    ///
+    /// See also: [`docs/EVENTS.md`](../../../docs/EVENTS.md) — `DustSwept`.
+    pub fn sweep_dust(env: Env) -> Result<(), Error> {
+        self::admin::sweep_dust(env)
+    }
+
     pub fn update_oracle_address(env: Env, new_oracle: Address) -> Result<(), Error> {
         self::admin::update_oracle_address(env, new_oracle)
     }

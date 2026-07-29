@@ -3,9 +3,9 @@ use soroban_sdk::{token, Address, Env};
 use raffle_shared::CancelReason;
 
 use crate::events::{
-    ContractPaused, ContractUnpaused, EmergencyWithdrawn, FeesWithdrawn, OracleAddressUpdated,
-    ProtocolFeeUpdated, RaffleCancelled, SwapDeadlineUpdated, TicketSalesPaused, TicketSalesResumed,
-    TokensRescued,
+    ContractPaused, ContractUnpaused, DustSwept, EmergencyWithdrawn, FeesWithdrawn,
+    OracleAddressUpdated, ProtocolFeeUpdated, RaffleCancelled, SwapDeadlineUpdated,
+    TicketSalesPaused, TicketSalesResumed, TokensRescued,
 };
 use crate::{
     read_raffle, require_admin, write_raffle, DataKey, Error, RaffleStatus,
@@ -142,6 +142,62 @@ pub(crate) fn rescue_tokens(env: Env, token: Address, recipient: Address, amount
     let tc = token::Client::new(&env, &token);
     let _ = tc.try_transfer(&env.current_contract_address(), &recipient, &amount).map_err(|_| Error::TokenTransferFailed)?;
     TokensRescued { rescued_by: admin, token, recipient, amount, timestamp: env.ledger().timestamp() }.publish(&env);
+    Ok(())
+}
+
+/// Sweep residual payment-token dust to the treasury after the raffle is fully
+/// settled. Only allowed in `Claimed` / `Cancelled`, and only when no prize or
+/// ticket-refund entitlement remains outstanding.
+pub(crate) fn sweep_dust(env: Env) -> Result<(), Error> {
+    let admin: Address = env
+        .storage()
+        .instance()
+        .get(&DataKey::Admin)
+        .ok_or(Error::NotAuthorized)?;
+    admin.require_auth();
+
+    let raffle = read_raffle(&env)?;
+    if raffle.status != RaffleStatus::Claimed && raffle.status != RaffleStatus::Cancelled {
+        return Err(Error::InvalidStatus);
+    }
+
+    // Cancelled raffles may still owe the prize or ticket refunds.
+    if raffle.status == RaffleStatus::Cancelled {
+        if raffle.prize_deposited {
+            return Err(Error::InvalidStateTransition);
+        }
+        for ticket_id in 1..=raffle.tickets_sold {
+            if !env
+                .storage()
+                .persistent()
+                .has(&DataKey::TicketRefunded(ticket_id))
+            {
+                return Err(Error::InvalidStateTransition);
+            }
+        }
+    }
+
+    let treasury = raffle
+        .treasury_address
+        .ok_or(Error::InvalidParameters)?;
+
+    let token_client = token::Client::new(&env, &raffle.payment_token);
+    let balance = token_client.balance(&env.current_contract_address());
+    if balance > 0 {
+        let _ = token_client
+            .try_transfer(&env.current_contract_address(), &treasury, &balance)
+            .map_err(|_| Error::TokenTransferFailed)?;
+
+        DustSwept {
+            swept_by: admin,
+            token: raffle.payment_token,
+            treasury,
+            amount: balance,
+            timestamp: env.ledger().timestamp(),
+        }
+        .publish(&env);
+    }
+
     Ok(())
 }
 

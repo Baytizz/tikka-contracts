@@ -2073,4 +2073,180 @@ fn buy_tickets_stays_within_compute_limits_near_max() {
         "buy_tickets memory {mem} exceeded Soroban limit {SOROBAN_MEMORY_LIMIT_BYTES}"
     );
 }
+
+// ===========================================================================
+// sweep_dust (#617)
+// ===========================================================================
+
+fn sweep_dust_setup(
+    env: &Env,
+) -> (
+    Address,
+    ContractClient<'_>,
+    Address,
+    Address,
+    Address,
+    Address,
+    Address,
+) {
+    let contract_id = env.register(Contract, ());
+    let client = ContractClient::new(env, &contract_id);
+    let admin = Address::generate(env);
+    let creator = Address::generate(env);
+    let treasury = Address::generate(env);
+    let buyer = Address::generate(env);
+
+    let token_admin = Address::generate(env);
+    let payment_token = env
+        .register_stellar_asset_contract_v2(token_admin.clone())
+        .address();
+    let token = StellarAssetClient::new(env, &payment_token);
+    token.mint(&creator, &100_000_000);
+    token.mint(&buyer, &1_000_000);
+
+    let config = RaffleConfig {
+        description: String::from_str(env, "Sweep dust"),
+        end_time: 0,
+        no_deadline: true,
+        max_tickets: 1,
+        max_tickets_per_tx: 1,
+        min_tickets: 1,
+        allow_multiple: true,
+        ticket_price: MIN_TICKET_PRICE,
+        payment_token: payment_token.clone(),
+        prize_amount: MIN_TICKET_PRICE * 10,
+        prizes: soroban_sdk::vec![env, 10000],
+        randomness_source: RandomnessSource::Internal,
+        oracle_address: None,
+        protocol_fee_bp: 0,
+        treasury_address: Some(treasury.clone()),
+        swap_router: None,
+        tikka_token: None,
+        metadata_hash: BytesN::from_array(env, &[61u8; 32]),
+        claim_lockup_seconds: 0,
+        swap_deadline_seconds: 0,
+        early_bird_ticket_percentage: 0,
+        early_bird_discount_bp: 0,
+        category: None,
+    };
+    client.init(&Address::generate(env), &admin, &creator, &config);
+    env.as_contract(&contract_id, || {
+        env.storage().instance().remove(&DataKey::Factory);
+    });
+
+    (
+        contract_id,
+        client,
+        admin,
+        creator,
+        treasury,
+        buyer,
+        payment_token,
+    )
+}
+
+fn inject_dust(env: &Env, payment_token: &Address, contract_id: &Address, amount: i128) {
+    let token = StellarAssetClient::new(env, payment_token);
+    token.mint(contract_id, &amount);
+}
+
+#[test]
+fn sweep_dust_moves_residue_to_treasury_when_claimed() {
+    let env = Env::default();
+    env.mock_all_auths();
+    env.ledger().set_timestamp(1_000);
+
+    let (contract_id, client, _admin, _creator, treasury, buyer, payment_token) =
+        sweep_dust_setup(&env);
+    let token_ro = soroban_sdk::token::Client::new(&env, &payment_token);
+
+    client.deposit_prize();
+    client.buy_tickets(&buyer, &1);
+    client.finalize_raffle();
+
+    let finalized = client.get_raffle();
+    env.ledger()
+        .set_timestamp(finalized.finalized_at.unwrap() + DEFAULT_CLAIM_LOCKUP_SECONDS + 1);
+    let winner = finalized.winners.get(0).unwrap();
+    client.claim_prize(&winner, &0u32);
+    assert_eq!(client.get_raffle().status, RaffleStatus::Claimed);
+
+    let dust: i128 = 7;
+    inject_dust(&env, &payment_token, &contract_id, dust);
+    let treasury_before = token_ro.balance(&treasury);
+
+    client.sweep_dust();
+
+    assert_eq!(token_ro.balance(&contract_id), 0);
+    assert_eq!(token_ro.balance(&treasury), treasury_before + dust);
+}
+
+#[test]
+fn sweep_dust_moves_residue_to_treasury_when_cancelled_and_settled() {
+    let env = Env::default();
+    env.mock_all_auths();
+    env.ledger().set_timestamp(1_000);
+
+    let (contract_id, client, _admin, creator, treasury, buyer, payment_token) =
+        sweep_dust_setup(&env);
+    let token_ro = soroban_sdk::token::Client::new(&env, &payment_token);
+
+    client.deposit_prize();
+    client.buy_tickets(&buyer, &1);
+    client.cancel_raffle(&CancelReason::CreatorCancelled);
+    client.refund_prize();
+    client.refund_ticket(&1u32);
+    assert_eq!(client.get_raffle().status, RaffleStatus::Cancelled);
+    assert!(!client.get_raffle().prize_deposited);
+
+    let dust: i128 = 11;
+    inject_dust(&env, &payment_token, &contract_id, dust);
+    let treasury_before = token_ro.balance(&treasury);
+    let _ = creator; // creator auth covered by mock_all_auths
+
+    client.sweep_dust();
+
+    assert_eq!(token_ro.balance(&contract_id), 0);
+    assert_eq!(token_ro.balance(&treasury), treasury_before + dust);
+}
+
+#[test]
+fn sweep_dust_rejects_finalized_status() {
+    let env = Env::default();
+    env.mock_all_auths();
+    env.ledger().set_timestamp(1_000);
+
+    let (contract_id, client, _admin, _creator, _treasury, buyer, payment_token) =
+        sweep_dust_setup(&env);
+
+    client.deposit_prize();
+    client.buy_tickets(&buyer, &1);
+    client.finalize_raffle();
+    assert_eq!(client.get_raffle().status, RaffleStatus::Finalized);
+
+    inject_dust(&env, &payment_token, &contract_id, 5);
+    assert_eq!(
+        client.try_sweep_dust(),
+        Err(Ok(Error::InvalidStatus))
+    );
+}
+
+#[test]
+fn sweep_dust_rejects_cancelled_with_outstanding_refunds() {
+    let env = Env::default();
+    env.mock_all_auths();
+    env.ledger().set_timestamp(1_000);
+
+    let (contract_id, client, _admin, _creator, _treasury, buyer, payment_token) =
+        sweep_dust_setup(&env);
+
+    client.deposit_prize();
+    client.buy_tickets(&buyer, &1);
+    client.cancel_raffle(&CancelReason::CreatorCancelled);
+    // Prize still escrowed and ticket not refunded → must not sweep.
+    inject_dust(&env, &payment_token, &contract_id, 5);
+    assert_eq!(
+        client.try_sweep_dust(),
+        Err(Ok(Error::InvalidStateTransition))
+    );
 }
