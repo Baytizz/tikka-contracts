@@ -111,6 +111,22 @@ fn test_oracle_fallback_with_ledger_delays() {
     assert_eq!(fairness.randomness_source, RandomnessSource::External);
 }
 
+fn create_token<'a>(env: &'a Env, admin: &Address) -> (Address, StellarAssetClient<'a>) {
+    let payment_token = env
+        .register_stellar_asset_contract_v2(admin.clone())
+        .address();
+    (
+        payment_token.clone(),
+        StellarAssetClient::new(env, &payment_token),
+    )
+}
+
+#[contractimpl]
+impl MockFactory {
+    pub fn record_volume(_env: Env, _token: Address, _amount: i128) {}
+    pub fn track_participant(_env: Env, _participant: Address) {}
+}
+
 #[test]
 fn test_admin_updates_oracle_address() {
     let env = Env::default();
@@ -122,8 +138,8 @@ fn test_admin_updates_oracle_address() {
     let oracle = Address::generate(&env);
     let new_oracle = Address::generate(&env);
 
-    let contract_id = env.register(RaffleInstance, ());
-    let client = RaffleInstanceClient::new(&env, &contract_id);
+    let contract_id = env.register(Contract, ());
+    let client = ContractClient::new(&env, &contract_id);
 
     let config = RaffleConfig {
         description: String::from_str(&env, "Oracle migration"),
@@ -141,7 +157,7 @@ fn test_admin_updates_oracle_address() {
         prizes: soroban_sdk::vec![&env, 10000],
         randomness_source: RandomnessSource::External,
         oracle_address: Some(oracle.clone()),
-        protocol_fee_bp: 100,
+        protocol_fee_bp: 0,
         treasury_address: None,
         swap_router: None,
         tikka_token: None,
@@ -150,29 +166,33 @@ fn test_admin_updates_oracle_address() {
         swap_deadline_seconds: 0,
         early_bird_ticket_percentage: 0,
         early_bird_discount_bp: 0,
+        category: None,
     };
 
     client.init(&factory, &admin, &creator, &config);
 
-    // Verify that defaults were resolved
     let raffle = client.get_raffle();
     assert_eq!(raffle.claim_lockup_seconds, DEFAULT_CLAIM_LOCKUP_SECONDS);
     assert_eq!(raffle.swap_deadline_seconds, DEFAULT_SWAP_DEADLINE_SECONDS);
 
-#[contractimpl]
-impl MockFactory {
-    pub fn record_volume(_env: Env, _token: Address, _amount: i128) {}
-    pub fn track_participant(_env: Env, _participant: Address) {}
+    client.update_oracle_address(&new_oracle);
+
+    let raffle = client.get_raffle();
+    assert_eq!(raffle.oracle_address, Some(new_oracle));
 }
 
 #[test]
-fn non_winner_cannot_claim() {
+fn test_admin_sets_protocol_fee_before_sales() {
     let env = Env::default();
     env.mock_all_auths();
-    env.ledger().set_timestamp(1_000);
 
-    let contract_id = env.register(RaffleInstance, ());
-    let client = RaffleInstanceClient::new(&env, &contract_id);
+    let factory = Address::generate(&env);
+    let admin = Address::generate(&env);
+    let creator = Address::generate(&env);
+    let treasury = Address::generate(&env);
+
+    let contract_id = env.register(Contract, ());
+    let client = ContractClient::new(&env, &contract_id);
 
     let config = RaffleConfig {
         description: String::from_str(&env, "Fee update"),
@@ -191,7 +211,7 @@ fn non_winner_cannot_claim() {
         randomness_source: RandomnessSource::Internal,
         oracle_address: None,
         protocol_fee_bp: 100,
-        treasury_address: None,
+        treasury_address: Some(treasury),
         swap_router: None,
         tikka_token: None,
         metadata_hash: BytesN::from_array(&env, &[3; 32]),
@@ -199,11 +219,11 @@ fn non_winner_cannot_claim() {
         swap_deadline_seconds: 0,
         early_bird_ticket_percentage: 0,
         early_bird_discount_bp: 0,
+        category: None,
     };
 
     client.init(&factory, &admin, &creator, &config);
 
-    // Verify that defaults were resolved
     let raffle = client.get_raffle();
     assert_eq!(raffle.claim_lockup_seconds, DEFAULT_CLAIM_LOCKUP_SECONDS);
     assert_eq!(raffle.swap_deadline_seconds, DEFAULT_SWAP_DEADLINE_SECONDS);
@@ -215,7 +235,7 @@ fn non_winner_cannot_claim() {
 }
 
 #[test]
-fn test_admin_withdraws_accumulated_fees() {
+fn non_winner_cannot_claim() {
     let env = Env::default();
     env.mock_all_auths();
     env.ledger().set_timestamp(1_000);
@@ -231,6 +251,9 @@ fn test_admin_withdraws_accumulated_fees() {
     token_mint.mint(&creator, &1_000_000);
     token_mint.mint(&buyer, &1_000_000);
 
+    let contract_id = env.register(Contract, ());
+    let client = ContractClient::new(&env, &contract_id);
+
     let config = RaffleConfig {
         description: String::from_str(&env, "test raffle"),
         end_time: 2_000,
@@ -242,7 +265,7 @@ fn test_admin_withdraws_accumulated_fees() {
         ticket_price: MIN_TICKET_PRICE,
         payment_token: token_addr.clone(),
         prize_amount: MIN_TICKET_PRICE * 10,
-        prizes: vec![&env, 10000u32],
+        prizes: soroban_sdk::vec![&env, 10000u32],
         randomness_source: RandomnessSource::Internal,
         oracle_address: None,
         protocol_fee_bp: 0,
@@ -254,12 +277,12 @@ fn test_admin_withdraws_accumulated_fees() {
         swap_deadline_seconds: 0,
         early_bird_ticket_percentage: 0,
         early_bird_discount_bp: 0,
+        category: None,
     };
 
     client.init(&factory, &admin, &creator, &config);
     client.deposit_prize();
     client.buy_tickets(&buyer, &1);
-    env.ledger().set_timestamp(2_000);
     env.ledger().set_timestamp(2_000);
     client.finalize_raffle();
 

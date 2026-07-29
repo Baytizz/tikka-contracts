@@ -41,6 +41,9 @@ pub(crate) fn set_protocol_fee_bp(env: Env, new_fee_bp: u32) -> Result<(), Error
     if new_fee_bp > MAX_PROTOCOL_FEE_BP { return Err(Error::InvalidParameters); }
     let mut raffle = read_raffle(&env)?;
     if raffle.tickets_sold > 0 { return Err(Error::InvalidStatus); }
+    if new_fee_bp > 0 && raffle.treasury_address.is_none() {
+        return Err(Error::TreasuryNotSet);
+    }
     let old = raffle.protocol_fee_bp;
     raffle.protocol_fee_bp = new_fee_bp;
     write_raffle(&env, &raffle);

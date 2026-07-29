@@ -189,6 +189,7 @@ pub enum Error {
     InvalidEndTime = 62,
     InvalidAdminAddress = 63,
     RandomnessTooEarly = 64,
+    TreasuryNotSet = 65,
 }
 
 fn read_raffle(env: &Env) -> Result<Raffle, Error> {
@@ -472,6 +473,9 @@ impl Contract {
 
         if config.protocol_fee_bp > 10000 {
             return Err(Error::InvalidParameters);
+        }
+        if config.protocol_fee_bp > 0 && config.treasury_address.is_none() {
+            return Err(Error::TreasuryNotSet);
         }
 
         if config.randomness_source == RandomnessSource::External {
