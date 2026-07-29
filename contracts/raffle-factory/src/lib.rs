@@ -256,6 +256,19 @@ fn maybe_create_checkpoint(env: &Env, raffle_count: u32) {
     .publish(env);
 }
 
+/// Derive a deterministic 32-byte deployment salt from `creator` and `nonce`.
+///
+/// The salt is `SHA-256(XDR(creator) ‖ XDR(nonce))`. Combined with
+/// [`Env::deployer`]`.`with_current_contract`, this yields a stable instance
+/// address that clients can compute before `create_raffle` lands.
+///
+/// `nonce` is the factory's [`DataKey::NextRaffleId`] at creation time (see
+/// [`RaffleFactory::get_next_raffle_id`] / [`RaffleFactory::predict_raffle_address`]).
+fn compute_raffle_salt(env: &Env, creator: &Address, nonce: u64) -> BytesN<32> {
+    let payload = (creator.clone(), nonce).to_xdr(env);
+    env.crypto().sha256(&payload).into()
+}
+
 /// Validate that an address is usable for a privileged role (admin/treasury).
 ///
 /// Rejects the zero contract address (all-zero 32-byte hash) and the factory's
@@ -583,8 +596,9 @@ impl RaffleFactory {
     ///    (default 300 s cooldown, configurable via
     ///    [`set_creation_delay`](Self::set_creation_delay)).
     /// 3. Injects the current `protocol_fee_bp` and `treasury` into the config.
-    /// 4. Deploys a new raffle-instance WASM contract (address derived from
-    ///    `creator` + `description` SHA-256 salt).
+    /// 4. Deploys a new raffle-instance WASM contract with a deterministic
+    ///    address derived from `creator` + current [`DataKey::NextRaffleId`]
+    ///    (see [`predict_raffle_address`](Self::predict_raffle_address)).
     /// 5. Calls `init` on the deployed instance.
     /// 6. Registers the address in the O(1) stable-ID map and the per-creator
     ///    index. If the config declares a `category`, also appends to the
@@ -695,6 +709,16 @@ impl RaffleFactory {
             .ok_or(ContractError::NotAuthorized)?;
         let factory_address = env.current_contract_address();
 
+        // Salt nonce is the stable ID that will be assigned to this raffle.
+        // Clients read it via `get_next_raffle_id` and can call
+        // `predict_raffle_address` before submitting `create_raffle`.
+        let nonce: u64 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::NextRaffleId)
+            .unwrap_or(0u32) as u64;
+        let salt = compute_raffle_salt(&env, &creator, nonce);
+
         #[cfg(not(test))]
         let raffle_address = {
             let wasm_hash: BytesN<32> = env
@@ -702,30 +726,18 @@ impl RaffleFactory {
                 .persistent()
                 .get(&DataKey::InstanceWasmHash)
                 .ok_or(ContractError::InvalidParameters)?;
-            let salt = env
-                .crypto()
-                .sha256(&(creator.clone(), final_config.description.clone()).to_xdr(&env));
             env.deployer()
-                .with_address(factory_address.clone(), salt)
+                .with_current_contract(salt)
                 .deploy_v2(wasm_hash, ())
         };
 
         #[cfg(test)]
         let raffle_address = {
-            let mut count: u32 = env
-                .storage()
-                .persistent()
-                .get(&DataKey::RaffleInstancesCount)
-                .unwrap_or(0);
-            count += 1;
-            env.storage()
-                .persistent()
-                .set(&DataKey::RaffleInstancesCount, &count);
-
-            let mut id = Address::generate(&env);
-            for _ in 0..count {
-                id = Address::generate(&env);
-            }
+            // Mirror production address derivation so predict == deploy in tests.
+            let id = env
+                .deployer()
+                .with_current_contract(salt)
+                .deployed_address();
             env.register_at(&id, raffle_instance::Contract, ());
             id
         };
@@ -854,11 +866,35 @@ impl RaffleFactory {
 
     /// Returns the stable ID that will be assigned to the next raffle.
     /// IDs in [0, next_raffle_id) have been assigned at least once.
+    ///
+    /// Pass this value as `nonce` to [`predict_raffle_address`](Self::predict_raffle_address)
+    /// to precompute the instance address for the next [`create_raffle`](Self::create_raffle).
     pub fn get_next_raffle_id(env: Env) -> u32 {
         env.storage()
             .persistent()
             .get(&DataKey::NextRaffleId)
             .unwrap_or(0u32)
+    }
+
+    /// Predict the deterministic contract address for a raffle before deployment.
+    ///
+    /// The address is derived from this factory's address and
+    /// `SHA-256(XDR(creator) ‖ XDR(nonce))` via
+    /// [`Env::deployer`]`.`with_current_contract`.
+    ///
+    /// For the next raffle a creator will receive, use
+    /// `nonce = get_next_raffle_id() as u64`.
+    ///
+    /// # Parameters
+    ///
+    /// - `creator` — Address that will create the raffle.
+    /// - `nonce` — Deployment salt input; must match the factory's
+    ///   [`get_next_raffle_id`](Self::get_next_raffle_id) at `create_raffle` time.
+    pub fn predict_raffle_address(env: Env, creator: Address, nonce: u64) -> Address {
+        let salt = compute_raffle_salt(&env, &creator, nonce);
+        env.deployer()
+            .with_current_contract(salt)
+            .deployed_address()
     }
 
     /// Returns the current count of live (non-tombstoned) raffles.
@@ -2485,5 +2521,75 @@ mod tests {
         assert!(!p1.has_more);
         assert_eq!(p1.items.get(0).unwrap(), addrs[3].clone());
         assert_eq!(p1.items.get(1).unwrap(), addrs[4].clone());
+    }
+
+    // -----------------------------------------------------------------------
+    // Deterministic deployment / address prediction (#615)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn predict_raffle_address_matches_create_raffle() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, _admin, _treasury) = setup_factory(&env);
+        let creator = Address::generate(&env);
+        let token = make_token(&env);
+
+        let nonce = client.get_next_raffle_id() as u64;
+        let predicted = client.predict_raffle_address(&creator, &nonce);
+
+        let deployed =
+            client.create_raffle(&creator, &rate_limit_config(&env, &token, "deterministic"));
+
+        assert_eq!(predicted, deployed);
+        assert_eq!(client.get_raffle_by_id(&0u32), Some(deployed));
+    }
+
+    #[test]
+    fn predict_raffle_address_differs_across_creators_and_nonces() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, _admin, _treasury) = setup_factory(&env);
+
+        let creator_a = Address::generate(&env);
+        let creator_b = Address::generate(&env);
+
+        let a0 = client.predict_raffle_address(&creator_a, &0u64);
+        let a1 = client.predict_raffle_address(&creator_a, &1u64);
+        let b0 = client.predict_raffle_address(&creator_b, &0u64);
+        let b1 = client.predict_raffle_address(&creator_b, &1u64);
+
+        // Same creator, different nonces → distinct addresses.
+        assert_ne!(a0, a1);
+        assert_ne!(b0, b1);
+        // Same nonce, different creators → distinct addresses.
+        assert_ne!(a0, b0);
+        assert_ne!(a1, b1);
+        // All four combinations are unique.
+        assert_ne!(a0, b1);
+        assert_ne!(a1, b0);
+    }
+
+    #[test]
+    fn successive_create_raffle_uses_incrementing_nonce() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, _admin, _treasury) = setup_factory(&env);
+        let creator = Address::generate(&env);
+        let token = make_token(&env);
+
+        // Whitelist so rate limiting does not block the second create.
+        client.set_whitelist_status(&creator, &true);
+
+        let predicted_0 = client.predict_raffle_address(&creator, &0u64);
+        let deployed_0 =
+            client.create_raffle(&creator, &rate_limit_config(&env, &token, "first"));
+        assert_eq!(predicted_0, deployed_0);
+
+        let predicted_1 = client.predict_raffle_address(&creator, &1u64);
+        let deployed_1 =
+            client.create_raffle(&creator, &rate_limit_config(&env, &token, "second"));
+        assert_eq!(predicted_1, deployed_1);
+        assert_ne!(deployed_0, deployed_1);
     }
 }
