@@ -1543,4 +1543,59 @@ mod test {
         let result = client.try_claim_prize(&attacker, &0u32);
         assert_eq!(result, Err(Ok(Error::NotWinner)));
     }
+
+    /// Golden-vector cross-check: proof message encoding matches the TS oracle.
+    ///
+    /// The on-chain verifier (`provide_randomness`) builds the signed message as:
+    ///
+    ///   let message = Bytes::from_array(&env, &random_seed.to_be_bytes());
+    ///
+    /// The TypeScript oracle (oracle/src/vrf/proof-message.ts) must produce the
+    /// identical byte sequence.  The vectors below are the single source of truth
+    /// shared with oracle/src/vrf/__fixtures__/proof-message-vectors.json.
+    ///
+    /// Any change to either encoding that breaks this alignment will be caught here
+    /// (Rust side) or in the Jest suite (TS side) before reaching an environment.
+    #[test]
+    fn proof_message_encoding_golden_vectors() {
+        // (seed, expected_be_bytes)
+        let vectors: &[(u64, [u8; 8])] = &[
+            // seed = 0  →  all-zero bytes
+            (0, [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]),
+            // seed = 1  →  LSB in last position (big-endian)
+            (1, [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01]),
+            // seed = 255  →  single byte max
+            (255, [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xff]),
+            // seed = 256  →  byte-boundary rollover
+            (256, [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00]),
+            // seed = 0x0102030405060708  →  all 8 bytes distinct, verifies full byte-order
+            (
+                0x0102_0304_0506_0708,
+                [0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08],
+            ),
+            // seed = 9_999_999_999_999_999  →  representative VRF output size
+            (
+                9_999_999_999_999_999,
+                [0x00, 0x23, 0x86, 0xf2, 0x6f, 0xc0, 0xff, 0xff],
+            ),
+            // seed = 12_345_678_901_234_567_890  →  large value using all 8 bytes
+            (
+                12_345_678_901_234_567_890,
+                [0xab, 0x54, 0xa9, 0x8c, 0xeb, 0x1f, 0x0a, 0xd2],
+            ),
+            // seed = u64::MAX  →  all-ones bytes
+            (u64::MAX, [0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff]),
+        ];
+
+        for (seed, expected) in vectors {
+            let encoded = seed.to_be_bytes();
+            assert_eq!(
+                encoded, *expected,
+                "proof message mismatch for seed {seed}: \
+                 got {encoded:?}, expected {expected:?}. \
+                 See oracle/src/vrf/__fixtures__/proof-message-vectors.json \
+                 and oracle/src/vrf/proof-message.test.ts for the TS side."
+            );
+        }
+    }
 }
