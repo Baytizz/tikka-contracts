@@ -95,6 +95,7 @@ pub struct RaffleConfig {
     /// Maximum number of tickets that can ever be sold.
     pub max_tickets: u32,
     /// Maximum tickets a single address may purchase per transaction.
+    /// Zero is invalid and rejected during initialization with `Error::InvalidParameters` (must be in 1..=max_tickets).
     pub max_tickets_per_tx: u32,
     /// Minimum number of tickets required for a successful draw.
     pub min_tickets: u32,

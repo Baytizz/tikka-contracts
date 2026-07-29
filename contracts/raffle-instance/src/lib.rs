@@ -682,22 +682,45 @@ impl Contract {
         }
 
         let timestamp = env.ledger().timestamp();
-        let effective_price = if raffle.early_bird_ticket_percentage > 0 {
+        let (total_price, effective_price) = if raffle.early_bird_ticket_percentage > 0 {
             let early_bird_cap = raffle.max_tickets * raffle.early_bird_ticket_percentage / 100;
-            if raffle.tickets_sold < early_bird_cap {
-                raffle.ticket_price
+            if snapshot_sold < early_bird_cap {
+                let early_bird_count = (early_bird_cap - snapshot_sold).min(quantity);
+                let full_price_count = quantity - early_bird_count;
+                let discounted_price = raffle
+                    .ticket_price
                     .checked_mul((10000 - raffle.early_bird_discount_bp) as i128)
                     .ok_or(Error::ArithmeticOverflow)?
-                    / 10000
+                    / 10000;
+                let total = discounted_price
+                    .checked_mul(early_bird_count as i128)
+                    .ok_or(Error::ArithmeticOverflow)?
+                    .checked_add(
+                        raffle
+                            .ticket_price
+                            .checked_mul(full_price_count as i128)
+                            .ok_or(Error::ArithmeticOverflow)?,
+                    )
+                    .ok_or(Error::ArithmeticOverflow)?;
+                (total, discounted_price)
             } else {
-                raffle.ticket_price
+                (
+                    raffle
+                        .ticket_price
+                        .checked_mul(quantity as i128)
+                        .ok_or(Error::InvalidParameters)?,
+                    raffle.ticket_price,
+                )
             }
         } else {
-            raffle.ticket_price
+            (
+                raffle
+                    .ticket_price
+                    .checked_mul(quantity as i128)
+                    .ok_or(Error::InvalidParameters)?,
+                raffle.ticket_price,
+            )
         };
-        let total_price = effective_price
-            .checked_mul(quantity as i128)
-            .ok_or(Error::InvalidParameters)?;
 
         let protocol_fee = total_price
             .checked_mul(raffle.protocol_fee_bp as i128)
