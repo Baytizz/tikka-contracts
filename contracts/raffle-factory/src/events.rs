@@ -1,4 +1,5 @@
 use raffle_shared::AdminOp;
+pub use raffle_shared::events::{ContractPaused, ContractUnpaused};
 use soroban_sdk::{contractevent, Address, BytesN};
 
 #[allow(dead_code)]
@@ -55,20 +56,6 @@ pub struct AdminOpCancelled {
     pub op_id: u32,
     pub cancelled_by: Address,
     pub cancelled_at: u64,
-}
-
-#[derive(Clone)]
-#[contractevent]
-pub struct ContractPaused {
-    pub paused_by: Address,
-    pub timestamp: u64,
-}
-
-#[derive(Clone)]
-#[contractevent]
-pub struct ContractUnpaused {
-    pub unpaused_by: Address,
-    pub timestamp: u64,
 }
 
 #[derive(Clone)]
@@ -148,5 +135,21 @@ pub struct FactoryTokensRescued {
 pub struct FactoryUpgraded {
     pub admin: Address,
     pub new_wasm_hash: BytesN<32>,
+    pub timestamp: u64,
+}
+
+#[derive(Clone)]
+#[contractevent]
+pub struct TemplateSaved {
+    pub template_id: u32,
+    pub creator: Address,
+    pub timestamp: u64,
+}
+
+#[derive(Clone)]
+#[contractevent]
+pub struct TemplateDeleted {
+    pub template_id: u32,
+    pub deleted_by: Address,
     pub timestamp: u64,
 }

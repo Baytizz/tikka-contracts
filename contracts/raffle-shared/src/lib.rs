@@ -2,6 +2,7 @@
 #![cfg_attr(not(test), deny(clippy::unwrap_used))]
 
 pub mod constants;
+pub mod events;
 
 use soroban_sdk::{contracttype, Address, BytesN, String, Vec};
 

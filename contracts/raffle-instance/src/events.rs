@@ -1,3 +1,4 @@
+pub use raffle_shared::events::{ContractPaused, ContractUnpaused};
 use raffle_shared::{CancelReason, FailureReason, RandomnessSource, RandomnessType};
 use soroban_sdk::{contractevent, Address, BytesN, String, Vec};
 
@@ -184,20 +185,6 @@ pub struct RandomnessFallbackTriggered {
 pub struct RaffleStatusChanged {
     pub old_status: raffle_shared::RaffleStatus,
     pub new_status: raffle_shared::RaffleStatus,
-    pub timestamp: u64,
-}
-
-#[derive(Clone)]
-#[contractevent]
-pub struct ContractPaused {
-    pub paused_by: Address,
-    pub timestamp: u64,
-}
-
-#[derive(Clone)]
-#[contractevent]
-pub struct ContractUnpaused {
-    pub unpaused_by: Address,
     pub timestamp: u64,
 }
 

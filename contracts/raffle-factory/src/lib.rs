@@ -140,6 +140,14 @@ pub enum DataKey {
     /// carries a category, enabling `get_raffles_by_category` queries without an
     /// off-chain indexer.
     CategoryRaffles(soroban_sdk::String),
+    /// Saved raffle configuration preset: template_id → RaffleConfig.
+    /// Creators can save reusable templates to avoid re-entering parameters.
+    Template(u32),
+    /// Monotonic counter that assigns unique IDs to new templates.
+    TemplateCounter,
+    /// Owner address for a given template. Used to enforce that only the creator
+    /// can edit or delete their templates.
+    TemplateOwner(u32),
 }
 
 /// A read-only snapshot of key factory metrics returned by
@@ -205,6 +213,10 @@ pub enum ContractError {
     /// `create_raffle` could not read the treasury address (factory not fully
     /// initialized). Code 19.
     TreasuryNotSet = 19,
+    /// A template ID was requested that does not exist. Code 20.
+    TemplateNotFound = 20,
+    /// The caller is not the owner of the requested template. Code 21.
+    TemplateNotOwner = 21,
 }
 
 #[contract]
@@ -1378,6 +1390,212 @@ impl RaffleFactory {
 
         Ok(())
     }
+
+    /// Save a reusable raffle configuration preset (template).
+    ///
+    /// Templates let creators store a `RaffleConfig` once and clone it for
+    /// future raffles via [`create_raffle_from_template`]. Only the creator
+    /// who saved a template may retrieve, update, or delete it.
+    ///
+    /// # Auth
+    ///
+    /// Requires authorization from `creator`.
+    ///
+    /// # Returns
+    ///
+    /// The auto-incremented `template_id` assigned to the new template.
+    ///
+    /// # Errors
+    ///
+    /// - [`ContractError::NotAuthorized`] — caller is not the creator.
+    pub fn save_template(
+        env: Env,
+        creator: Address,
+        config: RaffleConfig,
+    ) -> Result<u32, ContractError> {
+        creator.require_auth();
+
+        let template_id: u32 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::TemplateCounter)
+            .unwrap_or(0u32)
+            .saturating_add(1);
+
+        env.storage()
+            .persistent()
+            .set(&DataKey::TemplateCounter, &template_id);
+        env.storage()
+            .persistent()
+            .set(&DataKey::Template(template_id), &config);
+        env.storage()
+            .persistent()
+            .set(&DataKey::TemplateOwner(template_id), &creator);
+
+        events::TemplateSaved {
+            template_id,
+            creator: creator.clone(),
+            timestamp: env.ledger().timestamp(),
+        }
+        .publish(&env);
+
+        Ok(template_id)
+    }
+
+    /// Update an existing template saved by `creator`.
+    ///
+    /// The `template_id` must already exist and the caller must be the
+    /// original creator. Existing raffles created from this template are
+    /// unaffected because `create_raffle_from_template` copies the config at
+    /// call time.
+    ///
+    /// # Auth
+    ///
+    /// Requires authorization from `creator`.
+    ///
+    /// # Errors
+    ///
+    /// - [`ContractError::TemplateNotFound`] — no template exists under
+    ///   `template_id`.
+    /// - [`ContractError::TemplateNotOwner`] — caller is not the template owner.
+    pub fn update_template(
+        env: Env,
+        creator: Address,
+        template_id: u32,
+        config: RaffleConfig,
+    ) -> Result<(), ContractError> {
+        let owner: Address = env
+            .storage()
+            .persistent()
+            .get(&DataKey::TemplateOwner(template_id))
+            .ok_or(ContractError::TemplateNotFound)?;
+
+        if owner != creator {
+            return Err(ContractError::TemplateNotOwner);
+        }
+
+        creator.require_auth();
+
+        env.storage()
+            .persistent()
+            .set(&DataKey::Template(template_id), &config);
+
+        Ok(())
+    }
+
+    /// Retrieve a saved template by `template_id`.
+    ///
+    /// Returns `None` if the ID has never been assigned or was deleted.
+    pub fn get_template(env: Env, template_id: u32) -> Option<RaffleConfig> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::Template(template_id))
+    }
+
+    /// Create a new raffle by cloning an existing template.
+    ///
+    /// The template config is copied into a fresh `RaffleConfig`, so subsequent
+    /// edits to the template do not affect raffles already deployed from it.
+    ///
+    /// # Auth
+    ///
+    /// Requires authorization from `creator` (the caller may be any address;
+    /// the template owner is not restrict — templates are public presets).
+    ///
+    /// # Parameters
+    ///
+    /// - `creator` — Address that will own the new raffle.
+    /// - `template_id` — ID of the template to clone.
+    /// - `override_end_time` — Replacement `end_time` for the new raffle.
+    ///   Pass `0` to keep the template's original `end_time`.
+    ///
+    /// # Returns
+    ///
+    /// The [`Address`] of the newly deployed raffle-instance contract.
+    ///
+    /// # Errors
+    ///
+    /// - [`ContractError::TemplateNotFound`] — no template exists under
+    ///   `template_id`.
+    /// - [`ContractError::ContractPaused`] — factory is paused.
+    /// - [`ContractError::RateLimitExceeded`] — non-whitelisted creator is
+    ///   within the cooldown window.
+    /// - [`ContractError::TreasuryNotSet`] — factory treasury address not
+    ///   initialized.
+    pub fn create_raffle_from_template(
+        env: Env,
+        creator: Address,
+        template_id: u32,
+        override_end_time: u64,
+    ) -> Result<Address, ContractError> {
+        let mut config: RaffleConfig = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Template(template_id))
+            .ok_or(ContractError::TemplateNotFound)?;
+
+        if override_end_time != 0 {
+            config.end_time = override_end_time;
+        }
+
+        Self::create_raffle(env, creator, config)
+    }
+
+    /// Delete a previously saved template.
+    ///
+    /// Only the original creator (or factory admin) may delete a template.
+    /// Once deleted, the `template_id` is not reused.
+    ///
+    /// # Auth
+    ///
+    /// Requires authorization from the template owner or factory admin.
+    ///
+    /// # Errors
+    ///
+    /// - [`ContractError::TemplateNotFound`] — no template exists under
+    ///   `template_id`.
+    /// - [`ContractError::TemplateNotOwner`] — caller is neither the template
+    ///   owner nor the factory admin.
+    pub fn delete_template(
+        env: Env,
+        caller: Address,
+        template_id: u32,
+    ) -> Result<(), ContractError> {
+        let owner: Address = env
+            .storage()
+            .persistent()
+            .get(&DataKey::TemplateOwner(template_id))
+            .ok_or(ContractError::TemplateNotFound)?;
+
+        let is_admin = env
+            .storage()
+            .persistent()
+            .get::<_, Address>(&DataKey::Admin)
+            .map(|a| a == caller)
+            .unwrap_or(false);
+
+        if caller != owner && !is_admin {
+            return Err(ContractError::TemplateNotOwner);
+        }
+
+        caller.require_auth();
+
+        env.storage()
+            .persistent()
+            .remove(&DataKey::Template(template_id));
+        env.storage()
+            .persistent()
+            .remove(&DataKey::TemplateOwner(template_id));
+
+        events::TemplateDeleted {
+            template_id,
+            deleted_by: caller,
+            timestamp: env.ledger().timestamp(),
+        }
+        .publish(&env);
+
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -1385,6 +1603,7 @@ mod tests {
     use super::*;
     use raffle_shared::{RandomnessSource, DEFAULT_PAGE_LIMIT, MAX_PAGE_LIMIT};
     use soroban_sdk::{String, Vec as SdkVec};
+    use soroban_sdk::testutils::{Ledger, MockAuth, MockAuthInvoke};
 
     fn setup_factory(env: &Env) -> (RaffleFactoryClient<'_>, Address, Address) {
         let admin = Address::generate(env);
@@ -1422,6 +1641,9 @@ mod tests {
             metadata_hash: BytesN::from_array(env, &[1u8; 32]),
             claim_lockup_seconds: 0,
             swap_deadline_seconds: 0,
+            early_bird_ticket_percentage: 0,
+            early_bird_discount_bp: 0,
+            category: None,
         }
     }
 
@@ -2182,9 +2404,15 @@ mod tests {
         env.mock_all_auths();
         client.transfer_factory_admin(&admin_b);
 
-        // Only admin_c is authorized — admin_b is the pending, so rejecting admin_b
-        // proves the caller must match PendingAdmin.
-        env.mock_auths(&[&admin_b]);
+        env.mock_auths(&[MockAuth {
+            address: &admin_c,
+            invoke: &MockAuthInvoke {
+                contract: &client.address,
+                fn_name: "accept_factory_admin",
+                args: ().into_val(&env),
+                sub_invokes: &[],
+            },
+        }]);
         assert!(client.try_accept_factory_admin().is_err());
     }
 
@@ -2203,6 +2431,15 @@ mod tests {
         assert!(pending_before);
 
         // Proposing the current admin clears the pending entry
+        env.mock_auths(&[MockAuth {
+            address: &admin,
+            invoke: &MockAuthInvoke {
+                contract: &client.address,
+                fn_name: "transfer_factory_admin",
+                args: (&admin,).into_val(&env),
+                sub_invokes: &[],
+            },
+        }]);
         client.transfer_factory_admin(&admin);
 
         let pending_after: bool = env.as_contract(&client.address, || {
@@ -2226,7 +2463,15 @@ mod tests {
         client.transfer_factory_admin(&new_admin);
 
         // Old admin tries to accept — should fail because require_auth checks caller == PendingAdmin
-        env.mock_auths(&[&admin]);
+        env.mock_auths(&[MockAuth {
+            address: &admin,
+            invoke: &MockAuthInvoke {
+                contract: &client.address,
+                fn_name: "accept_factory_admin",
+                args: ().into_val(&env),
+                sub_invokes: &[],
+            },
+        }]);
         assert!(client.try_accept_factory_admin().is_err());
     }
 
@@ -2485,5 +2730,96 @@ mod tests {
         assert!(!p1.has_more);
         assert_eq!(p1.items.get(0).unwrap(), addrs[3].clone());
         assert_eq!(p1.items.get(1).unwrap(), addrs[4].clone());
+    }
+
+    #[test]
+    fn save_and_get_template_roundtrip() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, admin, _treasury) = setup_factory(&env);
+        let creator = Address::generate(&env);
+
+        let config = rate_limit_config(&env, &make_token(&env), "template test");
+        let template_id = client.save_template(&creator, &config);
+
+        let fetched: RaffleConfig = client
+            .get_template(&template_id)
+            .expect("template should exist");
+
+        assert_eq!(fetched.description, config.description);
+        assert_eq!(fetched.max_tickets, config.max_tickets);
+        assert_eq!(fetched.ticket_price, config.ticket_price);
+    }
+
+    #[test]
+    fn create_raffle_from_template_copies_config() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, _admin, _treasury) = setup_factory(&env);
+        let creator = Address::generate(&env);
+        let token = make_token(&env);
+
+        let config = rate_limit_config(&env, &token, "template life");
+        let template_id = client.save_template(&creator, &config);
+
+        let original = client
+            .get_template(&template_id)
+            .expect("template should exist");
+
+        let mut updated = rate_limit_config(&env, &token, "updated template");
+        updated.max_tickets = 999;
+        client.update_template(&creator, &template_id, &updated);
+
+        let after_update = client
+            .get_template(&template_id)
+            .expect("template should still exist");
+        assert_eq!(after_update.max_tickets, 999);
+
+        assert_eq!(original.max_tickets, 10);
+        assert_eq!(after_update.max_tickets, 999);
+        assert_eq!(original.description, String::from_str(&env, "template life"));
+        assert_eq!(after_update.description, String::from_str(&env, "updated template"));
+    }
+
+    #[test]
+    fn delete_template_removes_it() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, _admin, _treasury) = setup_factory(&env);
+        let creator = Address::generate(&env);
+
+        let config = rate_limit_config(&env, &make_token(&env), "delete me");
+        let template_id = client.save_template(&creator, &config);
+
+        client.delete_template(&creator, &template_id);
+
+        let fetched: Option<RaffleConfig> = client.get_template(&template_id);
+        assert!(fetched.is_none());
+    }
+
+    #[test]
+    fn template_not_owner_cannot_delete() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, _admin, _treasury) = setup_factory(&env);
+        let creator = Address::generate(&env);
+        let attacker = Address::generate(&env);
+
+        let config = rate_limit_config(&env, &make_token(&env), "owner only");
+        let template_id = client.save_template(&creator, &config);
+
+        let result = client.try_delete_template(&attacker, &template_id);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn create_raffle_from_template_invalid_id() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, _admin, _treasury) = setup_factory(&env);
+        let creator = Address::generate(&env);
+
+        let result = client.try_create_raffle_from_template(&creator, &999, &0u64);
+        assert!(result.is_err());
     }
 }

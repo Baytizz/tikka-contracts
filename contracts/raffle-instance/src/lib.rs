@@ -22,16 +22,17 @@ use raffle_shared::{
     CancelReason, FailureReason, FairnessData, RaffleConfig, RaffleStatus, RandomnessSource,
     RandomnessType, Ticket,
 };
+use raffle_shared::events::{ContractPaused, ContractUnpaused};
 
 use self::randomness::{
     build_vrf_proof_message, OracleSeedWinnerSelection, WinnerSelectionStrategy,
 };
 
 use crate::events::{
-    ContractPaused, ContractUnpaused, DrawTriggered, EmergencyWithdrawn, FeesWithdrawn,
+    DrawTriggered, EmergencyWithdrawn, FeesWithdrawn,
     OracleAddressUpdated, PrizeClaimed, PrizeDeposited, PrizeRefunded, ProtocolFeeUpdated,
     RaffleCancelled, RaffleCreated, RaffleFailed, RaffleFinalized, RaffleStatusChanged,
-    RandomnessFallbackTriggered, RandomnessReceived, RandomnessRequested, SwapDeadlineUpdated,
+    RandomnessFallbackTriggered, RandomnessRequested, SwapDeadlineUpdated,
     TicketNftMinted, TicketPurchased, TicketRefunded, TicketSalesPaused, TicketSalesResumed,
     TokensRescued, WinnerDrawn,
 };
