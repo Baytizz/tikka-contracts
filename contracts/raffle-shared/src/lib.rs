@@ -219,6 +219,7 @@ pub struct PageResultTickets {
     pub has_more: bool,
 }
 
+
 /// Pricing quote for a prospective ticket purchase.
 ///
 /// Returned by [`preview_buy`] so off-chain clients can compute the exact
