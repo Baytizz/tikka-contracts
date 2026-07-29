@@ -61,10 +61,13 @@ pub enum FailureReason {
 pub enum RandomnessSource {
     /// Internal pseudo-randomness generated on-chain.
     Internal = 0,
-    /// External oracle-provided randomness.
+    /// External oracle-provided randomness (single oracle).
     External = 1,
     /// Commit-reveal based randomness source.
     CommitReveal = 2,
+    /// K-of-N quorum of oracles: aggregate seeds from at least `k` of `n`
+    /// registered oracles before finalizing.  Eliminates single-oracle trust.
+    Quorum { k: u32, oracles: Vec<soroban_sdk::Address> },
 }
 
 /// Type/classification of randomness mechanism requested or received.

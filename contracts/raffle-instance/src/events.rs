@@ -297,3 +297,18 @@ pub struct TicketNftMinted {
     pub nft_contract: Address,
     pub timestamp: u64,
 }
+
+/// Emitted when a Quorum-mode oracle delivers its seed.
+/// Not emitted for single-oracle External mode (which uses `RandomnessReceived`).
+#[derive(Clone)]
+#[contractevent]
+pub struct OracleSeedDelivered {
+    pub oracle: Address,
+    pub seed: u64,
+    pub request_id: u64,
+    /// Number of seeds delivered so far (including this one).
+    pub current_count: u32,
+    /// Quorum threshold k.
+    pub threshold: u32,
+    pub timestamp: u64,
+}
