@@ -86,7 +86,7 @@ pub enum RandomnessType {
 ///
 /// Values are validated by contract initialization before the raffle becomes
 /// active and represent the complete raffle policy surface.
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 #[contracttype]
 pub struct RaffleConfig {
     /// Human-readable raffle description.
@@ -157,7 +157,7 @@ impl RaffleConfig {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 #[contracttype]
 pub struct Ticket {
     /// Monotonic ticket identifier scoped to a raffle.
@@ -171,7 +171,7 @@ pub struct Ticket {
 }
 
 /// Audit data proving how a draw outcome was derived.
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 #[contracttype]
 pub struct FairnessData {
     /// Seed value used to derive final winner indices.
@@ -189,7 +189,7 @@ pub struct FairnessData {
 }
 
 /// Generic pagination request for list queries.
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 #[contracttype]
 pub struct PaginationParams {
     /// Maximum number of items requested by caller.
@@ -199,7 +199,7 @@ pub struct PaginationParams {
 }
 
 /// Paginated raffle address query result.
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 #[contracttype]
 pub struct PageResultRaffles {
     /// Returned raffle addresses for the current page.
@@ -211,7 +211,7 @@ pub struct PageResultRaffles {
 }
 
 /// Paginated ticket query result.
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 #[contracttype]
 pub struct PageResultTickets {
     /// Returned tickets for the current page.
@@ -223,7 +223,7 @@ pub struct PageResultTickets {
 }
 
 /// Administrative operations that can be timelocked or proposed.
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 #[contracttype]
 pub enum AdminOp {
     /// Update protocol configuration entry `u32` with a new address value.
@@ -251,7 +251,7 @@ pub fn effective_limit(requested: u32) -> u32 {
 }
 
 /// Oracle randomness request payload sent to an oracle contract.
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 #[contracttype]
 pub struct RandomnessRequest {
     /// Target raffle contract identifier.
