@@ -17,10 +17,11 @@ mod events;
 mod helpers;
 mod randomness;
 mod tickets;
+mod views;
 
 use raffle_shared::{
-    CancelReason, FailureReason, FairnessData, RaffleConfig, RaffleStatus, RandomnessSource,
-    RandomnessType, Ticket,
+    BuyQuote, CancelReason, FailureReason, FairnessData, RaffleConfig, RaffleStatus,
+    RandomnessSource, RandomnessType, Ticket,
 };
 
 use self::randomness::{
@@ -682,27 +683,10 @@ impl Contract {
         }
 
         let timestamp = env.ledger().timestamp();
-        let effective_price = if raffle.early_bird_ticket_percentage > 0 {
-            let early_bird_cap = raffle.max_tickets * raffle.early_bird_ticket_percentage / 100;
-            if raffle.tickets_sold < early_bird_cap {
-                raffle.ticket_price
-                    .checked_mul((10000 - raffle.early_bird_discount_bp) as i128)
-                    .ok_or(Error::ArithmeticOverflow)?
-                    / 10000
-            } else {
-                raffle.ticket_price
-            }
-        } else {
-            raffle.ticket_price
-        };
-        let total_price = effective_price
-            .checked_mul(quantity as i128)
-            .ok_or(Error::InvalidParameters)?;
-
-        let protocol_fee = total_price
-            .checked_mul(raffle.protocol_fee_bp as i128)
-            .ok_or(Error::ArithmeticOverflow)?
-            / 10000;
+        let quote = crate::helpers::calculate_buy_quote(&raffle, quantity)?;
+        let effective_price = quote.effective_ticket_price;
+        let total_price = quote.net_to_pay;
+        let protocol_fee = quote.fee;
         let _net_amount = total_price - protocol_fee;
 
         // SECURITY: Re-read persisted state and verify no concurrent changes
@@ -1775,6 +1759,18 @@ impl Contract {
         read_raffle(&env)
             .map(|raffle| raffle.ticket_sales_paused)
             .unwrap_or(false)
+    }
+
+    /// Quote the exact cost of buying `quantity` tickets including early-bird
+    /// discounts and protocol fees.
+    ///
+    /// Read-only — does not mutate state, does not require auth, does not
+    /// check raffle status, pausing, or availability.  Returns a
+    /// [`BuyQuote`] with the full pricing breakdown.  Uses the same
+    /// internal helper as `buy_tickets` so quote and execution cannot
+    /// diverge.
+    pub fn preview_buy(env: Env, quantity: u32) -> Result<BuyQuote, Error> {
+        self::views::preview_buy(env, quantity)
     }
 
     /// Sweep tokens that were accidentally sent to this contract.

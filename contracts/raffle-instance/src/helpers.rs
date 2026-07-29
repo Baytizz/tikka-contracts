@@ -24,6 +24,8 @@
 
 use soroban_sdk::{token, Address, BytesN, Env, Vec};
 
+use raffle_shared::BuyQuote;
+
 use crate::events::{RaffleFinalized, RaffleStatusChanged, WinnerDrawn};
 use crate::randomness::{OracleSeedWinnerSelection, WinnerSelectionStrategy};
 use crate::{
@@ -290,6 +292,89 @@ pub(crate) fn build_internal_seed_u64(env: &Env) -> u64 {
     let mut bytes = [0u8; 8];
     bytes.copy_from_slice(&arr[..8]);
     u64::from_be_bytes(bytes)
+}
+
+/// Compute the exact pricing breakdown for a ticket purchase of `quantity`.
+///
+/// This is the **single source of truth** for ticket pricing.  It is used by
+/// both [`preview_buy`](crate::views::preview_buy) (read-only quote) and
+/// [`buy_tickets`](crate::tickets::buy_tickets) (actual execution) so the
+/// preview and the real charge can never diverge.
+///
+/// ## Pricing model
+///
+/// 1. **Early-bird discount** — When `early_bird_ticket_percentage > 0` and
+///    `tickets_sold < max_tickets × percentage / 100`, the per-ticket price is
+///    reduced by `early_bird_discount_bp` basis points.  All tickets in the
+///    purchase receive the same per-ticket price (binary in/out of the window).
+/// 2. **Gross** — `ticket_price × quantity` (no discount applied).
+/// 3. **Discount** — `gross − (effective_ticket_price × quantity)`.
+/// 4. **Subtotal** (after discount) — `gross − discount` (= `net_to_pay`).
+/// 5. **Protocol fee** — `subtotal × protocol_fee_bp / 10 000`.  The fee is
+///    retained from `net_to_pay` by the contract and swept to the treasury.
+///
+/// # Parameters
+///
+/// - `raffle` — Raffle state (used for `ticket_price`, early-bird config,
+///   `tickets_sold`, `protocol_fee_bp`).
+/// - `quantity` — Number of tickets in the prospective purchase.
+///
+/// # Returns
+///
+/// [`BuyQuote`] with `{ gross, discount, fee, net_to_pay, effective_ticket_price }`.
+///
+/// # Errors
+///
+/// - [`Error::InvalidQuantity`] — `quantity == 0`.
+/// - [`Error::InvalidParameters`] — overflow computing `gross` (`ticket_price × quantity`).
+/// - [`Error::ArithmeticOverflow`] — overflow in discount or fee multiplication.
+pub(crate) fn calculate_buy_quote(raffle: &Raffle, quantity: u32) -> Result<BuyQuote, Error> {
+    if quantity == 0 {
+        return Err(Error::InvalidQuantity);
+    }
+
+    let gross = raffle
+        .ticket_price
+        .checked_mul(quantity as i128)
+        .ok_or(Error::InvalidParameters)?;
+
+    let effective_ticket_price = if raffle.early_bird_ticket_percentage > 0 {
+        let early_bird_cap = raffle.max_tickets * raffle.early_bird_ticket_percentage / 100;
+        if raffle.tickets_sold < early_bird_cap {
+            raffle
+                .ticket_price
+                .checked_mul((10000 - raffle.early_bird_discount_bp) as i128)
+                .ok_or(Error::ArithmeticOverflow)?
+                / 10000
+        } else {
+            raffle.ticket_price
+        }
+    } else {
+        raffle.ticket_price
+    };
+
+    let discounted_total = effective_ticket_price
+        .checked_mul(quantity as i128)
+        .ok_or(Error::InvalidParameters)?;
+
+    let discount = gross
+        .checked_sub(discounted_total)
+        .ok_or(Error::ArithmeticOverflow)?;
+
+    let fee = discounted_total
+        .checked_mul(raffle.protocol_fee_bp as i128)
+        .ok_or(Error::ArithmeticOverflow)?
+        / 10000;
+
+    let net_to_pay = discounted_total;
+
+    Ok(BuyQuote {
+        gross,
+        discount,
+        fee,
+        net_to_pay,
+        effective_ticket_price,
+    })
 }
 
 /// Calculate the gross prize amount for winner at position `tier_index`.

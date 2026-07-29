@@ -219,6 +219,34 @@ pub struct PageResultTickets {
     pub has_more: bool,
 }
 
+/// Pricing quote for a prospective ticket purchase.
+///
+/// Returned by [`preview_buy`] so off-chain clients can compute the exact
+/// cost of a buy before submitting it, including early-bird discounts and
+/// protocol fees.  The helper that produces this struct is the same one
+/// used at execution time in [`buy_tickets`], guaranteeing the quote and
+/// the actual charge cannot diverge.
+#[derive(Clone)]
+#[contracttype]
+pub struct BuyQuote {
+    /// Gross cost before any discount: `ticket_price × quantity`.
+    pub gross: i128,
+    /// Early-bird discount subtracted from `gross`; zero when no discount
+    /// applies (either no discount configured or the early-bird quota was
+    /// already exhausted).
+    pub discount: i128,
+    /// Protocol fee computed on the discounted subtotal:
+    /// `(gross − discount) × protocol_fee_bp / 10 000`.
+    pub fee: i128,
+    /// Net amount the buyer must transfer: `gross − discount`.
+    /// The protocol `fee` is retained from this amount by the contract.
+    pub net_to_pay: i128,
+    /// Per-ticket effective price after early-bird discount (equal to
+    /// `(gross − discount) / quantity`).  Matches the `effective_ticket_price`
+    /// field in the [`TicketPurchased`] event.
+    pub effective_ticket_price: i128,
+}
+
 /// Administrative operations that can be timelocked or proposed.
 #[derive(Clone)]
 #[contracttype]
