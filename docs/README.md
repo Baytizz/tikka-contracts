@@ -4,6 +4,11 @@ This directory contains comprehensive documentation for the Tikka decentralized 
 
 ## Document Overview
 
+### [GLOSSARY.md](GLOSSARY.md)
+
+**Audience:** All  
+Defines key terms used throughout the Tikka system (e.g., `RaffleStatus`, `Ticket`, `Randomness Source`) with one-paragraph explanations and direct links to their code definitions. Start here when you encounter unfamiliar terminology.
+
 ### [ARCHITECTURE.md](ARCHITECTURE.md)
 
 **Audience:** Contributors, Integrators, Auditors  
@@ -56,12 +61,13 @@ Migration guide for PR #426, which changed the factory contract storage from a `
 
 ## Recommended Reading Order for New Contributors
 
-1. **Start here:** [ARCHITECTURE.md](ARCHITECTURE.md) — Understand the big picture and component relationships
-1. **Development setup:** [FAQ.md](FAQ.md) — Review common setup issues before you encounter them
-1. **Deployment:** [DEPLOYMENT.md](DEPLOYMENT.md) — Learn how to build and deploy contracts
-1. **Core protocol:** [RANDOMNESS.md](RANDOMNESS.md) — Understand winner selection security
-1. **Storage:** [STORAGE.md](STORAGE.md) — Learn about storage layout and TTL management
-1. **Integration:** [EVENTS.md](EVENTS.md) and [ERRORS.md](ERRORS.md) — Reference for building integrations
+1. **Start here:** [GLOSSARY.md](GLOSSARY.md) — Understand key terminology and definitions
+2. **Big picture:** [ARCHITECTURE.md](ARCHITECTURE.md) — Understand the big picture and component relationships
+3. **Development setup:** [FAQ.md](FAQ.md) — Review common setup issues before you encounter them
+4. **Deployment:** [DEPLOYMENT.md](DEPLOYMENT.md) — Learn how to build and deploy contracts
+5. **Core protocol:** [RANDOMNESS.md](RANDOMNESS.md) — Understand winner selection security
+6. **Storage:** [STORAGE.md](STORAGE.md) — Learn about storage layout and TTL management
+7. **Integration:** [EVENTS.md](EVENTS.md) and [ERRORS.md](ERRORS.md) — Reference for building integrations
 
 For auditors, add [COMMIT_REVEAL.md](COMMIT_REVEAL.md) and [FEE_MODEL.md](FEE_MODEL.md) to understand protocol specifics and economic design.
 
