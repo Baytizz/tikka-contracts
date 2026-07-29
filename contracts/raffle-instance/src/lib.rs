@@ -18,9 +18,11 @@ mod helpers;
 mod randomness;
 mod tickets;
 
+mod views;
+
 use raffle_shared::{
-    CancelReason, FailureReason, FairnessData, RaffleConfig, RaffleStatus, RandomnessSource,
-    RandomnessType, Ticket,
+    CancelReason, FailureReason, FairnessData, RaffleConfig, RaffleStats, RaffleStatus,
+    RandomnessSource, RandomnessType, Ticket,
 };
 
 use self::randomness::{
@@ -1216,6 +1218,13 @@ impl Contract {
             .instance()
             .get(&DataKey::AccumulatedFees)
             .unwrap_or(0)
+    }
+
+    /// Aggregate dashboard view returning key raffle metrics in a single call.
+    ///
+    /// See [`views::get_stats`] for full documentation.
+    pub fn get_stats(env: Env) -> Result<RaffleStats, Error> {
+        self::views::get_stats(env)
     }
 
     pub fn cancel_raffle(env: Env, reason: CancelReason) -> Result<(), Error> {

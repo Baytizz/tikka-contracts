@@ -219,6 +219,29 @@ pub struct PageResultTickets {
     pub has_more: bool,
 }
 
+/// Aggregate view of raffle state for dashboard display.
+///
+/// Returned by [`get_stats`] to give clients a single-call overview of the
+/// raffle's key metrics without requiring multiple view invocations.
+#[derive(Clone)]
+#[contracttype]
+pub struct RaffleStats {
+    /// Total tickets sold so far.
+    pub tickets_sold: u32,
+    /// Number of unique buyer addresses that have purchased tickets.
+    pub unique_buyers: u32,
+    /// Gross revenue from ticket sales (tickets_sold * ticket_price).
+    pub gross_revenue: i128,
+    /// Protocol fees accrued but not yet withdrawn.
+    pub fees_accrued: i128,
+    /// Whether the prize has been deposited into the contract.
+    pub prize_funded: bool,
+    /// Current raffle lifecycle status.
+    pub status: RaffleStatus,
+    /// Seconds remaining until ticket sales close (0 if past deadline or no_deadline).
+    pub time_remaining: u64,
+}
+
 /// Administrative operations that can be timelocked or proposed.
 #[derive(Clone)]
 #[contracttype]

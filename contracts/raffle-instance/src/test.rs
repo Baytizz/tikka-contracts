@@ -2073,4 +2073,176 @@ fn buy_tickets_stays_within_compute_limits_near_max() {
         "buy_tickets memory {mem} exceeded Soroban limit {SOROBAN_MEMORY_LIMIT_BYTES}"
     );
 }
+
+// ===========================================================================
+// get_stats view tests (#609)
+// ===========================================================================
+
+#[test]
+fn get_stats_returns_correct_metrics_for_empty_raffle() {
+    let env = Env::default();
+    env.mock_all_auths();
+    env.ledger().set_timestamp(1_000);
+
+    let contract_id = env.register(Contract, ());
+    let client = ContractClient::new(&env, &contract_id);
+
+    let factory = Address::generate(&env);
+    let admin = Address::generate(&env);
+    let creator = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let payment_token = env
+        .register_stellar_asset_contract_v2(token_admin.clone())
+        .address();
+
+    let config = RaffleConfig {
+        description: String::from_str(&env, "Empty stats raffle"),
+        end_time: 5_000,
+        no_deadline: false,
+        max_tickets: 100,
+        max_tickets_per_tx: 10,
+        min_tickets: 1,
+        allow_multiple: true,
+        ticket_price: MIN_TICKET_PRICE,
+        payment_token: payment_token.clone(),
+        prize_amount: MIN_TICKET_PRICE * 10,
+        prizes: soroban_sdk::vec![&env, 10000],
+        randomness_source: RandomnessSource::Internal,
+        oracle_address: None,
+        protocol_fee_bp: 500,
+        treasury_address: None,
+        swap_router: None,
+        tikka_token: None,
+        metadata_hash: BytesN::from_array(&env, &[60; 32]),
+        claim_lockup_seconds: 0,
+        swap_deadline_seconds: 0,
+        early_bird_ticket_percentage: 0,
+        early_bird_discount_bp: 0,
+        category: None,
+    };
+
+    client.init(&factory, &admin, &creator, &config);
+
+    // Raffle starts in PendingPrize — no prize deposited, no tickets sold.
+    let stats = client.get_stats().unwrap();
+    assert_eq!(stats.tickets_sold, 0);
+    assert_eq!(stats.unique_buyers, 0);
+    assert_eq!(stats.gross_revenue, 0);
+    assert_eq!(stats.fees_accrued, 0);
+    assert!(!stats.prize_funded);
+    assert_eq!(stats.status, RaffleStatus::PendingPrize);
+    assert!(stats.time_remaining > 0);
+}
+
+#[test]
+fn get_stats_returns_correct_metrics_post_finalization() {
+    let env = Env::default();
+    env.mock_all_auths();
+    env.ledger().set_timestamp(1_000);
+
+    let contract_id = env.register(Contract, ());
+    let client = ContractClient::new(&env, &contract_id);
+
+    let factory = Address::generate(&env);
+    let admin = Address::generate(&env);
+    let creator = Address::generate(&env);
+    let buyer_a = Address::generate(&env);
+    let buyer_b = Address::generate(&env);
+
+    let token_admin = Address::generate(&env);
+    let payment_token = env
+        .register_stellar_asset_contract_v2(token_admin.clone())
+        .address();
+    let token_client = StellarAssetClient::new(&env, &payment_token);
+    token_client.mint(&creator, &1_000_000);
+    token_client.mint(&buyer_a, &1_000_000);
+    token_client.mint(&buyer_b, &1_000_000);
+
+    let protocol_fee_bp = 500u32;
+    let config = RaffleConfig {
+        description: String::from_str(&env, "Finalized stats raffle"),
+        end_time: 0,
+        no_deadline: true,
+        max_tickets: 10,
+        max_tickets_per_tx: 10,
+        min_tickets: 1,
+        allow_multiple: true,
+        ticket_price: MIN_TICKET_PRICE,
+        payment_token: payment_token.clone(),
+        prize_amount: MIN_TICKET_PRICE * 10,
+        prizes: soroban_sdk::vec![&env, 10000],
+        randomness_source: RandomnessSource::Internal,
+        oracle_address: None,
+        protocol_fee_bp,
+        treasury_address: None,
+        swap_router: None,
+        tikka_token: None,
+        metadata_hash: BytesN::from_array(&env, &[61; 32]),
+        claim_lockup_seconds: 0,
+        swap_deadline_seconds: 0,
+        early_bird_ticket_percentage: 0,
+        early_bird_discount_bp: 0,
+        category: None,
+    };
+
+    client.init(&factory, &admin, &creator, &config);
+
+    // Remove factory so buy_tickets skips cross-contract calls
+    env.as_contract(&contract_id, || {
+        env.storage().instance().remove(&DataKey::Factory);
+    });
+
+    client.deposit_prize();
+    assert!(client.get_stats().unwrap().prize_funded);
+
+    let per_ticket_fee = MIN_TICKET_PRICE * protocol_fee_bp as i128 / 10_000;
+    client.buy_tickets(&buyer_a, &2);
+    client.buy_tickets(&buyer_b, &3);
+
+    let stats_before_finalize = client.get_stats().unwrap();
+    assert_eq!(stats_before_finalize.tickets_sold, 5);
+    assert_eq!(stats_before_finalize.unique_buyers, 2);
+    assert_eq!(
+        stats_before_finalize.gross_revenue,
+        MIN_TICKET_PRICE * 5
+    );
+    assert_eq!(
+        stats_before_finalize.fees_accrued,
+        per_ticket_fee * 5
+    );
+    assert!(stats_before_finalize.prize_funded);
+    assert_eq!(stats_before_finalize.status, RaffleStatus::Active);
+
+    client.finalize_raffle();
+
+    let stats_post_finalize = client.get_stats().unwrap();
+    assert_eq!(stats_post_finalize.tickets_sold, 5);
+    assert_eq!(stats_post_finalize.unique_buyers, 2);
+    assert_eq!(
+        stats_post_finalize.gross_revenue,
+        MIN_TICKET_PRICE * 5
+    );
+    assert_eq!(
+        stats_post_finalize.fees_accrued,
+        per_ticket_fee * 5
+    );
+    assert!(stats_post_finalize.prize_funded);
+    assert_eq!(stats_post_finalize.status, RaffleStatus::Finalized);
+    // no_deadline → time_remaining is 0
+    assert_eq!(stats_post_finalize.time_remaining, 0);
+
+    // Verify consistency with individual views
+    let raffle = client.get_raffle();
+    assert_eq!(stats_post_finalize.tickets_sold, raffle.tickets_sold);
+    assert_eq!(stats_post_finalize.prize_funded, raffle.prize_deposited);
+    assert_eq!(stats_post_finalize.status, raffle.status);
+    assert_eq!(
+        stats_post_finalize.fees_accrued,
+        client.get_accumulated_fees()
+    );
+    assert_eq!(
+        stats_post_finalize.gross_revenue,
+        raffle.tickets_sold as i128 * raffle.ticket_price
+    );
+}
 }
