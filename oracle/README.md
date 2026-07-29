@@ -64,10 +64,23 @@ Register a new oracle public key on-chain via the raffle admin/oracle update flo
 - **`TxSubmitterService` (`src/tx/tx-submitter.service.ts`)**: submits `provide_randomness` transactions to Soroban RPC.
 - **`EventListenerService` (`src/listener/event-listener.service.ts`)**: polls `RandomnessRequested` contract events and enqueues work for this oracle.
 
+## Node Version
+
+This service requires **Node 20**. An `.nvmrc` is included so you can switch automatically:
+
+```sh
+nvm use        # reads .nvmrc and activates Node 20
+node --version # should print v20.x.x
+```
+
+If you don't have Node 20 installed yet: `nvm install` (also reads `.nvmrc`).
+
 ## Testing
 
 ```sh
 cd oracle
+nvm use
+npm ci
 npm test
 ```
 
