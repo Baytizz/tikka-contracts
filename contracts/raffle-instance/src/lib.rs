@@ -12,6 +12,7 @@ use soroban_sdk::{
 };
 
 mod admin;
+mod attestation;
 mod draw;
 mod events;
 mod helpers;
@@ -124,6 +125,8 @@ pub enum DataKey {
     OwnerTickets(Address),
     /// Admin-cancel timelock unlock timestamp (unix seconds).
     PendingAdminCancel,
+    /// SHA-256 hash of off-chain metadata stored during init.
+    MetadataHash,
 }
 
 #[contracttype]
@@ -551,6 +554,10 @@ impl Contract {
         write_raffle(&env, &raffle);
         env.storage().instance().set(&DataKey::Factory, &factory);
         env.storage().instance().set(&DataKey::Admin, &admin);
+        // Store metadata hash for attestation verification
+        env.storage()
+            .persistent()
+            .set(&DataKey::MetadataHash, &config.metadata_hash);
 
         RaffleCreated {
             raffle_id: env.current_contract_address(),
@@ -1585,6 +1592,23 @@ impl Contract {
             draw_timestamp: metadata.draw_timestamp,
             draw_sequence: metadata.draw_sequence,
         })
+    }
+
+    /// Return a complete attestation package for third-party draw verification.
+    ///
+    /// Combines fairness data, metadata hash, winner addresses, winning ticket IDs,
+    /// randomness source, and a hash of the effective raffle configuration into a
+    /// single response. A verifier needs only this one call to obtain everything
+    /// required to independently re-derive the winners.
+    ///
+    /// Only available in `Finalized` or `Claimed` states; returns `InvalidStatus`
+    /// otherwise.
+    ///
+    /// See [`docs/RANDOMNESS.md`] for the verification procedure.
+    pub fn get_draw_attestation(
+        env: Env,
+    ) -> Result<attestation::DrawAttestation, Error> {
+        attestation::get_draw_attestation(&env)
     }
 
     /// Return all ticket IDs owned by `owner`.

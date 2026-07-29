@@ -9,6 +9,7 @@
 //! |---|---|
 //! | [`get_raffle`] | Full [`Raffle`](crate::Raffle) struct |
 //! | [`get_fairness_data`] | Post-draw audit data ([`FairnessData`]) |
+//! | [`get_draw_attestation`] | Complete attestation for third-party verification |
 //! | [`is_paused`] | Whether the instance-level pause flag is set |
 //! | [`is_ticket_sales_paused`] | Whether ticket sales are paused within an active raffle |
 //! | [`get_accumulated_fees`] | Protocol fees collected but not yet withdrawn |
