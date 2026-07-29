@@ -140,6 +140,12 @@ pub enum DataKey {
     /// carries a category, enabling `get_raffles_by_category` queries without an
     /// off-chain indexer.
     CategoryRaffles(soroban_sdk::String),
+    /// Approved-oracle allowlist entry: Address → bool.
+    /// When `true` the oracle is approved for use in External-mode raffles.
+    ApprovedOracle(Address),
+    /// When `true`, `create_raffle` skips the oracle allowlist check.
+    /// Intended for test deployments; must be set at init time or via admin.
+    PermissionlessOracles,
 }
 
 /// A read-only snapshot of key factory metrics returned by
@@ -205,6 +211,9 @@ pub enum ContractError {
     /// `create_raffle` could not read the treasury address (factory not fully
     /// initialized). Code 19.
     TreasuryNotSet = 19,
+    /// `create_raffle` was called with an oracle address not in the approved
+    /// allowlist, while the factory is in registry-enforcing mode. Code 20.
+    OracleNotApproved = 20,
 }
 
 #[contract]
@@ -495,6 +504,28 @@ impl RaffleFactory {
                     .persistent()
                     .set(&DataKey::InstanceWasmHash, &new_hash);
             }
+            AdminOp::ApproveOracle(oracle) => {
+                env.storage()
+                    .persistent()
+                    .set(&DataKey::ApprovedOracle(oracle.clone()), &true);
+                events::OracleApproved {
+                    oracle,
+                    approved_by: admin.clone(),
+                    timestamp: env.ledger().timestamp(),
+                }
+                .publish(&env);
+            }
+            AdminOp::RemoveOracle(oracle) => {
+                env.storage()
+                    .persistent()
+                    .remove(&DataKey::ApprovedOracle(oracle.clone()));
+                events::OracleRemoved {
+                    oracle,
+                    removed_by: admin.clone(),
+                    timestamp: env.ledger().timestamp(),
+                }
+                .publish(&env);
+            }
         }
 
         env.storage()
@@ -694,6 +725,31 @@ impl RaffleFactory {
             .get(&DataKey::Admin)
             .ok_or(ContractError::NotAuthorized)?;
         let factory_address = env.current_contract_address();
+
+        // --- Oracle allowlist enforcement ---
+        // If the factory is NOT in permissionless mode, External-mode raffles
+        // must reference an oracle that the admin has explicitly approved.
+        if final_config.randomness_source == raffle_shared::RandomnessSource::External {
+            let permissionless: bool = env
+                .storage()
+                .persistent()
+                .get(&DataKey::PermissionlessOracles)
+                .unwrap_or(false);
+            if !permissionless {
+                let oracle_addr = final_config
+                    .oracle_address
+                    .as_ref()
+                    .ok_or(ContractError::InvalidParameters)?;
+                let approved: bool = env
+                    .storage()
+                    .persistent()
+                    .get(&DataKey::ApprovedOracle(oracle_addr.clone()))
+                    .unwrap_or(false);
+                if !approved {
+                    return Err(ContractError::OracleNotApproved);
+                }
+            }
+        }
 
         #[cfg(not(test))]
         let raffle_address = {
@@ -1377,6 +1433,23 @@ impl RaffleFactory {
         .publish(&env);
 
         Ok(())
+    }
+
+    /// Return `true` if `oracle` is in the approved-oracle allowlist.
+    pub fn is_oracle_approved(env: Env, oracle: Address) -> bool {
+        env.storage()
+            .persistent()
+            .get(&DataKey::ApprovedOracle(oracle))
+            .unwrap_or(false)
+    }
+
+    /// Return `true` if the factory is in permissionless-oracle mode
+    /// (oracle allowlist not enforced — intended for test deployments).
+    pub fn is_permissionless_oracles(env: Env) -> bool {
+        env.storage()
+            .persistent()
+            .get(&DataKey::PermissionlessOracles)
+            .unwrap_or(false)
     }
 }
 

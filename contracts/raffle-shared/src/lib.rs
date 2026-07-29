@@ -227,6 +227,10 @@ pub enum AdminOp {
     SetConfig(u32, Address),
     /// Rotate target contract WASM hash for upgrades.
     UpdateWasmHash(BytesN<32>),
+    /// Add an oracle address to the factory's approved-oracle allowlist.
+    ApproveOracle(Address),
+    /// Remove an oracle address from the factory's approved-oracle allowlist.
+    RemoveOracle(Address),
 }
 
 /// Default page size when callers request zero items.

@@ -150,3 +150,19 @@ pub struct FactoryUpgraded {
     pub new_wasm_hash: BytesN<32>,
     pub timestamp: u64,
 }
+
+#[derive(Clone)]
+#[contractevent]
+pub struct OracleApproved {
+    pub oracle: Address,
+    pub approved_by: Address,
+    pub timestamp: u64,
+}
+
+#[derive(Clone)]
+#[contractevent]
+pub struct OracleRemoved {
+    pub oracle: Address,
+    pub removed_by: Address,
+    pub timestamp: u64,
+}

@@ -47,6 +47,7 @@ use crate::{
     request_randomness, require_not_paused, transition_to_drawing,
     CommitRevealEntry, DataKey, Error, RaffleStatus,
 };
+use crate::helpers::bump_raffle_ttl;
 
 /// Purchase one or more raffle tickets for `buyer`.
 ///
@@ -242,6 +243,10 @@ pub(crate) fn buy_tickets(env: Env, buyer: Address, quantity: u32) -> Result<u32
         timestamp,
     }
     .publish(&env);
+
+    // Opportunistically bump TTLs so a long-running raffle doesn't get archived.
+    bump_raffle_ttl(&env, raffle.tickets_sold);
+
     Ok(raffle.tickets_sold)
 }
 

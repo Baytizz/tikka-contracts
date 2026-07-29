@@ -30,6 +30,67 @@ use crate::{
     DataKey, Error, FairnessMetadata, Raffle, RaffleStatus, RandomnessType, Ticket,
 };
 
+use raffle_shared::constants::{
+    INSTANCE_TTL_BUMP_LEDGERS, INSTANCE_TTL_THRESHOLD_LEDGERS,
+    PERSISTENT_TTL_BUMP_LEDGERS, PERSISTENT_TTL_THRESHOLD_LEDGERS,
+};
+
+/// Opportunistically extend TTLs for the instance entry and the key set of
+/// persistent entries that cover tickets sold so far.
+///
+/// Called from hot paths (`buy_tickets`, `do_finalize_with_seed`) and the
+/// permissionless `extend_ttl` entrypoint so anyone can keep a raffle alive.
+///
+/// - Instance storage (Raffle blob, oracle keys, locks): bumped to
+///   `INSTANCE_TTL_BUMP_LEDGERS` when below `INSTANCE_TTL_THRESHOLD_LEDGERS`.
+/// - Critical persistent keys (TicketBuyers, RandomnessSeed): same policy.
+/// - Individual `Ticket` / `TicketCount` / `OwnerTickets` slots: iterated over
+///   `tickets_sold` tickets and bumped only when the threshold is breached,
+///   so gas cost scales linearly but avoids writes when already fresh.
+pub(crate) fn bump_raffle_ttl(env: &Env, tickets_sold: u32) {
+    // Instance entry covers all instance-storage keys atomically.
+    env.storage().instance().extend_ttl(
+        INSTANCE_TTL_THRESHOLD_LEDGERS,
+        INSTANCE_TTL_BUMP_LEDGERS,
+    );
+
+    // Persistent entries that must outlive the instance TTL.
+    macro_rules! bump_persistent {
+        ($key:expr) => {
+            if env.storage().persistent().has(&$key) {
+                env.storage().persistent().extend_ttl(
+                    &$key,
+                    PERSISTENT_TTL_THRESHOLD_LEDGERS,
+                    PERSISTENT_TTL_BUMP_LEDGERS,
+                );
+            }
+        };
+    }
+
+    bump_persistent!(DataKey::TicketBuyers);
+    bump_persistent!(DataKey::RandomnessSeed);
+
+    // Per-buyer address-keyed persistent slots.
+    // Read TicketBuyers once (if present) and bump the per-address indexes.
+    if let Some(buyers) = env
+        .storage()
+        .persistent()
+        .get::<_, soroban_sdk::Vec<Address>>(&DataKey::TicketBuyers)
+    {
+        for buyer in buyers.iter() {
+            bump_persistent!(DataKey::TicketCount(buyer.clone()));
+            bump_persistent!(DataKey::OwnerTickets(buyer.clone()));
+        }
+    }
+
+    // Per-ticket persistent slots — only iterate up to tickets_sold.
+    for id in 1..=tickets_sold {
+        bump_persistent!(DataKey::Ticket(id));
+        // CommitEntry may or may not exist; the macro skips absent keys.
+        bump_persistent!(DataKey::CommitEntry(id));
+    }
+}
+
 /// Read the [`Raffle`] struct from instance storage.
 ///
 /// # Errors
@@ -424,5 +485,6 @@ pub(crate) fn do_finalize_with_seed(
         finalized_at: env.ledger().timestamp(),
     }.publish(env);
 
+    bump_raffle_ttl(env, total_tickets);
     Ok(())
 }
