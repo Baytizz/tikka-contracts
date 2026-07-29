@@ -173,3 +173,11 @@ Also consider:
 - [STORAGE.md](STORAGE.md) — randomness-related keys and tiers  
 - [ARCHITECTURE.md](ARCHITECTURE.md) — factory → instance → oracle flow  
 - [EVENTS.md](EVENTS.md) — `RandomnessRequested`, `RandomnessReceived`, fallback events  
+
+## Off-Chain Draw Verification
+
+You can independently verify any finalized raffle draw off-chain using:
+
+```bash
+npx ts-node scripts/verify_draw.ts <RAFFLE_CONTRACT_ID> <RPC_URL>
+```
