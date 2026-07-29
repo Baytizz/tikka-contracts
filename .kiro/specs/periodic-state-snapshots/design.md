@@ -173,7 +173,7 @@ Both functions require no authorisation.
 
 The hash input is the concatenation of three big-endian byte arrays:
 
-```
+```text
 raffle_count      (4 bytes, u32 BE)
 ledger_sequence   (4 bytes, u32 BE)
 ledger_timestamp  (8 bytes, u64 BE)
@@ -196,6 +196,7 @@ Total: 16 bytes. This is deterministic and reproducible off-chain.
 ### Property 2: Checkpoint fields are internally consistent
 
 *For any* `StateCheckpoint` stored at index `i`, the following invariants must all hold simultaneously:
+
 - `checkpoint.index == i`
 - `checkpoint.raffle_count == i * 1_000`
 - `checkpoint.index == checkpoint.raffle_count / 1_000`

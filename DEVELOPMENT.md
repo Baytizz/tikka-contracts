@@ -4,29 +4,39 @@ Welcome to the `tikka-contracts` development guide! This document covers setting
 
 ## 🛠 Prerequisites
 
-1.  **Rust Toolchain**: Install via [rustup](https://rustup.rs/).
-2.  **WebAssembly Target**: Add the `wasm32-unknown-unknown` target:
+1. **Rust Toolchain**: Install via [rustup](https://rustup.rs/).
+1. **WebAssembly Target**: Add the `wasm32-unknown-unknown` target:
+
     ```bash
     rustup target add wasm32-unknown-unknown
     ```
-3.  **Stellar CLI**: Install the official Stellar CLI:
+
+1. **Stellar CLI**: Install the official Stellar CLI:
+
     ```bash
     cargo install --locked stellar-cli --features opt
     ```
 
 ## 🏗 Build & Test
 
-
 ### Build the Contract
-To compile the Soroban contract into WebAssembly (`.wasm`):
+
+To compile the Soroban contracts into WebAssembly (`.wasm`):
+
 ```bash
+cargo build --target wasm32-unknown-unknown --release -p raffle-factory
 cargo build --target wasm32-unknown-unknown --release -p raffle-instance
 ```
-The compiled WASM binary will be located at `target/wasm32-unknown-unknown/release/raffle-instance.wasm`.
-The compiled WASM binary will be located at `target/wasm32-unknown-unknown/release/raffle_factory.wasm`.
+
+The compiled WASM binaries will be located at:
+
+- `target/wasm32-unknown-unknown/release/raffle-factory.wasm`
+- `target/wasm32-unknown-unknown/release/raffle-instance.wasm`
 
 ### Run Unit Tests
+
 To execute the contract's standard Rust unit tests:
+
 ```bash
 cargo test
 ```
@@ -36,23 +46,31 @@ cargo test
 The project provides automated shell scripts in the `scripts/` directory to facilitate deployment and interactions.
 
 ### 1. Environment Configuration
+
 Copy the `.env.example` file to create your own local `.env`:
+
 ```bash
 cp .env.example .env
 ```
+
 Fill out the required variables including `DEPLOYER_SECRET_KEY` and `RAFFLE_CONTRACT_ADDRESS`.
 
 ### 2. Fund Your Testnet Account
+
 Ensure your deployer account has Testnet Lumens (XLM):
+
 ```bash
 ./scripts/fund-testnet.sh <YOUR_PUBLIC_KEY>
 ```
 
 ### 3. Deploy to Testnet
+
 Deploy the compiled WASM binary directly to the Stellar testnet:
+
 ```bash
 ./scripts/deploy-testnet.sh
 ```
+
 This script automatically compiles the contract (if needed), deploys it using the `DEPLOYER_SECRET_KEY` from your `.env`, and outputs the resulting `C...` contract address.
 
 ## 🔎 Verifying Deployed Contracts
@@ -62,11 +80,13 @@ It is essential to verify that the deployed contract logic matches your local bu
 ```bash
 ./scripts/verify.sh
 ```
+
 This script downloads the remote WASM bytecode associated with `RAFFLE_CONTRACT_ADDRESS` on the active `STELLAR_NETWORK` and compares its SHA256 checksum to your locally compiled binary. It outputs `Match: YES` to guarantee parity.
 
 ## 🕹 Invoking Contract Functions
 
 Use the `invoke.sh` script to interact with your deployed contract smoothly:
+
 ```bash
 ./scripts/invoke.sh <function_name> [args...]
 # Example:
@@ -91,7 +111,7 @@ Tikka contracts use two of Soroban's three storage tiers:
 
 ### Key-to-Storage Mapping
 
-#### RaffleFactory (`contracts/raffle/src/lib.rs`)
+#### RaffleFactory (`contracts/raffle-factory/src/lib.rs`)
 
 | DataKey | Storage Type | Description |
 |---|---|---|
@@ -124,14 +144,12 @@ Tikka contracts use two of Soroban's three storage tiers:
 | `Admin` | **Instance** | Admin address synced from factory |
 | `Paused` | **Instance** | Instance-level pause flag |
 | `ReentrancyGuard` | **Instance** | Transient reentrancy lock |
-| `NextTicketId` | **Instance** | Auto-incrementing ticket ID counter |
 | `RandomnessRequested` | **Instance** | Whether oracle randomness has been requested |
 | `RandomnessRequestLedger` | **Instance** | Ledger sequence when randomness was requested |
 | `RandomnessSeed` | **Instance** | Fairness metadata after draw |
 | `Ticket(u32)` | **Persistent** | Individual ticket data (owner, purchase time) |
 | `TicketCount(Address)` | **Persistent** | Per-buyer ticket count |
 | `FinishTime` | **Instance** | Raffle finish timestamp |
-| `TotalTickets` | **Instance** | Total tickets counter |
 
 ### Data Expiry Risks
 
@@ -175,11 +193,12 @@ stellar contract extend \
 **Recommended interval**: Extend by **~1 year (6,220,800 ledgers)** and re-run every **6 months** to maintain a comfortable buffer.
 
 **Priority keys to extend** (Factory persistent):
+
 1. `Admin` — loss = permanent lockout
-2. `InstanceWasmHash` — loss = cannot deploy new raffles
-3. `Treasury` — loss = fee collection breaks
-4. `RaffleInstances` — loss = registry of all raffles gone
-5. `ProtocolFeeBP` — loss = fee defaults to 0
+1. `InstanceWasmHash` — loss = cannot deploy new raffles
+1. `Treasury` — loss = fee collection breaks
+1. `RaffleInstances` — loss = registry of all raffles gone
+1. `ProtocolFeeBP` — loss = fee defaults to 0
 
 #### Raffle Instance Contracts (many instances, variable lifetimes)
 
@@ -202,11 +221,12 @@ stellar contract extend \
 Operators should set up a **cron job or scheduled script** that:
 
 1. Queries all active raffle instances from the factory's `RaffleInstances` list
-2. Checks the current TTL of each instance and its persistent keys
-3. Extends any TTL that is below a threshold (e.g., < 30 days remaining)
-4. Logs all extensions for auditability
+1. Checks the current TTL of each instance and its persistent keys
+1. Extends any TTL that is below a threshold (e.g., < 30 days remaining)
+1. Logs all extensions for auditability
 
 Example pseudocode:
+
 ```bash
 #!/bin/bash
 # Run weekly via cron: 0 0 * * 0 /path/to/extend_ttls.sh

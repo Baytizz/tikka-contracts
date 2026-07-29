@@ -1,9 +1,20 @@
-# Rust's output directory
-target
+# Rust's output and lock files
+target/
+*.wasm
+Cargo.lock
 
-# Local settings
-.soroban
-.stellar
+# Node dependencies and build artifacts
+node_modules/
+oracle/node_modules/
+oracle/dist/
+
+# Local Stellar/Soroban settings and deployments
+.soroban/
+.stellar/
+deployments/mainnet.json
+
+# Local environment variables
+.env
 
 # Planning and development files
 task_plan.md
@@ -31,4 +42,13 @@ requirements.md
 .github/skills/senior-fullstack
 skills-lock.json
 
+# OS and logs/general output
+.DS_Store
 issue.md
+*.log
+output*.txt
+test_out*.txt
+check_out*.txt
+error*.txt
+*.tar.gz
+patch*.py

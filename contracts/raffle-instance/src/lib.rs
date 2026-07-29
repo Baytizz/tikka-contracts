@@ -1,4 +1,8 @@
 #![no_std]
+#![allow(dead_code)]
+#![allow(unused_imports)]
+#![allow(unused_variables)]
+#![cfg_attr(not(test), deny(clippy::unwrap_used))]
 
 use soroban_sdk::{
     auth::{ContractContext, InvokerContractAuthEntry, SubContractInvocation},
@@ -7,38 +11,48 @@ use soroban_sdk::{
     Address, Bytes, BytesN, Env, IntoVal, String, Symbol, Val, Vec,
 };
 
+mod admin;
+mod draw;
 mod events;
+mod helpers;
 mod randomness;
+mod tickets;
 
 use raffle_shared::{
-    CancelReason, FairnessData, RaffleConfig, RaffleStatus, RandomnessSource, RandomnessType,
-    Ticket,
+    CancelReason, FailureReason, FairnessData, RaffleConfig, RaffleStatus, RandomnessSource,
+    RandomnessType, Ticket,
 };
 
-use self::randomness::{OracleSeedWinnerSelection, WinnerSelectionStrategy};
+use self::randomness::{
+    build_vrf_proof_message, OracleSeedWinnerSelection, WinnerSelectionStrategy,
+};
 
 use crate::events::{
     ContractPaused, ContractUnpaused, DrawTriggered, EmergencyWithdrawn, FeesWithdrawn,
     OracleAddressUpdated, PrizeClaimed, PrizeDeposited, PrizeRefunded, ProtocolFeeUpdated,
-    RaffleCancelled, RaffleCreated, RaffleFinalized, RaffleStatusChanged,
-    RandomnessFallbackTriggered, RandomnessReceived, RandomnessRequested, TicketPurchased,
-    TicketRefunded, TokensRescued, WinnerDrawn,
+    RaffleCancelled, RaffleCreated, RaffleFailed, RaffleFinalized, RaffleStatusChanged,
+    RandomnessFallbackTriggered, RandomnessReceived, RandomnessRequested, SwapDeadlineUpdated,
+    TicketNftMinted, TicketPurchased, TicketRefunded, TicketSalesPaused, TicketSalesResumed,
+    TokensRescued, WinnerDrawn,
 };
 
 const ORACLE_TIMEOUT_LEDGERS: u32 = 200;
+const RANDOMNESS_MIN_DELAY_LEDGERS: u32 = 10;
 pub const MAX_DESCRIPTION_LENGTH: u32 = 1000;
 pub const MAX_TICKETS_LIMIT: u32 = 100_000;
 pub const MAX_PRIZES: u32 = 100;
 pub const MIN_TICKET_PRICE: i128 = 10_000;
-pub const MAX_PRIZE_AMOUNT: i128 = 1_000_000_000_000_000_000_000; // 1e21
-/// Default and bounds for the claim lockup delay (#259).
+pub const MAX_PRIZE_AMOUNT: i128 = 1_000_000_000_000_000_000_000;
 pub const DEFAULT_CLAIM_LOCKUP_SECONDS: u64 = 3_600;
-pub const MAX_CLAIM_LOCKUP_SECONDS: u64 = 604_800; // 7 days
-/// Emergency withdraw delay (seconds). Set to 90 days.
-pub const EMERGENCY_WITHDRAW_DELAY_SECONDS: u64 = 90 * 24 * 3600; // 7776000
+pub const MAX_CLAIM_LOCKUP_SECONDS: u64 = 604_800;
+pub const DEFAULT_SWAP_DEADLINE_SECONDS: u64 = 300;
+pub const MAX_SWAP_DEADLINE_SECONDS: u64 = 3_600;
+pub const EMERGENCY_WITHDRAW_DELAY_SECONDS: u64 = 90 * 24 * 3600;
+pub const MAX_PROTOCOL_FEE_BP: u32 = 2_000;
 
 #[contract]
 pub struct Contract;
+
 #[contracttype]
 #[derive(Clone)]
 pub struct Raffle {
@@ -47,10 +61,14 @@ pub struct Raffle {
     pub end_time: u64,
     pub no_deadline: bool,
     pub max_tickets: u32,
+    pub max_tickets_per_tx: u32,
     pub min_tickets: u32,
     pub allow_multiple: bool,
     pub ticket_price: i128,
     pub payment_token: Address,
+    /// The token used for prize deposit and claims.
+    /// Defaults to `payment_token` when not explicitly set by the creator.
+    pub prize_token: Address,
     pub prize_amount: i128,
     pub prizes: Vec<u32>,
     pub tickets_sold: u32,
@@ -65,8 +83,13 @@ pub struct Raffle {
     pub swap_router: Option<Address>,
     pub tikka_token: Option<Address>,
     pub finalized_at: Option<u64>,
-    /// Seconds after finalization before winners may claim (#259).
     pub claim_lockup_seconds: u64,
+    pub swap_deadline_seconds: u64,
+    pub ticket_sales_paused: bool,
+    /// The percentage of max_tickets covered by the early bird discount (0 to disable).
+    pub early_bird_ticket_percentage: u32,
+    /// The discount amount specified in basis points.
+    pub early_bird_discount_bp: u32,
 }
 
 #[contracttype]
@@ -80,6 +103,7 @@ pub struct FairnessMetadata {
 }
 
 #[soroban_sdk::contracttype]
+#[derive(Clone)]
 pub enum DataKey {
     Raffle,
     TicketCount(Address),
@@ -95,6 +119,22 @@ pub enum DataKey {
     RandomnessRequestId,
     FinishTime,
     AccumulatedFees,
+    CommitEntry(u32),
+    DrawingLock,
+    TicketBuyers,
+    /// Per-owner ticket ID index: owner Address → Vec<u32> of ticket IDs.
+    /// Appended to on every successful ticket purchase, allowing O(1) owner
+    /// lookups without scanning the full ticket space.
+    OwnerTickets(Address),
+    /// Admin-cancel timelock unlock timestamp (unix seconds).
+    PendingAdminCancel,
+}
+
+#[contracttype]
+#[derive(Clone)]
+pub struct CommitRevealEntry {
+    pub committer: Address,
+    pub hash: BytesN<32>,
 }
 
 #[contracterror]
@@ -123,7 +163,6 @@ pub enum Error {
     InsufficientTickets = 31,
     MultipleTicketsNotAllowed = 32,
     NoTicketsSold = 33,
-    NoActiveTickets = 46,
     TicketNotFound = 34,
     RaffleEnded = 35,
     ArithmeticOverflow = 41,
@@ -131,6 +170,7 @@ pub enum Error {
     NotInitialized = 43,
     Reentrancy = 44,
     TokenTransferFailed = 45,
+    NoActiveTickets = 46,
     DeadlinePassed = 47,
     SlippageExceeded = 48,
     InvalidIndex = 49,
@@ -142,6 +182,13 @@ pub enum Error {
     InvalidTicketRange = 55,
     InsufficientAccumulatedFees = 56,
     PrizeConfigurationLocked = 57,
+    ExceedsMaxTicketsPerTx = 58,
+    DrawingAlreadyInProgress = 59,
+    InvalidStatusForDrawingTransition = 60,
+    DrawingAlreadyComplete = 61,
+    InvalidEndTime = 62,
+    InvalidAdminAddress = 63,
+    RandomnessTooEarly = 64,
 }
 
 fn read_raffle(env: &Env) -> Result<Raffle, Error> {
@@ -155,18 +202,7 @@ fn write_raffle(env: &Env, raffle: &Raffle) {
     env.storage().instance().set(&DataKey::Raffle, raffle);
 }
 
-fn require_admin(env: &Env) -> Result<Address, Error> {
-    let admin: Address = env
-        .storage()
-        .persistent()
-        .get(&DataKey::Admin)
-        .ok_or(Error::NotAuthorized)?;
-    admin.require_auth();
-    Ok(admin)
-}
-
-/// Maximum protocol fee in basis points (20%) for per-raffle admin updates.
-pub const MAX_PROTOCOL_FEE_BP: u32 = 2_000;
+raffle_shared::impl_require_admin!(Error, Error::NotAuthorized);
 
 fn get_ticket_owner(env: &Env, ticket_id: u32) -> Option<Address> {
     env.storage()
@@ -186,13 +222,17 @@ fn acquire_guard(env: &Env) -> Result<(), Error> {
 }
 
 // Helper to enforce slippage and deadline guards for token swaps
+// Uses the raffle's configurable swap_deadline_seconds to calculate the deadline
 #[allow(dead_code)]
 fn enforce_swap_guard(
     env: &Env,
+    raffle: &Raffle,
     amount_out: i128,
     min_amount_out: i128,
-    deadline: u64,
 ) -> Result<(), Error> {
+    // Calculate deadline based on current timestamp and raffle's configured deadline window
+    let deadline = env.ledger().timestamp() + raffle.swap_deadline_seconds;
+
     // Check deadline
     if env.ledger().timestamp() > deadline {
         return Err(Error::DeadlinePassed);
@@ -225,17 +265,96 @@ impl<'a> Drop for Guard<'a> {
     }
 }
 
-fn require_not_paused(env: &Env) -> Result<(), Error> {
-    if env
+// Helper function to request randomness (used in both buy_tickets and finalize_raffle)
+fn request_randomness(env: &Env) -> Result<u64, Error> {
+    let already: bool = env
         .storage()
         .instance()
-        .get(&DataKey::Paused)
-        .unwrap_or(false)
-    {
-        return Err(Error::ContractPaused);
+        .get(&DataKey::RandomnessRequested)
+        .unwrap_or(false);
+    if already {
+        return Err(Error::RandomnessAlreadyRequested);
     }
+
+    // Generate unique request ID
+    let request_id_xdr = (
+        env.ledger().timestamp(),
+        env.ledger().sequence(),
+        env.current_contract_address().to_xdr(env),
+    )
+        .to_xdr(env);
+    let request_id_hash: BytesN<32> = env.crypto().sha256(&request_id_xdr).into();
+    let arr = request_id_hash.to_array();
+    let mut id_bytes = [0u8; 8];
+    id_bytes.copy_from_slice(&arr[..8]);
+    let request_id = u64::from_be_bytes(id_bytes);
+
+    env.storage()
+        .instance()
+        .set(&DataKey::RandomnessRequested, &true);
+    env.storage()
+        .instance()
+        .set(&DataKey::RandomnessRequestLedger, &env.ledger().sequence());
+    env.storage()
+        .instance()
+        .set(&DataKey::RandomnessRequestId, &request_id);
+
+    Ok(request_id)
+}
+
+/// State machine for drawing entry:
+/// - PendingPrize -> Active is the initial funded state.
+/// - Active -> Drawing is the only valid transition that begins winner selection.
+/// - Active -> Drawing is also used when buy_tickets fills the last ticket and the raffle
+///   should enter the draw window.
+/// - Drawing -> Finalized is the normal completion path after the oracle or fallback seed
+///   produces winners.
+/// - Drawing -> Cancelled/Failed is the error or refund path when the drawing flow is aborted.
+///
+/// Soroban contract calls are atomic per call frame, but the same ledger can still observe
+/// overlapping state transitions via re-entrant or concurrent calls into the contract. The
+/// DrawingLock is therefore the exclusive guard that makes the transition single-owner even
+/// when two entry points race in the same ledger or during re-entry.
+///
+/// This helper is the single source of truth for entering Drawing and for setting the
+/// DrawingLock. The lock prevents any second caller from entering Drawing while the first
+/// draw flow is in progress, and it is cleared only after the callback or rollback path
+/// finishes so the contract never stays permanently pinned in a half-drawn state.
+fn transition_to_drawing(env: &Env, raffle: &mut Raffle, timestamp: u64) -> Result<(), Error> {
+    // SECURITY: fast-path guard — if DrawingLock is true, another Drawing transition is
+    // already in progress; reject without reading further state
+    let drawing_lock: bool = env
+        .storage()
+        .instance()
+        .get(&DataKey::DrawingLock)
+        .unwrap_or(false);
+    if drawing_lock {
+        return Err(Error::DrawingAlreadyInProgress);
+    }
+
+    if raffle.status != RaffleStatus::Active {
+        if raffle.status == RaffleStatus::Drawing {
+            return Err(Error::DrawingAlreadyInProgress);
+        }
+        return Err(Error::InvalidStatusForDrawingTransition);
+    }
+
+    let old_status = raffle.status.clone();
+    raffle.status = RaffleStatus::Drawing;
+    write_raffle(env, raffle);
+    RaffleStatusChanged {
+        old_status,
+        new_status: RaffleStatus::Drawing,
+        timestamp,
+    }
+    .publish(env);
+
+    // SECURITY: set the DrawingLock in the same contract call as the status transition
+    env.storage().instance().set(&DataKey::DrawingLock, &true);
     Ok(())
 }
+
+raffle_shared::impl_require_not_paused!(Error, Error::ContractPaused, require_not_paused);
 
 fn validate_token_address(env: &Env, token_address: &Address) -> Result<(), Error> {
     let token_client = token::Client::new(env, token_address);
@@ -265,7 +384,7 @@ fn calculate_tier_prize(raffle: &Raffle, tier_index: u32) -> Result<i128, Error>
     if tier_index == last_tier_index {
         let mut allocated_before_last = 0i128;
         for i in 0..last_tier_index {
-            let prize_bp = raffle.prizes.get(i).unwrap();
+            let prize_bp = raffle.prizes.get(i).ok_or(Error::InvalidIndex)?;
             let amount = raffle
                 .prize_amount
                 .checked_mul(prize_bp as i128)
@@ -282,7 +401,7 @@ fn calculate_tier_prize(raffle: &Raffle, tier_index: u32) -> Result<i128, Error>
             .ok_or(Error::ArithmeticOverflow);
     }
 
-    let prize_bp = raffle.prizes.get(tier_index).unwrap();
+    let prize_bp = raffle.prizes.get(tier_index).ok_or(Error::InvalidIndex)?;
     raffle
         .prize_amount
         .checked_mul(prize_bp as i128)
@@ -314,11 +433,18 @@ impl Contract {
         if !config.no_deadline && config.end_time <= now {
             return Err(Error::InvalidParameters);
         }
+        // Explicit check: end_time must be either 0 (no deadline) or in the future
+        if config.end_time != 0 && config.end_time <= now {
+            return Err(Error::InvalidEndTime);
+        }
         if config.max_tickets == 0 || config.max_tickets > MAX_TICKETS_LIMIT {
             return Err(Error::InvalidParameters);
         }
         if config.max_tickets < config.min_tickets {
             return Err(Error::InvalidTicketRange);
+        }
+        if config.max_tickets_per_tx == 0 || config.max_tickets_per_tx > config.max_tickets {
+            return Err(Error::InvalidParameters);
         }
 
         if config.ticket_price < MIN_TICKET_PRICE {
@@ -370,14 +496,27 @@ impl Contract {
         // Validate that the payment_token is a valid token contract
         validate_token_address(&env, &config.payment_token)?;
 
+        // Prize token matches payment token (no separate prize_token on RaffleConfig).
+        let prize_token = config.payment_token.clone();
+
+        // Resolve default values for fields that use 0 as "use default"
+        let config = config.resolve_defaults();
+
         // #259: claim_lockup_seconds must be within [0, MAX_CLAIM_LOCKUP_SECONDS].
-        // Zero is interpreted as "use the default".
-        let claim_lockup_seconds = if config.claim_lockup_seconds == 0 {
-            DEFAULT_CLAIM_LOCKUP_SECONDS
-        } else {
-            config.claim_lockup_seconds
-        };
-        if claim_lockup_seconds > MAX_CLAIM_LOCKUP_SECONDS {
+        if config.claim_lockup_seconds > MAX_CLAIM_LOCKUP_SECONDS {
+            return Err(Error::InvalidParameters);
+        }
+
+        // Swap deadline must be within [0, MAX_SWAP_DEADLINE_SECONDS].
+        if config.swap_deadline_seconds > MAX_SWAP_DEADLINE_SECONDS {
+            return Err(Error::InvalidParameters);
+        }
+
+        // Validate early bird parameters
+        if config.early_bird_ticket_percentage > 100 {
+            return Err(Error::InvalidParameters);
+        }
+        if config.early_bird_ticket_percentage > 0 && config.early_bird_discount_bp > 10000 {
             return Err(Error::InvalidParameters);
         }
 
@@ -387,10 +526,12 @@ impl Contract {
             end_time: config.end_time,
             no_deadline: config.no_deadline,
             max_tickets: config.max_tickets,
+            max_tickets_per_tx: config.max_tickets_per_tx,
             min_tickets: config.min_tickets,
             allow_multiple: config.allow_multiple,
             ticket_price: config.ticket_price,
             payment_token: config.payment_token.clone(),
+            prize_token: prize_token.clone(),
             prize_amount: config.prize_amount,
             prizes: config.prizes.clone(),
             tickets_sold: 0,
@@ -405,7 +546,11 @@ impl Contract {
             swap_router: config.swap_router,
             tikka_token: config.tikka_token,
             finalized_at: None,
-            claim_lockup_seconds,
+            claim_lockup_seconds: config.claim_lockup_seconds,
+            swap_deadline_seconds: config.swap_deadline_seconds,
+            ticket_sales_paused: false,
+            early_bird_ticket_percentage: config.early_bird_ticket_percentage,
+            early_bird_discount_bp: config.early_bird_discount_bp,
         };
         write_raffle(&env, &raffle);
         env.storage().instance().set(&DataKey::Factory, &factory);
@@ -438,12 +583,16 @@ impl Contract {
             return Err(Error::PrizeAlreadyDeposited);
         }
 
+        let _old_status = raffle.status.clone();
+        raffle.prize_deposited = true;
+        write_raffle(&env, &raffle);
         let old_status = raffle.status.clone();
 
         // Move tokens first. If the transfer fails we want the contract state
         // (prize_deposited flag, raffle.status) to remain untouched.
-        let token_client = token::Client::new(&env, &raffle.payment_token);
+        let token_client = token::Client::new(&env, &raffle.prize_token);
         let contract_address = env.current_contract_address();
+
         let _ = token_client
             .try_transfer(&raffle.creator, &contract_address, &raffle.prize_amount)
             .map_err(|_| Error::TokenTransferFailed)?;
@@ -479,15 +628,30 @@ impl Contract {
     }
 
     pub fn buy_tickets(env: Env, buyer: Address, quantity: u32) -> Result<u32, Error> {
+        // SECURITY: Fast path guard for DrawingLock!
+        let drawing_lock: bool = env
+            .storage()
+            .instance()
+            .get(&DataKey::DrawingLock)
+            .unwrap_or(false);
+        if drawing_lock {
+            return Err(Error::DrawingAlreadyInProgress);
+        }
         if quantity == 0 {
             return Err(Error::InvalidQuantity);
         }
         let mut raffle = read_raffle(&env)?;
+        if quantity > raffle.max_tickets_per_tx {
+            return Err(Error::ExceedsMaxTicketsPerTx);
+        }
         buyer.require_auth();
         require_not_paused(&env)?;
 
         if raffle.status != RaffleStatus::Active {
             return Err(Error::RaffleInactive);
+        }
+        if raffle.ticket_sales_paused {
+            return Err(Error::ContractPaused);
         }
         if !raffle.prize_deposited {
             return Err(Error::InvalidStateTransition);
@@ -496,7 +660,15 @@ impl Contract {
             return Err(Error::RaffleExpired);
         }
 
-        if raffle.tickets_sold + quantity > raffle.max_tickets {
+        // SECURITY: Snapshot initial state for optimistic concurrency control
+        let snapshot_sold = raffle.tickets_sold;
+        let current_count: u32 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::TicketCount(buyer.clone()))
+            .unwrap_or(0);
+
+        if snapshot_sold + quantity > raffle.max_tickets {
             return Err(Error::TicketsSoldOut);
         }
 
@@ -509,10 +681,21 @@ impl Contract {
             return Err(Error::MultipleTicketsNotAllowed);
         }
 
-        let mut ticket_ids = Vec::new(&env);
         let timestamp = env.ledger().timestamp();
-        let total_price = raffle
-            .ticket_price
+        let effective_price = if raffle.early_bird_ticket_percentage > 0 {
+            let early_bird_cap = raffle.max_tickets * raffle.early_bird_ticket_percentage / 100;
+            if raffle.tickets_sold < early_bird_cap {
+                raffle.ticket_price
+                    .checked_mul((10000 - raffle.early_bird_discount_bp) as i128)
+                    .ok_or(Error::ArithmeticOverflow)?
+                    / 10000
+            } else {
+                raffle.ticket_price
+            }
+        } else {
+            raffle.ticket_price
+        };
+        let total_price = effective_price
             .checked_mul(quantity as i128)
             .ok_or(Error::InvalidParameters)?;
 
@@ -522,15 +705,46 @@ impl Contract {
             / 10000;
         let _net_amount = total_price - protocol_fee;
 
-        for _ in 0..quantity {
-            raffle.tickets_sold += 1;
-            let ticket_id = raffle.tickets_sold;
+        // SECURITY: Re-read persisted state and verify no concurrent changes
+        let persisted_raffle = read_raffle(&env)?;
+        let persisted_sold = persisted_raffle.tickets_sold;
+        let persisted_count: u32 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::TicketCount(buyer.clone()))
+            .unwrap_or(0);
 
+        if persisted_sold != snapshot_sold || persisted_count != current_count {
+            return Err(Error::InvalidStateTransition);
+        }
+
+        // Final availability check against persisted values
+        if persisted_sold + quantity > persisted_raffle.max_tickets {
+            return Err(Error::TicketsSoldOut);
+        }
+
+        // Track unique buyer addresses for later storage cleanup
+        if current_count == 0 {
+            let mut buyers: Vec<Address> = env
+                .storage()
+                .persistent()
+                .get(&DataKey::TicketBuyers)
+                .unwrap_or_else(|| Vec::new(&env));
+            buyers.push_back(buyer.clone());
+            env.storage()
+                .persistent()
+                .set(&DataKey::TicketBuyers, &buyers);
+        }
+
+        // Now commit all changes atomically
+        let mut ticket_ids = Vec::new(&env);
+        for i in 0..quantity {
+            let ticket_id = snapshot_sold + i + 1;
             let ticket = Ticket {
                 id: ticket_id,
                 owner: buyer.clone(),
                 purchase_time: timestamp,
-                ticket_number: raffle.tickets_sold,
+                ticket_number: ticket_id,
             };
             env.storage()
                 .persistent()
@@ -538,21 +752,52 @@ impl Contract {
             ticket_ids.push_back(ticket_id);
         }
 
-        if raffle.tickets_sold >= raffle.max_tickets {
-            let old_status = raffle.status.clone();
-            raffle.status = RaffleStatus::Drawing;
-            RaffleStatusChanged {
-                old_status,
-                new_status: RaffleStatus::Drawing,
-                timestamp,
+        // Maintain the per-owner ticket ID index so get_my_tickets is O(1).
+        let mut owner_tickets: Vec<u32> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::OwnerTickets(buyer.clone()))
+            .unwrap_or_else(|| Vec::new(&env));
+        for i in 0..ticket_ids.len() {
+            if let Some(tid) = ticket_ids.get(i) {
+                owner_tickets.push_back(tid);
             }
-            .publish(&env);
         }
+        env.storage()
+            .persistent()
+            .set(&DataKey::OwnerTickets(buyer.clone()), &owner_tickets);
 
+        // Update ticket count and raffle sold
         env.storage().persistent().set(
             &DataKey::TicketCount(buyer.clone()),
             &(current_count + quantity),
         );
+        raffle.tickets_sold = snapshot_sold + quantity;
+
+        if raffle.tickets_sold >= raffle.max_tickets {
+            transition_to_drawing(&env, &mut raffle, timestamp)?;
+            // SECURITY: Atomically request randomness after transitioning to Drawing
+            if raffle.randomness_source == RandomnessSource::External {
+                let request_id = request_randomness(&env)?;
+                DrawTriggered {
+                    caller: buyer.clone(),
+                    total_tickets_sold: raffle.tickets_sold,
+                    timestamp,
+                }
+                .publish(&env);
+
+                RandomnessRequested {
+                    oracle: raffle
+                        .oracle_address
+                        .clone()
+                        .unwrap_or(env.current_contract_address()),
+                    request_id,
+                    timestamp,
+                }
+                .publish(&env);
+            }
+        }
+
         write_raffle(&env, &raffle);
 
         if let Some(factory_address) = env
@@ -606,17 +851,27 @@ impl Contract {
         }
 
         TicketPurchased {
-            buyer,
-            ticket_ids,
+            buyer: buyer.clone(),
+            ticket_ids: ticket_ids.clone(),
             quantity,
             ticket_price: raffle.ticket_price,
+            effective_ticket_price: effective_price,
             total_paid: total_price,
             protocol_fee,
             timestamp,
         }
         .publish(&env);
 
+        // NFT minting: issue an on-chain NFT receipt for each ticket purchased.
+        // This is best-effort — a failing NFT contract panics the whole call, so
+        // the NFT contract is assumed to be trusted and correctly implemented.
+        // Optional NFT minting is not wired on the current Raffle state model.
+
         Ok(raffle.tickets_sold)
+    }
+
+    pub fn submit_commit(env: Env, ticket_id: u32, hash: BytesN<32>) -> Result<(), Error> {
+        self::tickets::submit_commit(env, ticket_id, hash)
     }
 
     pub fn finalize_raffle(env: Env) -> Result<(), Error> {
@@ -638,13 +893,20 @@ impl Contract {
         // #169: zero tickets sold is always a failure regardless of min_tickets,
         // ensuring the creator can recover their deposited prize via refund_prize.
         if raffle.tickets_sold == 0 || raffle.tickets_sold < raffle.min_tickets {
-            let old_status = raffle.status.clone();
+            let _old_status = raffle.status.clone();
             raffle.status = RaffleStatus::Failed;
             write_raffle(&env, &raffle);
 
-            RaffleStatusChanged {
-                old_status,
-                new_status: RaffleStatus::Failed,
+            let failure_reason = if raffle.tickets_sold == 0 {
+                FailureReason::ZeroTicketsSold
+            } else {
+                FailureReason::MinTicketsNotMet
+            };
+
+            RaffleFailed {
+                creator: raffle.creator.clone(),
+                reason: failure_reason,
+                tickets_sold: raffle.tickets_sold,
                 timestamp: now,
             }
             .publish(&env);
@@ -652,57 +914,40 @@ impl Contract {
         }
 
         let caller = raffle.creator.clone();
+        let pre_drawing_status = raffle.status.clone();
+
+        if raffle.status != RaffleStatus::Drawing {
+            transition_to_drawing(&env, &mut raffle, now)?;
+        }
 
         if raffle.randomness_source == RandomnessSource::External {
-            let already: bool = env
-                .storage()
-                .instance()
-                .get(&DataKey::RandomnessRequested)
-                .unwrap_or(false);
-            if already {
-                return Err(Error::RandomnessAlreadyRequested);
+            match request_randomness(&env) {
+                Ok(request_id) => {
+                    DrawTriggered {
+                        caller: caller.clone(),
+                        total_tickets_sold: raffle.tickets_sold,
+                        timestamp: now,
+                    }
+                    .publish(&env);
+
+                    RandomnessRequested {
+                        oracle: raffle
+                            .oracle_address
+                            .clone()
+                            .unwrap_or(env.current_contract_address()),
+                        request_id,
+                        timestamp: now,
+                    }
+                    .publish(&env);
+                    return Ok(());
+                }
+                Err(err) => {
+                    raffle.status = pre_drawing_status;
+                    write_raffle(&env, &raffle);
+                    env.storage().instance().set(&DataKey::DrawingLock, &false);
+                    return Err(err);
+                }
             }
-
-            // Generate unique request ID to prevent replay attacks
-            let request_id_xdr = (
-                env.ledger().timestamp(),
-                env.ledger().sequence(),
-                env.current_contract_address().to_xdr(&env),
-            )
-                .to_xdr(&env);
-            let request_id_hash: BytesN<32> = env.crypto().sha256(&request_id_xdr).into();
-            let arr = request_id_hash.to_array();
-            let mut id_bytes = [0u8; 8];
-            id_bytes.copy_from_slice(&arr[..8]);
-            let request_id = u64::from_be_bytes(id_bytes);
-
-            env.storage()
-                .instance()
-                .set(&DataKey::RandomnessRequested, &true);
-            env.storage()
-                .instance()
-                .set(&DataKey::RandomnessRequestLedger, &env.ledger().sequence());
-            env.storage()
-                .instance()
-                .set(&DataKey::RandomnessRequestId, &request_id);
-
-            DrawTriggered {
-                caller: caller.clone(),
-                total_tickets_sold: raffle.tickets_sold,
-                timestamp: now,
-            }
-            .publish(&env);
-
-            RandomnessRequested {
-                oracle: raffle
-                    .oracle_address
-                    .clone()
-                    .unwrap_or(env.current_contract_address()),
-                request_id,
-                timestamp: now,
-            }
-            .publish(&env);
-            return Ok(());
         }
 
         DrawTriggered {
@@ -712,63 +957,46 @@ impl Contract {
         }
         .publish(&env);
 
+        if raffle.randomness_source == RandomnessSource::CommitReveal {
+            // Collect entropy from all commit entries stored by ticket ID.
+            //
+            // We iterate over ticket IDs 1..=tickets_sold and read the
+            // CommitEntry for each one.  Keying by ticket ID (rather than by
+            // current owner address) is what makes the fix for #311: a
+            // participant who committed and then transferred their ticket
+            // still has their CommitEntry present under the original ticket
+            // ID, so their entropy is never silently discarded.
+            let mut combined = Bytes::new(&env);
+            let mut commits_found: u32 = 0;
+            for ticket_id in 1..=raffle.tickets_sold {
+                if let Some(entry) = env
+                    .storage()
+                    .persistent()
+                    .get::<_, CommitRevealEntry>(&DataKey::CommitEntry(ticket_id))
+                {
+                    combined.extend_from_array(&entry.hash.to_array());
+                    commits_found += 1;
+                }
+            }
+
+            // If no commits were submitted at all fall through to the
+            // internal PRNG so the raffle can still be finalised.
+            if commits_found > 0 {
+                let hash: BytesN<32> = env.crypto().sha256(&combined).into();
+                let arr = hash.to_array();
+                let mut seed_bytes = [0u8; 8];
+                seed_bytes.copy_from_slice(&arr[..8]);
+                let seed = u64::from_be_bytes(seed_bytes);
+                return helpers::do_finalize_with_seed(&env, raffle, seed, RandomnessType::Prng);
+            }
+        }
+
         let seed = build_internal_seed_u64(&env);
-        self::do_finalize_with_seed(&env, raffle, seed, RandomnessType::Prng)
+        helpers::do_finalize_with_seed(&env, raffle, seed, RandomnessType::Prng)
     }
 
-    pub fn provide_randomness(
-        env: Env,
-        random_seed: u64,
-        public_key: BytesN<32>,
-        proof: BytesN<64>,
-        request_id: u64,
-    ) -> Result<Address, Error> {
-        let raffle = read_raffle(&env)?;
-
-        let oracle = match &raffle.oracle_address {
-            Some(addr) => {
-                addr.require_auth();
-                addr.clone()
-            }
-            None => return Err(Error::OracleNotSet),
-        };
-
-        if raffle.status != RaffleStatus::Drawing {
-            return Err(Error::InvalidStateTransition);
-        }
-
-        let request_pending: bool = env
-            .storage()
-            .instance()
-            .get(&DataKey::RandomnessRequested)
-            .unwrap_or(false);
-        if !request_pending {
-            return Err(Error::NoRandomnessRequest);
-        }
-
-        // Verify request ID to prevent replay attacks
-        let stored_request_id: u64 = env
-            .storage()
-            .instance()
-            .get(&DataKey::RandomnessRequestId)
-            .ok_or(Error::NoRandomnessRequest)?;
-        if stored_request_id != request_id {
-            return Err(Error::InvalidParameters);
-        }
-
-        let message = Bytes::from_array(&env, &random_seed.to_be_bytes());
-        env.crypto().ed25519_verify(&public_key, &message, &proof);
-
-        RandomnessReceived {
-            oracle,
-            seed: random_seed,
-            request_id,
-            timestamp: env.ledger().timestamp(),
-        }
-        .publish(&env);
-
-        self::do_finalize_with_seed(&env, raffle, random_seed, RandomnessType::Vrf)?;
-        Ok(env.current_contract_address())
+    pub fn provide_randomness(env: Env, random_seed: u64, public_key: BytesN<32>, proof: BytesN<64>, request_id: u64) -> Result<Address, Error> {
+        self::draw::provide_randomness(env, random_seed, public_key, proof, request_id)
     }
 
     pub fn trigger_randomness_fallback(
@@ -776,6 +1004,17 @@ impl Contract {
         caller: Address,
         do_refund: bool,
     ) -> Result<(), Error> {
+        // # SECURITY: fallback is only valid while a draw is in progress.
+        // If DrawingLock is already false, the draw has completed or never started.
+        let drawing_lock: bool = env
+            .storage()
+            .instance()
+            .get(&DataKey::DrawingLock)
+            .unwrap_or(false);
+        if !drawing_lock {
+            return Err(Error::DrawingAlreadyComplete);
+        }
+
         caller.require_auth();
         let mut raffle = read_raffle(&env)?;
 
@@ -814,6 +1053,18 @@ impl Contract {
             raffle.status = RaffleStatus::Cancelled;
             write_raffle(&env, &raffle);
 
+            // Clear pending randomness and DrawingLock when cancelling
+            env.storage()
+                .instance()
+                .remove(&DataKey::RandomnessRequested);
+            env.storage()
+                .instance()
+                .remove(&DataKey::RandomnessRequestId);
+            env.storage()
+                .instance()
+                .remove(&DataKey::RandomnessRequestLedger);
+            env.storage().instance().set(&DataKey::DrawingLock, &false);
+
             RaffleCancelled {
                 creator: raffle.creator.clone(),
                 reason: CancelReason::OracleTimeout,
@@ -836,7 +1087,7 @@ impl Contract {
         }
         .publish(&env);
 
-        self::do_finalize_with_seed(&env, raffle, seed, RandomnessType::Fallback)
+        self::helpers::do_finalize_with_seed(&env, raffle, seed, RandomnessType::Fallback)
     }
 
     pub fn claim_prize(env: Env, winner: Address, tier_index: u32) -> Result<i128, Error> {
@@ -871,11 +1122,14 @@ impl Contract {
             return Err(Error::PrizeAlreadyClaimed);
         }
 
+        let prize_bp = raffle.prizes.get(tier_index).ok_or(Error::InvalidIndex)?;
+        let amount = raffle
+            .prize_amount
+            .checked_mul(prize_bp as i128)
+            .ok_or(Error::ArithmeticOverflow)?
+            / 10000;
         let amount = calculate_tier_prize(&raffle, tier_index)?;
-
-        let fee = amount * (raffle.protocol_fee_bp as i128) / 10000;
-        let net_amount = amount - fee;
-        if net_amount <= 0 {
+        if amount <= 0 {
             return Err(Error::ZeroPrize);
         }
 
@@ -899,39 +1153,23 @@ impl Contract {
         }
         write_raffle(&env, &raffle);
 
-        let token_client = token::Client::new(&env, &raffle.payment_token);
+        let token_client = token::Client::new(&env, &raffle.prize_token);
         let _ = token_client
-            .try_transfer(&env.current_contract_address(), &winner, &net_amount)
+            .try_transfer(&env.current_contract_address(), &winner, &amount)
             .map_err(|_| Error::TokenTransferFailed)?;
-
-        if fee > 0 {
-            if let Some(treasury) = &raffle.treasury_address {
-                let _ = token_client
-                    .try_transfer(&env.current_contract_address(), treasury, &fee)
-                    .map_err(|_| Error::TokenTransferFailed)?;
-            }
-            let prev_fees: i128 = env
-                .storage()
-                .instance()
-                .get(&DataKey::AccumulatedFees)
-                .unwrap_or(0);
-            env.storage()
-                .instance()
-                .set(&DataKey::AccumulatedFees, &(prev_fees + fee));
-        }
 
         PrizeClaimed {
             winner,
             tier_index,
-            payment_token: raffle.payment_token.clone(),
+            payment_token: raffle.prize_token.clone(),
             gross_amount: amount,
-            net_amount,
-            platform_fee: fee,
+            net_amount: amount,
+            platform_fee: 0,
             claimed_at: env.ledger().timestamp(),
         }
         .publish(&env);
 
-        Ok(net_amount)
+        Ok(amount)
     }
 
     pub fn withdraw_fees(env: Env, recipient: Address, amount: i128) -> Result<(), Error> {
@@ -1002,8 +1240,25 @@ impl Contract {
             return Err(Error::InvalidStatus);
         }
 
+        let was_drawing = raffle.status == RaffleStatus::Drawing;
+        let _old_status = raffle.status.clone();
         raffle.status = RaffleStatus::Cancelled;
         write_raffle(&env, &raffle);
+
+        // If cancellation happens during drawing, clear pending randomness and
+        // release the drawing lock so the contract cannot remain bricked.
+        if was_drawing {
+            env.storage()
+                .instance()
+                .remove(&DataKey::RandomnessRequested);
+            env.storage()
+                .instance()
+                .remove(&DataKey::RandomnessRequestId);
+            env.storage()
+                .instance()
+                .remove(&DataKey::RandomnessRequestLedger);
+            env.storage().instance().set(&DataKey::DrawingLock, &false);
+        }
 
         RaffleCancelled {
             creator: raffle.creator.clone(),
@@ -1015,6 +1270,64 @@ impl Contract {
         .publish(&env);
 
         Ok(())
+    }
+
+    /// Executes a previously scheduled admin cancellation (#406).
+    ///
+    /// Only succeeds once the timelock set by `cancel_raffle` has elapsed.
+    /// Calling it earlier returns `CancelTimelockActive`; calling it with no
+    /// pending schedule returns `CancelNotScheduled`.
+    pub fn execute_admin_cancel(env: Env) -> Result<(), Error> {
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::NotAuthorized)?;
+        admin.require_auth();
+
+        let cancel_at: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::PendingAdminCancel)
+            .ok_or(Error::InvalidParameters)?;
+
+        let mut raffle = read_raffle(&env)?;
+
+        if raffle.status == RaffleStatus::Finalized
+            || raffle.status == RaffleStatus::Cancelled
+            || raffle.status == RaffleStatus::Claimed
+        {
+            return Err(Error::InvalidStatus);
+        }
+
+        let now = env.ledger().timestamp();
+        if now < cancel_at {
+            return Err(Error::InvalidStateTransition);
+        }
+
+        env.storage()
+            .instance()
+            .remove(&DataKey::PendingAdminCancel);
+
+        raffle.status = RaffleStatus::Cancelled;
+        write_raffle(&env, &raffle);
+
+        RaffleCancelled {
+            creator: raffle.creator.clone(),
+            reason: CancelReason::AdminCancelled,
+            tickets_sold: raffle.tickets_sold,
+            prize_refunded: raffle.prize_deposited,
+            timestamp: now,
+        }
+        .publish(&env);
+
+        Ok(())
+    }
+
+    /// Returns the timestamp at which a scheduled admin cancel becomes
+    /// executable, or `None` if no cancel is currently scheduled (#406).
+    pub fn get_pending_cancel(env: Env) -> Option<u64> {
+        env.storage().instance().get(&DataKey::PendingAdminCancel)
     }
 
     pub fn refund_prize(env: Env) -> Result<(), Error> {
@@ -1033,6 +1346,11 @@ impl Contract {
         write_raffle(&env, &raffle);
 
         let token_client = token::Client::new(&env, &raffle.payment_token);
+        token_client.transfer(
+            &env.current_contract_address(),
+            &raffle.creator,
+            &raffle.prize_amount,
+        );
         let _ = token_client
             .try_transfer(
                 &env.current_contract_address(),
@@ -1044,7 +1362,7 @@ impl Contract {
         PrizeRefunded {
             creator: raffle.creator.clone(),
             amount: raffle.prize_amount,
-            token: raffle.payment_token.clone(),
+            token: raffle.prize_token.clone(),
             timestamp: env.ledger().timestamp(),
         }
         .publish(&env);
@@ -1083,8 +1401,18 @@ impl Contract {
                 }
             }
             RaffleStatus::Drawing => {
-                if raffle.end_time == 0 || now < raffle.end_time + EMERGENCY_WITHDRAW_DELAY_SECONDS
-                {
+                if raffle.no_deadline {
+                    let request_ledger: u32 = env
+                        .storage()
+                        .instance()
+                        .get(&DataKey::RandomnessRequestLedger)
+                        .unwrap_or(0);
+                    let estimated_seconds =
+                        (env.ledger().sequence().saturating_sub(request_ledger) as u64) * 5;
+                    if estimated_seconds < EMERGENCY_WITHDRAW_DELAY_SECONDS {
+                        return Err(Error::EmergencyTooEarly);
+                    }
+                } else if now < raffle.end_time + EMERGENCY_WITHDRAW_DELAY_SECONDS {
                     return Err(Error::EmergencyTooEarly);
                 }
             }
@@ -1096,7 +1424,7 @@ impl Contract {
         raffle.status = RaffleStatus::Cancelled;
         write_raffle(&env, &raffle);
 
-        let token_client = token::Client::new(&env, &raffle.payment_token);
+        let token_client = token::Client::new(&env, &raffle.prize_token);
         token_client.transfer(
             &env.current_contract_address(),
             &raffle.creator,
@@ -1107,7 +1435,7 @@ impl Contract {
             withdrawn_by: caller,
             to: raffle.creator.clone(),
             amount: raffle.prize_amount,
-            token: raffle.payment_token.clone(),
+            token: raffle.prize_token.clone(),
             timestamp: env.ledger().timestamp(),
         }
         .publish(&env);
@@ -1116,12 +1444,21 @@ impl Contract {
     }
 
     pub fn refund_ticket(env: Env, ticket_id: u32) -> Result<i128, Error> {
-        acquire_guard(&env)?;
         let raffle = read_raffle(&env)?;
+
+        // #406: Ticket holders may refund as soon as an admin cancel is
+        // *scheduled*, without waiting for the timelock to execute the cancel.
+        let cancel_scheduled = env
+            .storage()
+            .instance()
+            .has(&DataKey::PendingAdminCancel);
 
         // #258: status check BEFORE require_auth to prevent double-spend on
         // status transitions that occur between auth and the gate.
-        if raffle.status != RaffleStatus::Cancelled && raffle.status != RaffleStatus::Failed {
+        if raffle.status != RaffleStatus::Cancelled
+            && raffle.status != RaffleStatus::Failed
+            && !cancel_scheduled
+        {
             return Err(Error::InvalidStatus);
         }
 
@@ -1147,6 +1484,11 @@ impl Contract {
             .set(&DataKey::TicketRefunded(ticket_id), &true);
 
         let token_client = token::Client::new(&env, &raffle.payment_token);
+        token_client.transfer(
+            &env.current_contract_address(),
+            &ticket.owner,
+            &raffle.ticket_price,
+        );
         let _ = token_client
             .try_transfer(
                 &env.current_contract_address(),
@@ -1166,6 +1508,62 @@ impl Contract {
         Ok(raffle.ticket_price)
     }
 
+    pub fn batch_refund_tickets(
+        env: Env,
+        owner: Address,
+        ticket_ids: Vec<u32>,
+    ) -> Result<i128, Error> {
+        owner.require_auth();
+        acquire_guard(&env)?;
+        let raffle = read_raffle(&env)?;
+
+        if raffle.status != RaffleStatus::Cancelled && raffle.status != RaffleStatus::Failed {
+            return Err(Error::InvalidStatus);
+        }
+        if ticket_ids.len() > 50 {
+            // per-tx cap to stay within compute limits
+            return Err(Error::InvalidParameters);
+        }
+
+        let mut total_refund = 0i128;
+
+        for ticket_id in ticket_ids.iter() {
+            let ticket: Ticket = env
+                .storage()
+                .persistent()
+                .get(&DataKey::Ticket(ticket_id))
+                .ok_or(Error::TicketNotFound)?;
+
+            if ticket.owner != owner {
+                return Err(Error::NotAuthorized);
+            }
+
+            let refund_key = (DataKey::Ticket(ticket_id), Symbol::new(&env, "refunded"));
+            if env.storage().persistent().has(&refund_key) {
+                continue;
+            }
+
+            env.storage().persistent().set(&refund_key, &true);
+            total_refund += raffle.ticket_price;
+
+            crate::events::TicketRefunded {
+                buyer: ticket.owner,
+                ticket_number: ticket.ticket_number,
+                amount: raffle.ticket_price,
+                timestamp: env.ledger().timestamp(),
+            }
+            .publish(&env);
+        }
+
+        if total_refund > 0 {
+            let token_client = token::Client::new(&env, &raffle.payment_token);
+            token_client.transfer(&env.current_contract_address(), &owner, &total_refund);
+        }
+
+        release_guard(&env);
+        Ok(total_refund)
+    }
+
     pub fn get_raffle(env: Env) -> Result<Raffle, Error> {
         read_raffle(&env)
     }
@@ -1173,7 +1571,7 @@ impl Contract {
     pub fn get_fairness_data(env: Env) -> Result<FairnessData, Error> {
         let metadata: FairnessMetadata = env
             .storage()
-            .instance()
+            .persistent()
             .get(&DataKey::RandomnessSeed)
             .ok_or(Error::InvalidStatus)?;
         let raffle = read_raffle(&env)?;
@@ -1193,6 +1591,18 @@ impl Contract {
         })
     }
 
+    /// Return all ticket IDs owned by `owner`.
+    ///
+    /// Uses the `OwnerTickets` index maintained during `buy_tickets` for an
+    /// O(1) read.  Falls back to an empty Vec when the address has never
+    /// purchased a ticket.
+    pub fn get_my_tickets(env: Env, owner: Address) -> Vec<u32> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::OwnerTickets(owner))
+            .unwrap_or_else(|| Vec::new(&env))
+    }
+
     pub fn wipe_storage(env: Env) -> Result<(), Error> {
         let factory: Address = env
             .storage()
@@ -1209,9 +1619,56 @@ impl Contract {
             return Err(Error::InvalidStatus);
         }
 
-        // Wipe all storage
+        // Wipe ticket storage
+        for i in 1..=raffle.tickets_sold {
+            env.storage().persistent().remove(&DataKey::Ticket(i));
+            env.storage()
+                .persistent()
+                .remove(&DataKey::TicketRefunded(i));
+            env.storage().persistent().remove(&DataKey::CommitEntry(i));
+        }
+
+        let buyers: Vec<Address> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::TicketBuyers)
+            .unwrap_or_else(|| Vec::new(&env));
+        for buyer in buyers.iter() {
+            env.storage()
+                .persistent()
+                .remove(&DataKey::TicketCount(buyer.clone()));
+            env.storage()
+                .persistent()
+                .remove(&DataKey::OwnerTickets(buyer.clone()));
+        }
+        env.storage().persistent().remove(&DataKey::TicketBuyers);
+
+        // Wipe instance storage
         env.storage().instance().remove(&DataKey::Raffle);
-        // ... (other keys)
+        env.storage().instance().remove(&DataKey::Factory);
+        env.storage().instance().remove(&DataKey::Admin);
+        env.storage().instance().remove(&DataKey::Paused);
+        env.storage().instance().remove(&DataKey::ReentrancyGuard);
+        env.storage().instance().remove(&DataKey::AccumulatedFees);
+        env.storage()
+            .instance()
+            .remove(&DataKey::RandomnessRequested);
+        env.storage()
+            .instance()
+            .remove(&DataKey::RandomnessRequestLedger);
+        env.storage()
+            .instance()
+            .remove(&DataKey::RandomnessRequestId);
+        env.storage().instance().remove(&DataKey::DrawingLock);
+        env.storage().instance().remove(&DataKey::FinishTime);
+        env.storage()
+            .instance()
+            .remove(&DataKey::PendingAdminCancel);
+
+        // Wipe persistent instance-level keys
+        env.storage().persistent().remove(&DataKey::RandomnessSeed);
+        env.storage().persistent().remove(&DataKey::Admin);
+
         Ok(())
     }
 
@@ -1258,6 +1715,68 @@ impl Contract {
             .unwrap_or(false)
     }
 
+    pub fn set_admin(env: Env, new_admin: Address) -> Result<(), Error> {
+        self::admin::set_admin(env, new_admin)
+    }
+
+    pub fn pause_ticket_sales(env: Env, caller: Address) -> Result<(), Error> {
+        caller.require_auth();
+        let mut raffle = read_raffle(&env)?;
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::NotAuthorized)?;
+        if caller != raffle.creator && caller != admin {
+            return Err(Error::NotAuthorized);
+        }
+        if raffle.status != RaffleStatus::Active {
+            return Err(Error::InvalidStatus);
+        }
+        raffle.ticket_sales_paused = true;
+        write_raffle(&env, &raffle);
+
+        TicketSalesPaused {
+            paused_by: caller,
+            timestamp: env.ledger().timestamp(),
+        }
+        .publish(&env);
+
+        Ok(())
+    }
+
+    pub fn resume_ticket_sales(env: Env, caller: Address) -> Result<(), Error> {
+        caller.require_auth();
+        let mut raffle = read_raffle(&env)?;
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::NotAuthorized)?;
+        if caller != raffle.creator && caller != admin {
+            return Err(Error::NotAuthorized);
+        }
+        if raffle.status != RaffleStatus::Active {
+            return Err(Error::InvalidStatus);
+        }
+        raffle.ticket_sales_paused = false;
+        write_raffle(&env, &raffle);
+
+        TicketSalesResumed {
+            resumed_by: caller,
+            timestamp: env.ledger().timestamp(),
+        }
+        .publish(&env);
+
+        Ok(())
+    }
+
+    pub fn is_ticket_sales_paused(env: Env) -> bool {
+        read_raffle(&env)
+            .map(|raffle| raffle.ticket_sales_paused)
+            .unwrap_or(false)
+    }
+
     /// Sweep tokens that were accidentally sent to this contract.
     /// The raffle's own payment_token cannot be swept while a prize is held in escrow,
     /// ensuring active raffle funds are never at risk.
@@ -1278,10 +1797,13 @@ impl Contract {
             return Err(Error::InvalidParameters);
         }
 
-        // Protect active escrow: block sweeping the raffle payment token while
-        // the prize is deposited (i.e. the escrow is live).
+        // Protect active escrow: block sweeping the prize token while the prize
+        // is deposited. Also block the payment token if it equals the prize token
+        // to prevent draining the fee pool via a mis-directed rescue.
         if let Ok(raffle) = read_raffle(&env) {
-            if token == raffle.payment_token && raffle.prize_deposited {
+            if raffle.prize_deposited
+                && (token == raffle.prize_token || token == raffle.payment_token)
+            {
                 return Err(Error::InvalidParameters);
             }
         }
@@ -1303,299 +1825,18 @@ impl Contract {
         Ok(())
     }
 
-    pub fn set_admin(env: Env, new_admin: Address) -> Result<(), Error> {
-        let _old_admin = require_admin(&env)?;
-        env.storage().persistent().set(&DataKey::Admin, &new_admin);
-        Ok(())
-    }
-
-    /// Admin-only migration hook for the trusted randomness oracle contract.
     pub fn update_oracle_address(env: Env, new_oracle: Address) -> Result<(), Error> {
-        let admin = require_admin(&env)?;
-        let mut raffle = read_raffle(&env)?;
-
-        if raffle.randomness_source != RandomnessSource::External {
-            return Err(Error::InvalidParameters);
-        }
-        if new_oracle == env.current_contract_address() {
-            return Err(Error::InvalidParameters);
-        }
-        if raffle.status == RaffleStatus::Finalized
-            || raffle.status == RaffleStatus::Claimed
-            || raffle.status == RaffleStatus::Cancelled
-        {
-            return Err(Error::InvalidStatus);
-        }
-
-        let old_oracle = raffle.oracle_address.clone();
-        raffle.oracle_address = Some(new_oracle.clone());
-        write_raffle(&env, &raffle);
-
-        OracleAddressUpdated {
-            old_oracle,
-            new_oracle,
-            updated_by: admin,
-            timestamp: env.ledger().timestamp(),
-        }
-        .publish(&env);
-
-        Ok(())
+        self::admin::update_oracle_address(env, new_oracle)
     }
 
-    /// Admin-only adjustment of the per-raffle protocol fee before ticket sales begin.
     pub fn set_protocol_fee_bp(env: Env, new_fee_bp: u32) -> Result<(), Error> {
-        let admin = require_admin(&env)?;
-        if new_fee_bp > MAX_PROTOCOL_FEE_BP {
-            return Err(Error::InvalidParameters);
-        }
-
-        let mut raffle = read_raffle(&env)?;
-        if raffle.tickets_sold > 0 {
-            return Err(Error::InvalidStatus);
-        }
-
-        let old_fee_bp = raffle.protocol_fee_bp;
-        raffle.protocol_fee_bp = new_fee_bp;
-        write_raffle(&env, &raffle);
-
-        ProtocolFeeUpdated {
-            old_fee_bp,
-            new_fee_bp,
-            updated_by: admin,
-            timestamp: env.ledger().timestamp(),
-        }
-        .publish(&env);
-
-        Ok(())
-    }
-}
-
-fn do_finalize_with_seed(
-    env: &Env,
-    mut raffle: Raffle,
-    seed: u64,
-    randomness_type: RandomnessType,
-) -> Result<(), Error> {
-    let total_tickets = raffle.tickets_sold;
-    if total_tickets == 0 {
-        return Err(Error::NoTicketsSold);
-    }
-    if raffle.prizes.len() > total_tickets {
-        return Err(Error::MorePrizesThanTickets);
+        self::admin::set_protocol_fee_bp(env, new_fee_bp)
     }
 
-    // #256: Guard against all tickets being refunded after the draw window
-    // opened but before finalize runs, which would make the winners Vec empty
-    // and cause a panic on the winner_index lookup.
-    let active_count = raffle.tickets_sold;
-    if active_count == 0 {
-        return Err(Error::NoActiveTickets);
+    pub fn set_swap_deadline(env: Env, new_deadline_seconds: u64) -> Result<(), Error> {
+        self::admin::set_swap_deadline(env, new_deadline_seconds)
     }
-
-    let selector = OracleSeedWinnerSelection::new(seed);
-    let winning_ticket_ids =
-        selector.select_winner_indices(env, total_tickets, raffle.prizes.len());
-    let mut winners = Vec::new(env);
-
-    for i in 0..winning_ticket_ids.len() {
-        let winner_index = winning_ticket_ids.get(i).ok_or(Error::InvalidIndex)?;
-        let ticket_id = winner_index + 1;
-        let winner = get_ticket_owner(env, ticket_id).ok_or(Error::TicketNotFound)?;
-        winners.push_back(winner.clone());
-
-        WinnerDrawn {
-            winner,
-            ticket_id: winner_index,
-            tier_index: i,
-            timestamp: env.ledger().timestamp(),
-        }
-        .publish(env);
-    }
-
-    let mut claimed_winners = Vec::new(env);
-    for _ in 0..raffle.prizes.len() {
-        claimed_winners.push_back(false);
-    }
-
-    let fairness_metadata = FairnessMetadata {
-        seed,
-        randomness_source: raffle.randomness_source.clone(),
-        winning_ticket_indices: winning_ticket_ids.clone(),
-        draw_timestamp: env.ledger().timestamp(),
-        draw_sequence: env.ledger().sequence(),
-    };
-    env.storage()
-        .instance()
-        .set(&DataKey::RandomnessSeed, &fairness_metadata);
-
-    raffle.status = RaffleStatus::Finalized;
-    raffle.winners = winners.clone();
-    raffle.claimed_winners = claimed_winners;
-    raffle.finalized_at = Some(env.ledger().timestamp());
-    write_raffle(env, &raffle);
-
-    // Clear pending randomness state
-    env.storage()
-        .instance()
-        .remove(&DataKey::RandomnessRequested);
-    env.storage()
-        .instance()
-        .remove(&DataKey::RandomnessRequestId);
-    env.storage()
-        .instance()
-        .remove(&DataKey::RandomnessRequestLedger);
-
-    RaffleFinalized {
-        raffle_id: env.current_contract_address(),
-        winners,
-        winning_ticket_ids,
-        total_tickets_sold: raffle.tickets_sold,
-        randomness_source: raffle.randomness_source.clone(),
-        randomness_type,
-        finalized_at: env.ledger().timestamp(),
-    }
-    .publish(env);
-
-    Ok(())
 }
 
 #[cfg(test)]
-mod test {
-    use super::*;
-    use raffle_shared::RaffleConfig;
-    use soroban_sdk::testutils::{Address as _, Ledger as _};
-    use soroban_sdk::{vec, Address, BytesN, Env, String};
-
-    // Deploy a Stellar Asset Contract we control, return (token_client, admin_client).
-    fn create_token<'a>(env: &Env, admin: &Address) -> (Address, token::StellarAssetClient<'a>) {
-        let sac = env.register_stellar_asset_contract_v2(admin.clone());
-        let addr = sac.address();
-        (addr.clone(), token::StellarAssetClient::new(env, &addr))
-    }
-    #[contract]
-    pub struct MockFactory;
-
-    #[contractimpl]
-    impl MockFactory {
-        pub fn record_volume(_env: Env, _token: Address, _amount: i128) {}
-        pub fn track_participant(_env: Env, _participant: Address) {}
-    }
-
-    #[test]
-    fn non_winner_cannot_claim() {
-        let env = Env::default();
-        env.mock_all_auths();
-        env.ledger().set_timestamp(1_000);
-
-        let contract_id = env.register(Contract, ());
-        let client = ContractClient::new(&env, &contract_id);
-
-        // Players
-        let factory = env.register(MockFactory, ());
-        let admin = Address::generate(&env);
-        let creator = Address::generate(&env);
-        let buyer = Address::generate(&env);
-        let attacker = Address::generate(&env);
-
-        // Payment token, funded
-        let token_admin = Address::generate(&env);
-        let (token_addr, token_mint) = create_token(&env, &token_admin);
-        token_mint.mint(&creator, &1_000_000);
-        token_mint.mint(&buyer, &1_000_000);
-
-        // One prize tier worth 100% (10000 bp)
-        let config = RaffleConfig {
-            description: String::from_str(&env, "test raffle"),
-            end_time: 0,
-            no_deadline: true,
-            max_tickets: 1,
-            min_tickets: 1,
-            allow_multiple: true,
-            ticket_price: MIN_TICKET_PRICE,
-            payment_token: token_addr.clone(),
-            prize_amount: MIN_TICKET_PRICE * 10,
-            prizes: vec![&env, 10000u32],
-            randomness_source: RandomnessSource::Internal,
-            oracle_address: None,
-            protocol_fee_bp: 0,
-            treasury_address: None,
-            swap_router: None,
-            tikka_token: None,
-            metadata_hash: BytesN::from_array(&env, &[1u8; 32]),
-            claim_lockup_seconds: 0, // => DEFAULT_CLAIM_LOCKUP_SECONDS (3600)
-        };
-
-        client.init(&factory, &admin, &creator, &config);
-        client.deposit_prize();
-        client.buy_tickets(&buyer, &1);
-        client.finalize_raffle();
-
-        // Sanity: a winner is now recorded, and it is NOT the attacker.
-        let raffle = client.get_raffle();
-        assert_eq!(raffle.winners.len(), 1);
-        assert!(raffle.winners.get(0).unwrap() != attacker);
-
-        // Advance past the claim lockup so we reach the winner check, not ClaimTooEarly.
-        env.ledger()
-            .set_timestamp(1_000 + DEFAULT_CLAIM_LOCKUP_SECONDS + 1);
-
-        // Attacker authenticates fine (mock_all_auths) but is not the winner.
-        let result = client.try_claim_prize(&attacker, &0u32);
-        assert_eq!(result, Err(Ok(Error::NotWinner)));
-    }
-
-    /// Golden-vector cross-check: proof message encoding matches the TS oracle.
-    ///
-    /// The on-chain verifier (`provide_randomness`) builds the signed message as:
-    ///
-    ///   let message = Bytes::from_array(&env, &random_seed.to_be_bytes());
-    ///
-    /// The TypeScript oracle (oracle/src/vrf/proof-message.ts) must produce the
-    /// identical byte sequence.  The vectors below are the single source of truth
-    /// shared with oracle/src/vrf/__fixtures__/proof-message-vectors.json.
-    ///
-    /// Any change to either encoding that breaks this alignment will be caught here
-    /// (Rust side) or in the Jest suite (TS side) before reaching an environment.
-    #[test]
-    fn proof_message_encoding_golden_vectors() {
-        // (seed, expected_be_bytes)
-        let vectors: &[(u64, [u8; 8])] = &[
-            // seed = 0  →  all-zero bytes
-            (0, [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]),
-            // seed = 1  →  LSB in last position (big-endian)
-            (1, [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01]),
-            // seed = 255  →  single byte max
-            (255, [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xff]),
-            // seed = 256  →  byte-boundary rollover
-            (256, [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00]),
-            // seed = 0x0102030405060708  →  all 8 bytes distinct, verifies full byte-order
-            (
-                0x0102_0304_0506_0708,
-                [0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08],
-            ),
-            // seed = 9_999_999_999_999_999  →  representative VRF output size
-            (
-                9_999_999_999_999_999,
-                [0x00, 0x23, 0x86, 0xf2, 0x6f, 0xc0, 0xff, 0xff],
-            ),
-            // seed = 12_345_678_901_234_567_890  →  large value using all 8 bytes
-            (
-                12_345_678_901_234_567_890,
-                [0xab, 0x54, 0xa9, 0x8c, 0xeb, 0x1f, 0x0a, 0xd2],
-            ),
-            // seed = u64::MAX  →  all-ones bytes
-            (u64::MAX, [0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff]),
-        ];
-
-        for (seed, expected) in vectors {
-            let encoded = seed.to_be_bytes();
-            assert_eq!(
-                encoded, *expected,
-                "proof message mismatch for seed {seed}: \
-                 got {encoded:?}, expected {expected:?}. \
-                 See oracle/src/vrf/__fixtures__/proof-message-vectors.json \
-                 and oracle/src/vrf/proof-message.test.ts for the TS side."
-            );
-        }
-    }
-}
+mod test;
