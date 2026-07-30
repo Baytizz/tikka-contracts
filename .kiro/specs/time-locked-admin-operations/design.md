@@ -5,6 +5,7 @@
 This feature replaces the immediate `set_config` entry point in the `RaffleFactory` contract with a propose → wait → execute lifecycle. Critical administrative changes (protocol fee basis points and treasury address) are queued as `PendingOp` entries with a mandatory 48-hour delay before they can be applied. This gives raffle participants time to observe proposed changes and exit before they take effect.
 
 The implementation touches three files:
+
 - `contracts/raffle/src/lib.rs` — new entry points, `DataKey` variants, `ContractError` variants, `AdminOp` type, `PendingOp` type, and the `TIMELOCK_DELAY_SECONDS` constant
 - `contracts/raffle/src/events.rs` — three new event structs (`AdminOpProposed`, `AdminOpExecuted`, `AdminOpCancelled`)
 - `contracts/raffle/src/instance/test.rs` (or a new `contracts/raffle/src/tests/timelock.rs`) — unit and property-based tests
@@ -151,7 +152,7 @@ pub struct AdminOpCancelled {
 
 ### `PendingOp` lifecycle
 
-```
+```text
 propose_config_change  →  PendingOp stored at DataKey::PendingOp(op_id)
                                     │
                     ┌───────────────┴───────────────┐
@@ -163,7 +164,7 @@ propose_config_change  →  PendingOp stored at DataKey::PendingOp(op_id)
 
 ### Counter assignment
 
-```
+```text
 initial state: OpCounter = 0 (absent → treated as 0)
 first propose:  OpCounter becomes 1, op_id = 1
 second propose: OpCounter becomes 2, op_id = 2
@@ -292,7 +293,7 @@ Each property below maps to one property-based test:
 Since Soroban's test environment (`soroban_sdk::testutils`) does not integrate directly with `proptest` generators, property tests will use a hybrid approach:
 
 1. Use `proptest` to generate raw Rust values (`u32` for `protocol_fee_bp`, random byte arrays for address seeds).
-2. Construct `soroban_sdk::Address` values from generated seeds using `Address::from_contract_id` or `Address::generate` within a fresh `Env`.
-3. Advance the ledger timestamp using `env.ledger().set_timestamp(t)` to test timelock boundary conditions.
+1. Construct `soroban_sdk::Address` values from generated seeds using `Address::from_contract_id` or `Address::generate` within a fresh `Env`.
+1. Advance the ledger timestamp using `env.ledger().set_timestamp(t)` to test timelock boundary conditions.
 
 This approach keeps property tests deterministic and reproducible while exercising the full range of valid inputs.

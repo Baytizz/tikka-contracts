@@ -68,7 +68,7 @@ The current testnet deployment
 1. **Upgrade the factory WASM** via `upgrade(new_wasm_hash)` (requires the
    48-hour timelock via `set_config` → `execute_config_change`).
 
-2. **Run the one-time migration script** below.  It reads the old Vec,
+1. **Run the one-time migration script** below.  It reads the old Vec,
    writes each address into the new `RaffleById(i)` slot, sets
    `NextRaffleId` to `Vec.len()`, sets `RaffleCount` to `Vec.len()`, and
    finally removes `RaffleInstances`.
@@ -115,11 +115,11 @@ The current testnet deployment
    > keys in a single transaction, then removes itself from the WASM
    > (or is simply never callable again via a `migrated` flag).
 
-3. **Verify** by calling `get_raffle_by_id(0)` and comparing with the
+1. **Verify** by calling `get_raffle_by_id(0)` and comparing with the
    first element of the old Vec, and `get_next_raffle_id()` matches
    `Vec.len()`.
 
-4. **Off-chain indexers / clients** must be updated:
+1. **Off-chain indexers / clients** must be updated:
    - Replace any code that used the full `get_raffles_page` Vec offset as a
      stable raffle identifier with the new `stable_id` (`u32`) from
      `NextRaffleId - 1` at creation time.

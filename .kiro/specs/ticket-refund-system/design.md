@@ -7,6 +7,7 @@ The Ticket Refund System enables ticket holders to reclaim their funds when a ra
 The system is built as part of the Tikka raffle smart contract on Soroban (Stellar blockchain) using Rust. It integrates with the existing raffle lifecycle, token transfer mechanisms, and event emission infrastructure.
 
 Key design principles:
+
 - Pull-based refunds: ticket holders initiate their own refunds
 - Idempotency: each ticket can only be refunded once
 - Reentrancy protection: guards prevent recursive calls during token transfers
@@ -20,10 +21,10 @@ Key design principles:
 The refund system operates within the raffle contract instance and interacts with:
 
 1. **Raffle State**: Reads raffle status to verify cancellation
-2. **Ticket Storage**: Retrieves ticket ownership and pricing information
-3. **RefundStatus Storage**: Tracks which tickets have been refunded
-4. **Token Contract**: Executes token transfers back to ticket holders
-5. **Event System**: Publishes refund events for external monitoring
+1. **Ticket Storage**: Retrieves ticket ownership and pricing information
+1. **RefundStatus Storage**: Tracks which tickets have been refunded
+1. **Token Contract**: Executes token transfers back to ticket holders
+1. **Event System**: Publishes refund events for external monitoring
 
 ### Component Diagram
 
@@ -73,14 +74,17 @@ pub fn refund_ticket(env: Env, ticket_id: u32) -> Result<i128, Error>
 ```
 
 **Parameters:**
+
 - `env: Env` - Soroban environment providing access to storage, ledger, and contract context
 - `ticket_id: u32` - Unique identifier of the ticket to refund
 
 **Returns:**
+
 - `Ok(i128)` - The refunded amount (ticket_price) on success
 - `Err(Error)` - Specific error variant on failure
 
 **Error Cases:**
+
 - `Error::InvalidStateTransition` - Raffle not cancelled or ticket already refunded
 - `Error::InvalidParameters` - Ticket does not exist
 - `Error::NotAuthorized` - Caller is not the ticket owner
@@ -217,6 +221,7 @@ pub struct Raffle {
 ```
 
 **Relevant Fields for Refunds:**
+
 - `status: RaffleStatus` - Must be `Cancelled` for refunds
 - `ticket_price: i128` - Amount to refund per ticket
 - `payment_token: Address` - Token contract for transfers
@@ -234,6 +239,7 @@ pub struct Ticket {
 ```
 
 **Relevant Fields for Refunds:**
+
 - `id: u32` - Unique ticket identifier
 - `owner: Address` - Address authorized to claim refund
 
@@ -268,4 +274,3 @@ Published with topics: `("tikka", "ticket_refunded")`
 - **ReentrancyGuard**: Instance storage (temporary, per-call)
 
 Persistent storage ensures refund status is maintained even if the contract is upgraded or archived.
-

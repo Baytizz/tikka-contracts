@@ -59,10 +59,10 @@ Register a new oracle public key on-chain via the raffle admin/oracle update flo
 
 ## Architecture
 
-* **`KeyService` (`src/keys/key.service.ts`)**: securely loads the keypair and exposes `.getPublicKey()`, `.getPublicKeyBytes()`, `.sign()`, and `.shutdown()`.
-* **`VrfService` (`src/vrf/vrf.service.ts`)**: signs context-bound randomness proofs for `provide_randomness`.
-* **`TxSubmitterService` (`src/tx/tx-submitter.service.ts`)**: submits `provide_randomness` transactions to Soroban RPC.
-* **`EventListenerService` (`src/listener/event-listener.service.ts`)**: polls `RandomnessRequested` contract events and enqueues work for this oracle.
+- **`KeyService` (`src/keys/key.service.ts`)**: securely loads the keypair and exposes `.getPublicKey()`, `.getPublicKeyBytes()`, `.sign()`, and `.shutdown()`.
+- **`VrfService` (`src/vrf/vrf.service.ts`)**: signs context-bound randomness proofs for `provide_randomness`.
+- **`TxSubmitterService` (`src/tx/tx-submitter.service.ts`)**: submits `provide_randomness` transactions to Soroban RPC.
+- **`EventListenerService` (`src/listener/event-listener.service.ts`)**: polls `RandomnessRequested` contract events and enqueues work for this oracle.
 
 ## Testing
 
