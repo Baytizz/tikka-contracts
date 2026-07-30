@@ -59,7 +59,7 @@ cargo test -p raffle-fuzz
 
 If `cargo fuzz run` discovers a crash, it writes a reproduction file to:
 
-```
+```text
 fuzz/artifacts/<target-name>/crash-<hash>
 ```
 
@@ -75,7 +75,7 @@ cargo fuzz run <target-name> fuzz/artifacts/<target-name>/crash-<hash>
 
 `cargo-fuzz` accumulates interesting inputs in:
 
-```
+```text
 fuzz/corpus/<target-name>/
 ```
 

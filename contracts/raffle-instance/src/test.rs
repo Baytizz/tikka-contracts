@@ -21,6 +21,227 @@ fn assert_drawing_lock_cleared(env: &Env, contract_id: &Address) {
 }
 
 #[test]
+fn protocol_fee_requires_treasury_for_init() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let factory = Address::generate(&env);
+    let admin = Address::generate(&env);
+    let creator = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let payment_token = env
+        .register_stellar_asset_contract_v2(token_admin.clone())
+        .address();
+    let contract_id = env.register(RaffleInstance, ());
+    let client = RaffleInstanceClient::new(&env, &contract_id);
+
+    let config = RaffleConfig {
+        description: String::from_str(&env, "Fee treasury test"),
+        end_time: 0,
+        no_deadline: true,
+        max_tickets: 2,
+        max_tickets_per_tx: 2,
+        min_tickets: 1,
+        allow_multiple: true,
+        ticket_price: MIN_TICKET_PRICE,
+        payment_token: payment_token.clone(),
+        prize_amount: MIN_TICKET_PRICE * 2,
+        prizes: soroban_sdk::vec![&env, 10000],
+        randomness_source: RandomnessSource::Internal,
+        oracle_address: None,
+        protocol_fee_bp: 100,
+        treasury_address: None,
+        swap_router: None,
+        tikka_token: None,
+        metadata_hash: BytesN::from_array(&env, &[21; 32]),
+        claim_lockup_seconds: 0,
+        swap_deadline_seconds: 0,
+        early_bird_ticket_percentage: 0,
+        early_bird_discount_bp: 0,
+    };
+
+    let result = client.try_init(&factory, &admin, &creator, &config);
+    assert_eq!(result.err(), Some(Ok(Error::InvalidParameters)));
+}
+
+#[test]
+fn end_time_boundary_is_strict_for_sales_and_finalization() {
+    fn run_case(timestamp: u64, buy_should_succeed: bool) {
+        let env = Env::default();
+        env.mock_all_auths();
+        env.ledger().set_timestamp(timestamp);
+
+        let factory = Address::generate(&env);
+        let admin = Address::generate(&env);
+        let creator = Address::generate(&env);
+        let buyer = Address::generate(&env);
+        let token_admin = Address::generate(&env);
+        let payment_token = env
+            .register_stellar_asset_contract_v2(token_admin.clone())
+            .address();
+        let token_client = StellarAssetClient::new(&env, &payment_token);
+        token_client.mint(&creator, &1_000_000);
+        token_client.mint(&buyer, &1_000_000);
+
+        let contract_id = env.register(RaffleInstance, ());
+        let client = RaffleInstanceClient::new(&env, &contract_id);
+
+        let config = RaffleConfig {
+            description: String::from_str(&env, "Boundary test"),
+            end_time: 1_000,
+            no_deadline: false,
+            max_tickets: 2,
+            max_tickets_per_tx: 2,
+            min_tickets: 1,
+            allow_multiple: true,
+            ticket_price: MIN_TICKET_PRICE,
+            payment_token: payment_token.clone(),
+            prize_amount: MIN_TICKET_PRICE * 10,
+            prizes: soroban_sdk::vec![&env, 10000],
+            randomness_source: RandomnessSource::Internal,
+            oracle_address: None,
+            protocol_fee_bp: 0,
+            treasury_address: None,
+            swap_router: None,
+            tikka_token: None,
+            metadata_hash: BytesN::from_array(&env, &[22; 32]),
+            claim_lockup_seconds: 0,
+            swap_deadline_seconds: 0,
+            early_bird_ticket_percentage: 0,
+            early_bird_discount_bp: 0,
+        };
+
+        client.init(&factory, &admin, &creator, &config);
+        client.deposit_prize();
+
+        let buy_result = client.try_buy_tickets(&buyer, &1);
+        assert_eq!(buy_result.is_ok(), buy_should_succeed);
+
+        let finalize_result = client.try_finalize_raffle();
+        if buy_should_succeed {
+            assert_eq!(finalize_result.err(), Some(Ok(Error::InvalidStateTransition)));
+        } else {
+            assert!(finalize_result.is_ok());
+        }
+    }
+
+    run_case(999, true);
+    run_case(1_000, false);
+    run_case(1_001, false);
+}
+
+#[test]
+fn no_deadline_raffle_ignores_end_time_boundary() {
+    let env = Env::default();
+    env.mock_all_auths();
+    env.ledger().set_timestamp(1_001);
+
+    let factory = Address::generate(&env);
+    let admin = Address::generate(&env);
+    let creator = Address::generate(&env);
+    let buyer = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let payment_token = env
+        .register_stellar_asset_contract_v2(token_admin.clone())
+        .address();
+    let token_client = StellarAssetClient::new(&env, &payment_token);
+    token_client.mint(&creator, &1_000_000);
+    token_client.mint(&buyer, &1_000_000);
+
+    let contract_id = env.register(RaffleInstance, ());
+    let client = RaffleInstanceClient::new(&env, &contract_id);
+
+    let config = RaffleConfig {
+        description: String::from_str(&env, "No deadline test"),
+        end_time: 1_000,
+        no_deadline: true,
+        max_tickets: 2,
+        max_tickets_per_tx: 2,
+        min_tickets: 1,
+        allow_multiple: true,
+        ticket_price: MIN_TICKET_PRICE,
+        payment_token: payment_token.clone(),
+        prize_amount: MIN_TICKET_PRICE * 10,
+        prizes: soroban_sdk::vec![&env, 10000],
+        randomness_source: RandomnessSource::Internal,
+        oracle_address: None,
+        protocol_fee_bp: 0,
+        treasury_address: None,
+        swap_router: None,
+        tikka_token: None,
+        metadata_hash: BytesN::from_array(&env, &[23; 32]),
+        claim_lockup_seconds: 0,
+        swap_deadline_seconds: 0,
+        early_bird_ticket_percentage: 0,
+        early_bird_discount_bp: 0,
+    };
+
+    client.init(&factory, &admin, &creator, &config);
+    client.deposit_prize();
+    let bought = client.buy_tickets(&buyer, &1);
+    assert_eq!(bought, 1);
+}
+
+#[test]
+fn claim_rejects_when_contract_balance_cannot_cover_prize() {
+    let env = Env::default();
+    env.mock_all_auths();
+    env.ledger().set_timestamp(1_000);
+
+    let factory = Address::generate(&env);
+    let admin = Address::generate(&env);
+    let creator = Address::generate(&env);
+    let winner = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let payment_token = env
+        .register_stellar_asset_contract_v2(token_admin.clone())
+        .address();
+    let token_client = StellarAssetClient::new(&env, &payment_token);
+    token_client.mint(&creator, &1_000_000);
+    token_client.mint(&winner, &1_000_000);
+
+    let contract_id = env.register(RaffleInstance, ());
+    let client = RaffleInstanceClient::new(&env, &contract_id);
+
+    let config = RaffleConfig {
+        description: String::from_str(&env, "Solvency test"),
+        end_time: 0,
+        no_deadline: true,
+        max_tickets: 1,
+        max_tickets_per_tx: 1,
+        min_tickets: 1,
+        allow_multiple: true,
+        ticket_price: MIN_TICKET_PRICE,
+        payment_token: payment_token.clone(),
+        prize_amount: MIN_TICKET_PRICE * 10,
+        prizes: soroban_sdk::vec![&env, 10000],
+        randomness_source: RandomnessSource::Internal,
+        oracle_address: None,
+        protocol_fee_bp: 0,
+        treasury_address: None,
+        swap_router: None,
+        tikka_token: None,
+        metadata_hash: BytesN::from_array(&env, &[24; 32]),
+        claim_lockup_seconds: 0,
+        swap_deadline_seconds: 0,
+        early_bird_ticket_percentage: 0,
+        early_bird_discount_bp: 0,
+    };
+
+    client.init(&factory, &admin, &creator, &config);
+    client.deposit_prize();
+    client.buy_tickets(&winner, &1);
+    client.finalize_raffle();
+
+    let contract_balance = token_client.balance(&contract_id);
+    token_client.transfer(&contract_id, &creator, &contract_balance);
+
+    env.ledger().set_timestamp(1_000 + DEFAULT_CLAIM_LOCKUP_SECONDS + 1);
+    let result = client.try_claim_prize(&winner, &0u32);
+    assert_eq!(result.err(), Some(Ok(Error::InsufficientFunds)));
+}
+
+#[test]
 fn test_oracle_fallback_with_ledger_delays() {
     let env = Env::default();
     env.mock_all_auths();
@@ -59,6 +280,7 @@ fn test_oracle_fallback_with_ledger_delays() {
         treasury_address: None,
         swap_router: None,
         tikka_token: None,
+        unique_winners: false,
         metadata_hash: BytesN::from_array(&env, &[1; 32]),
         claim_lockup_seconds: 0,
         swap_deadline_seconds: 0,
@@ -145,7 +367,8 @@ fn test_admin_updates_oracle_address() {
         treasury_address: None,
         swap_router: None,
         tikka_token: None,
-        metadata_hash: BytesN::from_array(&env, &[2; 32]),
+        unique_winners: false,
+            metadata_hash: BytesN::from_array(&env, &[2; 32]),
         claim_lockup_seconds: 0,
         swap_deadline_seconds: 0,
         early_bird_ticket_percentage: 0,
@@ -194,7 +417,8 @@ fn non_winner_cannot_claim() {
         treasury_address: None,
         swap_router: None,
         tikka_token: None,
-        metadata_hash: BytesN::from_array(&env, &[3; 32]),
+        unique_winners: false,
+            metadata_hash: BytesN::from_array(&env, &[3; 32]),
         claim_lockup_seconds: 0,
         swap_deadline_seconds: 0,
         early_bird_ticket_percentage: 0,
@@ -249,7 +473,8 @@ fn test_admin_withdraws_accumulated_fees() {
         treasury_address: None,
         swap_router: None,
         tikka_token: None,
-        metadata_hash: BytesN::from_array(&env, &[1u8; 32]),
+        unique_winners: false,
+            metadata_hash: BytesN::from_array(&env, &[1u8; 32]),
         claim_lockup_seconds: 0,
         swap_deadline_seconds: 0,
         early_bird_ticket_percentage: 0,
@@ -310,7 +535,8 @@ fn buy_tickets_rejects_quantity_above_per_tx_cap() {
         treasury_address: None,
         swap_router: None,
         tikka_token: None,
-        metadata_hash: BytesN::from_array(&env, &[5u8; 32]),
+        unique_winners: false,
+            metadata_hash: BytesN::from_array(&env, &[5u8; 32]),
         claim_lockup_seconds: 0,
         swap_deadline_seconds: 0,
         early_bird_ticket_percentage: 0,
@@ -368,7 +594,8 @@ fn setup_active_raffle(
         treasury_address: None,
         swap_router: None,
         tikka_token: None,
-        metadata_hash: BytesN::from_array(env, &[7u8; 32]),
+        unique_winners: false,
+            metadata_hash: BytesN::from_array(env, &[7u8; 32]),
         claim_lockup_seconds: 0,
         swap_deadline_seconds: 0,
         early_bird_ticket_percentage: 0,
@@ -410,7 +637,8 @@ fn pause_resume_ticket_sales_controls_buy_tickets() {
         treasury_address: None,
         swap_router: None,
         tikka_token: None,
-        metadata_hash: BytesN::from_array(&env, &[8; 32]),
+        unique_winners: false,
+            metadata_hash: BytesN::from_array(&env, &[8; 32]),
         claim_lockup_seconds: 0,
         swap_deadline_seconds: 0,
         early_bird_ticket_percentage: 0,
@@ -484,7 +712,8 @@ fn test_wipe_storage_removes_all_keys() {
         treasury_address: None,
         swap_router: None,
         tikka_token: None,
-        metadata_hash: BytesN::from_array(&env, &[9u8; 32]),
+        unique_winners: false,
+            metadata_hash: BytesN::from_array(&env, &[9u8; 32]),
         claim_lockup_seconds: 0,
         swap_deadline_seconds: 0,
         early_bird_ticket_percentage: 0,
@@ -568,7 +797,8 @@ fn test_refund_ticket_after_cancel() {
         treasury_address: None,
         swap_router: None,
         tikka_token: None,
-        metadata_hash: BytesN::from_array(&env, &[9; 32]),
+        unique_winners: false,
+            metadata_hash: BytesN::from_array(&env, &[9; 32]),
         claim_lockup_seconds: 0,
     };
 
@@ -614,7 +844,8 @@ fn emergency_withdraw_succeeds_after_delay_in_finalized_state() {
         treasury_address: None,
         swap_router: None,
         tikka_token: None,
-        metadata_hash: BytesN::from_array(&env, &[10; 32]),
+        unique_winners: false,
+            metadata_hash: BytesN::from_array(&env, &[10; 32]),
         claim_lockup_seconds: 0,
     };
 
@@ -678,7 +909,8 @@ fn emergency_withdraw_fails_for_no_deadline_raffle_before_timeout() {
         treasury_address: None,
         swap_router: None,
         tikka_token: None,
-        metadata_hash: BytesN::from_array(&env, &[11; 32]),
+        unique_winners: false,
+            metadata_hash: BytesN::from_array(&env, &[11; 32]),
         claim_lockup_seconds: 0,
     };
 
@@ -729,7 +961,8 @@ fn emergency_withdraw_succeeds_for_no_deadline_drawing_raffle_after_timeout() {
         treasury_address: None,
         swap_router: None,
         tikka_token: None,
-        metadata_hash: BytesN::from_array(&env, &[12; 32]),
+        unique_winners: false,
+            metadata_hash: BytesN::from_array(&env, &[12; 32]),
         claim_lockup_seconds: 0,
     };
 
@@ -783,7 +1016,8 @@ fn emergency_withdraw_fails_in_active_state() {
         treasury_address: None,
         swap_router: None,
         tikka_token: None,
-        metadata_hash: BytesN::from_array(&env, &[13; 32]),
+        unique_winners: false,
+            metadata_hash: BytesN::from_array(&env, &[13; 32]),
         claim_lockup_seconds: 0,
     };
 
@@ -843,7 +1077,8 @@ fn setup_external_drawing_raffle(
         treasury_address: None,
         swap_router: None,
         tikka_token: None,
-        metadata_hash: BytesN::from_array(&env, &[14; 32]),
+        unique_winners: false,
+            metadata_hash: BytesN::from_array(&env, &[14; 32]),
         claim_lockup_seconds: 0,
     };
 
@@ -920,7 +1155,8 @@ fn test_refund_guard_released_after_success() {
         treasury_address: None,
         swap_router: None,
         tikka_token: None,
-        metadata_hash: BytesN::from_array(&env, &[15; 32]),
+        unique_winners: false,
+            metadata_hash: BytesN::from_array(&env, &[15; 32]),
         claim_lockup_seconds: 0,
     };
 
@@ -977,7 +1213,8 @@ fn emergency_withdraw_only_callable_by_creator_or_admin() {
         treasury_address: None,
         swap_router: None,
         tikka_token: None,
-        metadata_hash: BytesN::from_array(&env, &[16; 32]),
+        unique_winners: false,
+            metadata_hash: BytesN::from_array(&env, &[16; 32]),
         claim_lockup_seconds: 0,
     };
 
@@ -1066,7 +1303,8 @@ fn test_claim_prize_pays_full_gross_with_protocol_fee() {
         treasury_address: None,
         swap_router: None,
         tikka_token: None,
-        metadata_hash: BytesN::from_array(&env, &[17; 32]),
+        unique_winners: false,
+            metadata_hash: BytesN::from_array(&env, &[17; 32]),
         claim_lockup_seconds: 0,
         protocol_fee_bp: 1_000,
         treasury_address: None,
@@ -1181,7 +1419,8 @@ fn prize_distribution_invariant_holds_for_multiple_tiers() {
                 treasury_address: Some(treasury.clone()),
                 swap_router: None,
                 tikka_token: None,
-                metadata_hash: BytesN::from_array(&env, &[33; 32]),
+                unique_winners: false,
+            metadata_hash: BytesN::from_array(&env, &[33; 32]),
                 claim_lockup_seconds: 0,
                 swap_deadline_seconds: 0,
             };
@@ -1276,6 +1515,7 @@ fn commit_reveal_entropy_is_mixed_from_all_tickets() {
             treasury_address: None,
             swap_router: None,
             tikka_token: None,
+            unique_winners: false,
             metadata_hash: BytesN::from_array(&env, &[metadata_byte; 32]),
             claim_lockup_seconds: 0,
             swap_deadline_seconds: 0,
@@ -1357,7 +1597,8 @@ fn commit_reveal_preserves_entropy_after_ticket_transfer() {
         treasury_address: None,
         swap_router: None,
         tikka_token: None,
-        metadata_hash: BytesN::from_array(&env, &[46; 32]),
+        unique_winners: false,
+            metadata_hash: BytesN::from_array(&env, &[46; 32]),
         claim_lockup_seconds: 0,
         swap_deadline_seconds: 0,
     };
@@ -1439,7 +1680,8 @@ fn commit_reveal_with_zero_commits_falls_back_to_prng() {
         treasury_address: None,
         swap_router: None,
         tikka_token: None,
-        metadata_hash: BytesN::from_array(&env, &[47; 32]),
+        unique_winners: false,
+            metadata_hash: BytesN::from_array(&env, &[47; 32]),
         claim_lockup_seconds: 0,
         swap_deadline_seconds: 0,
     };
@@ -1508,7 +1750,8 @@ fn drawing_lock_cleared_after_internal_finalize() {
         treasury_address: None,
         swap_router: None,
         tikka_token: None,
-        metadata_hash: BytesN::from_array(&env, &[48; 32]),
+        unique_winners: false,
+            metadata_hash: BytesN::from_array(&env, &[48; 32]),
         claim_lockup_seconds: 0,
         swap_deadline_seconds: 0,
         bundles: soroban_sdk::vec![&env],
@@ -1560,7 +1803,8 @@ fn drawing_lock_cleared_after_oracle_randomness() {
         treasury_address: None,
         swap_router: None,
         tikka_token: None,
-        metadata_hash: BytesN::from_array(&env, &[49; 32]),
+        unique_winners: false,
+            metadata_hash: BytesN::from_array(&env, &[49; 32]),
         claim_lockup_seconds: 0,
         swap_deadline_seconds: 0,
     };
@@ -1631,7 +1875,8 @@ fn drawing_lock_cleared_after_fallback_refund() {
         treasury_address: None,
         swap_router: None,
         tikka_token: None,
-        metadata_hash: BytesN::from_array(&env, &[50; 32]),
+        unique_winners: false,
+            metadata_hash: BytesN::from_array(&env, &[50; 32]),
         claim_lockup_seconds: 0,
         swap_deadline_seconds: 0,
     };
@@ -1686,7 +1931,8 @@ fn drawing_lock_cleared_after_fallback_no_refund() {
         treasury_address: None,
         swap_router: None,
         tikka_token: None,
-        metadata_hash: BytesN::from_array(&env, &[51; 32]),
+        unique_winners: false,
+            metadata_hash: BytesN::from_array(&env, &[51; 32]),
         claim_lockup_seconds: 0,
         swap_deadline_seconds: 0,
     };
@@ -1741,7 +1987,8 @@ fn drawing_lock_cleared_after_cancel_in_drawing_state() {
         treasury_address: None,
         swap_router: None,
         tikka_token: None,
-        metadata_hash: BytesN::from_array(&env, &[52; 32]),
+        unique_winners: false,
+            metadata_hash: BytesN::from_array(&env, &[52; 32]),
         claim_lockup_seconds: 0,
         swap_deadline_seconds: 0,
     };
@@ -1793,7 +2040,8 @@ fn test_bundle_pricing_applies() {
         treasury_address: None,
         swap_router: None,
         tikka_token: None,
-        metadata_hash: BytesN::from_array(&env, &[9; 32]),
+        unique_winners: false,
+            metadata_hash: BytesN::from_array(&env, &[9; 32]),
         claim_lockup_seconds: 0,
         swap_deadline_seconds: 0,
         bundles: soroban_sdk::vec![
@@ -1849,7 +2097,8 @@ fn lifecycle_config(env: &Env, payment_token: &Address, treasury: &Address) -> R
         treasury_address: Some(treasury.clone()),
         swap_router: None,
         tikka_token: None,
-        metadata_hash: BytesN::from_array(env, &[70u8; 32]),
+        unique_winners: false,
+            metadata_hash: BytesN::from_array(env, &[70u8; 32]),
         claim_lockup_seconds: 0, // resolved to DEFAULT_CLAIM_LOCKUP_SECONDS
         swap_deadline_seconds: 0,
         early_bird_ticket_percentage: 0,
@@ -2030,7 +2279,8 @@ fn buy_tickets_stays_within_compute_limits_near_max() {
         treasury_address: None,
         swap_router: None,
         tikka_token: None,
-        metadata_hash: BytesN::from_array(&env, &[71u8; 32]),
+        unique_winners: false,
+            metadata_hash: BytesN::from_array(&env, &[71u8; 32]),
         claim_lockup_seconds: 0,
         swap_deadline_seconds: 0,
         early_bird_ticket_percentage: 0,
@@ -2073,4 +2323,141 @@ fn buy_tickets_stays_within_compute_limits_near_max() {
         "buy_tickets memory {mem} exceeded Soroban limit {SOROBAN_MEMORY_LIMIT_BYTES}"
     );
 }
+
+/// #485: with unique_winners, two buyers with multiple tickets each win at most one tier.
+#[test]
+fn unique_winners_limits_one_tier_per_address() {
+    let env = Env::default();
+    env.mock_all_auths();
+    env.ledger().set_timestamp(1_000);
+
+    let contract_id = env.register(crate::Contract, ());
+    let client = crate::ContractClient::new(&env, &contract_id);
+    let factory = Address::generate(&env);
+    let admin = Address::generate(&env);
+    let creator = Address::generate(&env);
+    let buyer_a = Address::generate(&env);
+    let buyer_b = Address::generate(&env);
+
+    let token_admin = Address::generate(&env);
+    let sac = env.register_stellar_asset_contract_v2(token_admin.clone());
+    let token_addr = sac.address();
+    token::StellarAssetClient::new(&env, &token_addr).mint(&creator, &10_000_000);
+    token::StellarAssetClient::new(&env, &token_addr).mint(&buyer_a, &10_000_000);
+    token::StellarAssetClient::new(&env, &token_addr).mint(&buyer_b, &10_000_000);
+
+    let mut prizes = soroban_sdk::Vec::new(&env);
+    prizes.push_back(4_000u32);
+    prizes.push_back(3_500u32);
+    prizes.push_back(2_500u32);
+
+    let config = RaffleConfig {
+        description: soroban_sdk::String::from_str(&env, "unique winners"),
+        end_time: 0,
+        no_deadline: true,
+        max_tickets: 10,
+        max_tickets_per_tx: 5,
+        min_tickets: 1,
+        allow_multiple: true,
+        ticket_price: 10_000,
+        payment_token: token_addr.clone(),
+        prize_amount: 100_000,
+        prizes,
+        randomness_source: RandomnessSource::Internal,
+        oracle_address: None,
+        protocol_fee_bp: 0,
+        treasury_address: None,
+        swap_router: None,
+        tikka_token: None,
+        metadata_hash: BytesN::from_array(&env, &[42u8; 32]),
+        claim_lockup_seconds: 0,
+        swap_deadline_seconds: 0,
+        early_bird_ticket_percentage: 0,
+        early_bird_discount_bp: 0,
+        category: None,
+        unique_winners: true,
+    };
+
+    client.init(&factory, &admin, &creator, &config);
+    client.deposit_prize();
+    client.buy_tickets(&buyer_a, &3);
+    client.buy_tickets(&buyer_b, &3);
+
+    env.ledger().set_timestamp(5_000);
+    client.finalize_raffle();
+
+    let raffle = client.get_raffle();
+    assert_eq!(raffle.winners.len(), 3);
+
+    let mut count_a = 0u32;
+    let mut count_b = 0u32;
+    for i in 0..raffle.winners.len() {
+        let w = raffle.winners.get(i).unwrap();
+        if w == buyer_a {
+            count_a += 1;
+        }
+        if w == buyer_b {
+            count_b += 1;
+        }
+    }
+    assert_eq!(count_a, 1);
+    assert_eq!(count_b, 1);
+
+    let fairness = client.get_fairness_data();
+    assert!(fairness.unique_winners);
+}
+
+#[test]
+fn update_metadata_hash_before_deposit_only() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(crate::Contract, ());
+    let client = crate::ContractClient::new(&env, &contract_id);
+    let factory = Address::generate(&env);
+    let admin = Address::generate(&env);
+    let creator = Address::generate(&env);
+
+    let token_admin = Address::generate(&env);
+    let sac = env.register_stellar_asset_contract_v2(token_admin.clone());
+    let token_addr = sac.address();
+
+    let config = RaffleConfig {
+        description: soroban_sdk::String::from_str(&env, "metadata"),
+        end_time: 0,
+        no_deadline: true,
+        max_tickets: 5,
+        max_tickets_per_tx: 5,
+        min_tickets: 1,
+        allow_multiple: true,
+        ticket_price: 10_000,
+        payment_token: token_addr,
+        prize_amount: 50_000,
+        prizes: soroban_sdk::vec![&env, 10_000u32],
+        randomness_source: RandomnessSource::Internal,
+        oracle_address: None,
+        protocol_fee_bp: 0,
+        treasury_address: None,
+        swap_router: None,
+        tikka_token: None,
+        metadata_hash: BytesN::from_array(&env, &[1u8; 32]),
+        claim_lockup_seconds: 0,
+        swap_deadline_seconds: 0,
+        early_bird_ticket_percentage: 0,
+        early_bird_discount_bp: 0,
+        category: None,
+        unique_winners: false,
+    };
+
+    client.init(&factory, &admin, &creator, &config);
+    let new_hash = BytesN::from_array(&env, &[2u8; 32]);
+    client.update_metadata_hash(&new_hash);
+    assert_eq!(client.get_raffle().metadata_hash, new_hash);
+
+    token::StellarAssetClient::new(&env, &token_addr).mint(&creator, &1_000_000);
+    client.deposit_prize();
+    assert_eq!(
+        client.try_update_metadata_hash(&BytesN::from_array(&env, &[3u8; 32])),
+        Err(Ok(Error::InvalidStatus))
+    );
 }

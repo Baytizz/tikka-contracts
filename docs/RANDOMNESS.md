@@ -23,10 +23,10 @@ Primary helper: `build_internal_seed` / `PrngWinnerSelection` in `randomness.rs`
 Entropy mixed into the 32-byte path:
 
 1. Ledger timestamp  
-2. Ledger sequence  
-3. Network id (SHA-256 of network passphrase)  
-4. Raffle contract address  
-5. `tickets_sold` (folded into the PRNG seed bytes)
+1. Ledger sequence  
+1. Network id (SHA-256 of network passphrase)  
+1. Raffle contract address  
+1. `tickets_sold` (folded into the PRNG seed bytes)
 
 Values are XDR-packed and hashed with `env.crypto().sha256`, then fed to `env.prng().seed(...)`. Winner indices are sampled without replacement via `u64_in_range`.
 
@@ -57,11 +57,11 @@ Low-stakes community raffles, demos, and tests. **Do not** rely on Internal for 
 ### How the seed is built
 
 1. `finalize_raffle` transitions to `Drawing`, sets `DrawingLock`, and calls `request_randomness`.
-2. Contract stores `RandomnessRequested`, `RandomnessRequestLedger`, and a `RandomnessRequestId` derived from `(timestamp, sequence, contract_address)` via SHA-256 → first 8 bytes.
-3. Emits `RandomnessRequested` for the off-chain `oracle/` service.
-4. Oracle calls `provide_randomness(random_seed, public_key, proof, request_id)`.
-5. Contract verifies Ed25519 over `build_vrf_proof_message` = XDR`(contract_address, request_id, random_seed)`.
-6. `OracleSeedWinnerSelection` maps the seed to winner indices with rejection sampling (no modulo bias).
+1. Contract stores `RandomnessRequested`, `RandomnessRequestLedger`, and a `RandomnessRequestId` derived from `(timestamp, sequence, contract_address)` via SHA-256 → first 8 bytes.
+1. Emits `RandomnessRequested` for the off-chain `oracle/` service.
+1. Oracle calls `provide_randomness(random_seed, public_key, proof, request_id)`.
+1. Contract verifies Ed25519 over `build_vrf_proof_message` = XDR`(contract_address, request_id, random_seed)`.
+1. `OracleSeedWinnerSelection` maps the seed to winner indices with rejection sampling (no modulo bias).
 
 `Fairness` / seed metadata is stored under `DataKey::RandomnessSeed` (persistent).
 
@@ -101,9 +101,9 @@ High-stakes draws, public prize pools, or any case where Internal bias is unacce
 ### How the seed is built
 
 1. During `Active`, ticket owners call `submit_commit(ticket_id, hash)` with `hash = sha256(secret)`.
-2. Entries stored as persistent `CommitEntry(ticket_id)` → `{ committer, hash }` (ticket-keyed so transfers keep entropy; see [COMMIT_REVEAL.md](COMMIT_REVEAL.md)).
-3. On `finalize_raffle`, contract concatenates all present commit hashes in ticket-id order, SHA-256s the blob, and uses the **first 8 bytes** as a `u64` seed.
-4. Finalize proceeds via `do_finalize_with_seed` with `RandomnessType::Prng`.
+1. Entries stored as persistent `CommitEntry(ticket_id)` → `{ committer, hash }` (ticket-keyed so transfers keep entropy; see [COMMIT_REVEAL.md](COMMIT_REVEAL.md)).
+1. On `finalize_raffle`, contract concatenates all present commit hashes in ticket-id order, SHA-256s the blob, and uses the **first 8 bytes** as a `u64` seed.
+1. Finalize proceeds via `do_finalize_with_seed` with `RandomnessType::Prng`.
 
 ### Who can influence it
 

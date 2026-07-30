@@ -21,6 +21,12 @@ pub(crate) fn claim_prize(env: Env, winner: Address, tier_index: u32) -> Result<
     let amount = calculate_tier_prize(&raffle, tier_index)?;
     if amount <= 0 { return Err(Error::ZeroPrize); }
 
+    let token_client = token::Client::new(&env, &raffle.payment_token);
+    let balance = token_client.balance(&env.current_contract_address());
+    if balance < amount {
+        return Err(Error::InsufficientFunds);
+    }
+
     raffle.claimed_winners.set(tier_index, true);
 
     let mut all_claimed = true;
