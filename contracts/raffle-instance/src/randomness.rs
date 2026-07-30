@@ -341,7 +341,11 @@ impl OracleSeedWinnerSelection {
     /// Pure (no-`Env`) version of [`select_winner_indices`] used in tests and
     /// off-chain tooling.  Available only when `std` is in scope.
     #[cfg(any(test, feature = "std"))]
-    pub fn select_winner_indices_pure(&self, total_tickets: u32, winner_count: u32) -> std::vec::Vec<u32> {
+    pub fn select_winner_indices_pure(
+        &self,
+        total_tickets: u32,
+        winner_count: u32,
+    ) -> std::vec::Vec<u32> {
         let mut indices = std::vec::Vec::new();
         if total_tickets == 0 || winner_count == 0 {
             return indices;
@@ -530,12 +534,10 @@ mod tests {
             .register_stellar_asset_contract_v2(Address::generate(&env))
             .address();
         let first = env.as_contract(&contract_id, || {
-            PrngWinnerSelection::new(raffle_id.clone(), 17)
-                .select_winner_indices(&env, 17, 8)
+            PrngWinnerSelection::new(raffle_id.clone(), 17).select_winner_indices(&env, 17, 8)
         });
         let second = env.as_contract(&contract_id, || {
-            PrngWinnerSelection::new(raffle_id, 17)
-                .select_winner_indices(&env, 17, 8)
+            PrngWinnerSelection::new(raffle_id, 17).select_winner_indices(&env, 17, 8)
         });
 
         assert_eq!(
