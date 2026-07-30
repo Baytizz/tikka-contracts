@@ -60,6 +60,8 @@ pub struct Raffle {
     pub no_deadline: bool,
     pub max_tickets: u32,
     pub max_tickets_per_tx: u32,
+    pub max_tickets_per_address: u32,
+    pub max_tickets_per_address: u32,
     pub min_tickets: u32,
     pub allow_multiple: bool,
     pub ticket_price: i128,
@@ -185,7 +187,7 @@ pub enum Error {
     InvalidTicketRange = 55,
     InsufficientAccumulatedFees = 56,
     PrizeConfigurationLocked = 57,
-    ExceedsMaxTicketsPerTx = 58,
+    ExceedsMaxTicketsPerTx = 58,`n    ExceedsMaxTicketsPerAddress = 65,
     DrawingAlreadyInProgress = 59,
     InvalidStatusForDrawingTransition = 60,
     DrawingAlreadyComplete = 61,
@@ -1883,3 +1885,4 @@ impl Contract {
 
 #[cfg(test)]
 mod test;
+
