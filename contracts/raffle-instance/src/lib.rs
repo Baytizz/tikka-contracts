@@ -22,6 +22,8 @@ mod views;
 
 pub(crate) use helpers::do_finalize_with_seed;
 
+mod views;
+
 use raffle_shared::{
     constants::{
         DEFAULT_CLAIM_LOCKUP_SECONDS, DEFAULT_SWAP_DEADLINE_SECONDS, EMERGENCY_WITHDRAW_DELAY_SECONDS,
@@ -1268,6 +1270,13 @@ impl Contract {
             .instance()
             .get(&DataKey::AccumulatedFees)
             .unwrap_or(0)
+    }
+
+    /// Aggregate dashboard view returning key raffle metrics in a single call.
+    ///
+    /// See [`views::get_stats`] for full documentation.
+    pub fn get_stats(env: Env) -> Result<RaffleStats, Error> {
+        self::views::get_stats(env)
     }
 
     pub fn cancel_raffle(env: Env, reason: CancelReason) -> Result<(), Error> {
