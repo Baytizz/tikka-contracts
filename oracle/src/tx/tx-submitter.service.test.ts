@@ -37,6 +37,6 @@ describe('TxSubmitterService integration', () => {
 
       expect(hash).toMatch(/^[a-f0-9]{64}$/);
     },
-    120_000,
+    120_000
   );
 });
