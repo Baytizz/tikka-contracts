@@ -140,33 +140,60 @@ pub fn get_raffle(... ) -> Result<Raffle, Error>;
 
 ### **Data Structures**
 
+`RaffleConfig` (`contracts/raffle-shared/src/lib.rs`) is the configuration payload supplied when creating a raffle. Values are validated by contract initialization before the raffle becomes active and represent the complete raffle policy surface:
+
+```rust
+pub struct RaffleConfig {
+    pub description: String,                  // Human-readable raffle description.
+    pub end_time: u64,                        // Unix timestamp when ticket sales close (ignored when `no_deadline` is true).
+    pub no_deadline: bool,                    // If true, raffle can remain open without a hard end timestamp.
+    pub max_tickets: u32,                     // Maximum number of tickets that can ever be sold.
+    pub max_tickets_per_tx: u32,              // Maximum tickets a single address may purchase per transaction.
+    pub min_tickets: u32,                     // Minimum number of tickets required for a successful draw.
+    pub allow_multiple: bool,                 // Whether one address may own multiple tickets.
+    pub ticket_price: i128,                   // Price per ticket denominated in the payment token's base units.
+    pub payment_token: Address,               // Soroban address for the token used to buy tickets.
+    pub prize_amount: i128,                   // Total prize amount denominated in the same payment token.
+    pub prizes: Vec<u32>,                     // Prize distribution vector; each value maps to winner allocation units.
+    pub randomness_source: RandomnessSource,  // Randomness source strategy selected for the raffle.
+    pub oracle_address: Option<Address>,      // Optional oracle contract address for external randomness flows.
+    pub protocol_fee_bp: u32,                 // Protocol fee in basis points (100 = 1%), charged at ticket purchase and prize claim.
+    pub treasury_address: Option<Address>,    // Optional treasury recipient address for protocol fees.
+    pub swap_router: Option<Address>,         // Optional router contract used when swap-based flows are enabled.
+    pub tikka_token: Option<Address>,         // Optional protocol token used in incentive/swap features.
+    pub metadata_hash: BytesN<32>,            // SHA-256 hash of immutable off-chain metadata content.
+    pub claim_lockup_seconds: u64,            // Seconds after finalization before winners may claim (0-604800, defaults to 3600).
+    pub swap_deadline_seconds: u64,           // Swap deadline window in seconds, added to current timestamp (defaults to 300).
+    pub early_bird_ticket_percentage: u32,    // Percentage of max_tickets covered by the early bird discount (0 to disable).
+    pub early_bird_discount_bp: u32,          // Early bird discount amount in basis points.
+    pub category: Option<String>,             // Optional on-chain category/tag used for frontend filtering.
+}
+```
+
+**Related types (`contracts/raffle-shared/src/lib.rs`)**
+
+-   `RaffleStatus` — lifecycle state of a raffle instance: `PendingPrize`, `Active`, `Drawing`, `Finalized`, `Cancelled`, `Failed`, `Claimed`.
+-   `RandomnessSource` — randomness strategy used for a raffle: `Internal`, `External`, `CommitReveal`.
+-   `RandomnessType` — classification of the randomness mechanism requested or received: `Prng`, `Vrf`, `Fallback`.
+-   `CancelReason` — canonical reason a raffle entered `Cancelled`: `CreatorCancelled`, `AdminCancelled`, `OracleTimeout`, `MinTicketsNotMet`.
+-   `FailureReason` — canonical reason a raffle entered `Failed`: `ZeroTicketsSold`, `MinTicketsNotMet`.
+-   `Ticket` — `id`, `owner`, `purchase_time`, `ticket_number`.
+-   `FairnessData` — audit data proving how a draw outcome was derived: `seed`, `randomness_source`, `ticket_ids`, `winning_ticket_indices`, `draw_timestamp`, `draw_sequence`.
+
+`Raffle` (`contracts/raffle-instance/src/lib.rs`) is the on-chain record stored for each raffle instance. It mirrors the resolved `RaffleConfig` fields and adds live raffle state:
+
 ```rust
 pub struct Raffle {
-    pub creator: Address,
-    pub payment_token: Address,
-    pub treasury_address: Option<Address>,
-    pub description: String,
-    pub end_time: u64,
-    pub max_tickets: u32,
-    pub min_tickets: u32,
-    pub allow_multiple: bool,
-    pub ticket_price: i128,
-    pub prize_amount: i128,
-    pub prizes: Vec<u32>,
-    pub tickets_sold: u32,
-    pub status: RaffleStatus,
-    pub prize_deposited: bool,
-    pub winners: Vec<Address>,
-    pub claimed_winners: Vec<bool>,
-    pub randomness_source: RandomnessSource,
-    pub oracle_address: Option<Address>,
-    pub protocol_fee_bp: u32,
-    pub treasury_address: Option<Address>,
-    pub swap_router: Option<Address>,
-    pub tikka_token: Option<Address>,
-    pub finalized_at: Option<u64>,
-    pub winner_ticket_id: Option<u32>,
-    pub claim_lockup_seconds: u64,
+    // ...all RaffleConfig fields (resolved via `resolve_defaults`), plus:
+    pub creator: Address,               // Address that created and configured the raffle.
+    pub prize_token: Address,           // Token used for prize deposit and claims; defaults to `payment_token`.
+    pub tickets_sold: u32,              // Running count of tickets sold so far.
+    pub status: RaffleStatus,           // Current lifecycle state of the raffle.
+    pub prize_deposited: bool,          // Whether the creator has deposited the prize into escrow.
+    pub winners: Vec<Address>,          // Addresses selected as winners after the draw.
+    pub claimed_winners: Vec<bool>,     // Per-winner claim status, indexed alongside `winners`.
+    pub finalized_at: Option<u64>,      // Unix timestamp when the raffle was finalized.
+    pub ticket_sales_paused: bool,      // Whether ticket sales are currently paused by an admin.
 }
 ```
 
