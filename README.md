@@ -250,6 +250,39 @@ stellar contract invoke ... -- \
 
 - **Contract Address**: `CCTCPMI66REXIJQPVOPNTNUZBCMSRM7TZLMIPQROZIID44XNP2P2MKFZ`
 
+## 🔄 CI/CD Testnet Smoke Test
+
+A weekly GitHub Actions workflow (`.github/workflows/testnet-smoke.yml`) runs every Monday at 6 AM UTC to deploy and exercise a full raffle lifecycle on Stellar Testnet. It can also be triggered manually via `workflow_dispatch`.
+
+The smoke test:
+1.  Deploys the factory contract
+2.  Creates a raffle instance
+3.  Buys 1 ticket
+4.  Finalizes the raffle
+5.  Claims the prize
+6.  Asserts all steps succeed
+
+### Required Secret
+
+The workflow requires a `TESTNET_SECRET_KEY` repository secret — the Stellar secret key (`S...`) of a funded testnet account used for all on-chain operations.
+
+To set it up:
+
+```bash
+# Generate a new keypair
+stellar keys generate smoke-test-account
+
+# Fund it via Friendbot
+curl "https://friendbot.stellar.org?addr=$(stellar keys address smoke-test-account)"
+
+# Export the secret key
+stellar keys show smoke-test-account
+```
+
+Then add the `S...` secret as a repository secret named `TESTNET_SECRET_KEY` in the GitHub repo settings under **Settings → Secrets and variables → Actions**.
+
+> **Security:** The `TESTNET_SECRET_KEY` secret should only have testnet funds. Never use a mainnet key for CI/CD.
+
 ## 🚀 Getting Started
 
 ### **Prerequisites**
