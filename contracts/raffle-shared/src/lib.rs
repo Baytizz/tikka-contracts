@@ -290,12 +290,11 @@ pub enum AdminOp {
     UpdateWasmHash(BytesN<32>),
 }
 
-/// Default page size when callers request zero items.
-pub const DEFAULT_PAGE_LIMIT: u32 = 100;
-/// Hard maximum page size accepted by query helpers.
-pub const MAX_PAGE_LIMIT: u32 = 200;
-pub const DEFAULT_CLAIM_LOCKUP_SECONDS: u64 = 3_600;
-pub const DEFAULT_SWAP_DEADLINE_SECONDS: u64 = 300;
+// Re-export constants from the single source of truth
+pub use constants::{
+    DEFAULT_CLAIM_LOCKUP_SECONDS, DEFAULT_PAGE_LIMIT, DEFAULT_SWAP_DEADLINE_SECONDS,
+    MAX_PAGE_LIMIT,
+};
 
 /// Returns a safe pagination limit clamped to supported bounds.
 pub fn effective_limit(requested: u32) -> u32 {
