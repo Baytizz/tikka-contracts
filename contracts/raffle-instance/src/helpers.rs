@@ -60,6 +60,51 @@ fn resolve_unique_winner(
     initial_index
 }
 
+/// Finalize the raffle using a pre-computed `u64` seed.
+///
+/// This is the common finalization path shared by all three randomness modes
+/// (`Internal`, `External`/VRF, and `Fallback`).  The caller selects the
+/// appropriate seed and [`RandomnessType`] label before calling this function.
+///
+/// ## What this function does
+///
+/// 1. Validates `tickets_sold > 0` and `prizes.len() ≤ tickets_sold`.
+/// 2. Uses [`OracleSeedWinnerSelection`] to pick `prizes.len()` distinct
+///    winning ticket indices using rejection sampling (no modulo bias).
+/// 3. Resolves each winning index to a ticket owner via
+///    [`get_ticket_owner`] and emits a [`events::WinnerDrawn`] event per
+///    winner.
+/// 4. Writes [`FairnessMetadata`] to **persistent** storage under
+///    [`DataKey::RandomnessSeed`] so it survives ledger-entry expiry and can
+///    be queried by [`get_fairness_data`](crate::views::get_fairness_data).
+/// 5. Sets `raffle.status = Finalized`, records `winners`,
+///    `claimed_winners`, and `finalized_at`.
+/// 6. Clears `RandomnessRequested`, `RandomnessRequestId`,
+///    `RandomnessRequestLedger`, and sets `DrawingLock = false`.
+/// 7. Emits [`events::RaffleFinalized`].
+///
+/// # Parameters
+///
+/// - `seed` — The 64-bit random seed to use for winner selection.
+/// - `randomness_type` — Label for the audit trail (PRNG, VRF, or Fallback).
+///
+/// # Errors
+///
+/// - [`Error::NoTicketsSold`] — `tickets_sold == 0`.
+/// - [`Error::MorePrizesThanTickets`] — more prize tiers than tickets sold.
+/// - [`Error::NoActiveTickets`] — zero tickets found (should not happen in
+///   practice if the above checks pass).
+/// - [`Error::InvalidIndex`] — winner index out of range.
+/// - [`Error::TicketNotFound`] — ticket record missing for a winning index.
+/// - [`Error::ArithmeticOverflow`] — overflow in prize calculation.
+///
+/// # Events
+///
+/// - [`events::WinnerDrawn`] — emitted once per winner.
+/// - [`events::RaffleFinalized`] — emitted after all winners are resolved.
+///
+/// See also: [`docs/EVENTS.md`](../../../../docs/EVENTS.md) — `WinnerDrawn`,
+/// `RaffleFinalized`.
 pub(crate) fn do_finalize_with_seed(
     env: &Env,
     mut raffle: Raffle,

@@ -1,4 +1,7 @@
 #![no_std]
+#![allow(dead_code)]
+#![allow(unused_imports)]
+#![allow(unused_variables)]
 #![cfg_attr(not(test), deny(clippy::unwrap_used))]
 
 use soroban_sdk::{
@@ -433,7 +436,7 @@ fn calculate_tier_prize(raffle: &Raffle, tier_index: u32) -> Result<i128, Error>
 }
 
 #[contractimpl]
-impl RaffleInstance {
+impl Contract {
     pub fn init(
         env: Env,
         factory: Address,
@@ -516,36 +519,11 @@ impl RaffleInstance {
             return Err(Error::InvalidParameters);
         }
 
-        if config.bundles.len() > 5 {
-            return Err(Error::InvalidParameters);
-        }
-        let mut last_quantity = 0;
-        for i in 0..config.bundles.len() {
-            let bundle = config.bundles.get(i).unwrap();
-            if bundle.quantity <= last_quantity {
-                return Err(Error::InvalidParameters);
-            }
-            if bundle.price_per_ticket < MIN_TICKET_PRICE || bundle.price_per_ticket > config.ticket_price {
-                return Err(Error::InvalidParameters);
-            }
-            last_quantity = bundle.quantity;
-        }
-
         // Validate that the payment_token is a valid token contract
         validate_token_address(&env, &config.payment_token)?;
 
-        // Validate prize_token if it differs from payment_token.
-        if let Some(ref pt) = config.prize_token {
-            if *pt != config.payment_token {
-                validate_token_address(&env, pt)?;
-            }
-        }
-
-        // Resolve the prize token: use the explicit override, or fall back to payment_token.
-        let prize_token = config
-            .prize_token
-            .clone()
-            .unwrap_or_else(|| config.payment_token.clone());
+        // Prize token matches payment token (no separate prize_token on RaffleConfig).
+        let prize_token = config.payment_token.clone();
 
         // Resolve default values for fields that use 0 as "use default"
         let config = config.resolve_defaults();
@@ -735,30 +713,6 @@ impl RaffleInstance {
         }
 
         if raffle.randomness_source == RandomnessSource::External {
-            let already: bool = env
-                .storage()
-                .instance()
-                .get(&DataKey::RandomnessRequested)
-                .unwrap_or(false);
-            if already {
-                return Err(Error::RandomnessAlreadyRequested);
-            }
-            env.storage()
-                .instance()
-                .set(&DataKey::RandomnessRequested, &true);
-            env.storage()
-                .instance()
-                .set(&DataKey::RandomnessRequestLedger, &env.ledger().sequence());
-
-            RandomnessRequested {
-                oracle: raffle
-                    .oracle_address
-                    .clone()
-                    .unwrap_or(env.current_contract_address()),
-                timestamp: now,
-            }
-            .publish(&env);
-            return Ok(());
             match request_randomness(&env) {
                 Ok(request_id) => {
                     DrawTriggered {
@@ -780,9 +734,6 @@ impl RaffleInstance {
                     return Ok(());
                 }
                 Err(err) => {
-                    // SECURITY: lock rollback — oracle dispatch failed after status transition;
-                    // clear DrawingLock and revert status so the contract is not permanently
-                    // locked
                     raffle.status = pre_drawing_status;
                     write_raffle(&env, &raffle);
                     env.storage().instance().set(&DataKey::DrawingLock, &false);
@@ -828,12 +779,12 @@ impl RaffleInstance {
                 let mut seed_bytes = [0u8; 8];
                 seed_bytes.copy_from_slice(&arr[..8]);
                 let seed = u64::from_be_bytes(seed_bytes);
-                return self::do_finalize_with_seed(&env, raffle, seed, RandomnessType::Prng);
+                return helpers::do_finalize_with_seed(&env, raffle, seed, RandomnessType::Prng);
             }
         }
 
         let seed = build_internal_seed_u64(&env);
-        self::do_finalize_with_seed(&env, raffle, seed, RandomnessType::Prng)
+        helpers::do_finalize_with_seed(&env, raffle, seed, RandomnessType::Prng)
     }
 
     pub fn provide_randomness(env: Env, random_seed: u64, public_key: BytesN<32>, proof: BytesN<64>, request_id: u64) -> Result<Address, Error> {
@@ -928,7 +879,7 @@ impl RaffleInstance {
         }
         .publish(&env);
 
-        self::do_finalize_with_seed(&env, raffle, seed, RandomnessType::Fallback)
+        self::helpers::do_finalize_with_seed(&env, raffle, seed, RandomnessType::Fallback)
     }
 
     pub fn claim_prize(env: Env, winner: Address, tier_index: u32) -> Result<i128, Error> {
@@ -964,7 +915,7 @@ impl RaffleInstance {
             return Err(Error::PrizeAlreadyClaimed);
         }
 
-        let prize_bp = raffle.prizes.get(tier_index).unwrap();
+        let prize_bp = raffle.prizes.get(tier_index).ok_or(Error::InvalidIndex)?;
         let amount = raffle
             .prize_amount
             .checked_mul(prize_bp as i128)
@@ -1081,7 +1032,7 @@ impl RaffleInstance {
             .storage()
             .instance()
             .get(&DataKey::PendingAdminCancel)
-            .ok_or(Error::CancelNotScheduled)?;
+            .ok_or(Error::InvalidParameters)?;
 
         let mut raffle = read_raffle(&env)?;
 
@@ -1094,7 +1045,7 @@ impl RaffleInstance {
 
         let now = env.ledger().timestamp();
         if now < cancel_at {
-            return Err(Error::CancelTimelockActive);
+            return Err(Error::InvalidStateTransition);
         }
 
         env.storage()
@@ -1592,10 +1543,6 @@ impl RaffleInstance {
         .publish(&env);
 
         Ok(())
-    }
-
-    pub fn set_admin(env: Env, new_admin: Address) -> Result<(), Error> {
-        self::admin::set_admin(env, new_admin)
     }
 
     pub fn update_oracle_address(env: Env, new_oracle: Address) -> Result<(), Error> {

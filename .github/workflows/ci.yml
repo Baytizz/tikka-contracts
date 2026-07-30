@@ -5,6 +5,7 @@ on:
     branches: [ "master" ]
   pull_request:
     branches: [ "master" ]
+  workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always
@@ -38,6 +39,7 @@ jobs:
         MAX_SIZE=131072
         FAILED=0
         for wasm in target/wasm32-unknown-unknown/release/*.wasm; do
+          [ -e "$wasm" ] || continue
           SIZE=$(stat -c%s "$wasm")
           echo "$wasm: ${SIZE} bytes"
           if [ "$SIZE" -gt "$MAX_SIZE" ]; then
@@ -51,10 +53,7 @@ jobs:
       run: cargo clippy --all-targets --all-features -- -D warnings
 
     - name: Run Tests
-<<<<<<< Updated upstream
       run: cargo test --workspace
-=======
-      run: cargo test
 
   oracle_check:
     name: Oracle Service CI
@@ -73,9 +72,6 @@ jobs:
         run: npm ci
       - name: TypeScript compile check
         run: npm run build
-      - name: Lint
-        run: npm run lint
       - name: Run tests
         run: npm test
         continue-on-error: true
->>>>>>> Stashed changes

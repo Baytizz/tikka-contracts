@@ -7,10 +7,12 @@ use crate::events::{
     RandomnessReceived, RandomnessRequested,
 };
 use crate::randomness::build_vrf_proof_message;
-use crate::{
+use crate::helpers::{
     build_internal_seed_u64, do_finalize_with_seed, read_raffle, request_randomness,
-    transition_to_drawing, write_raffle, CommitRevealEntry, DataKey, Error, RaffleStatus,
-    ORACLE_TIMEOUT_LEDGERS,
+    transition_to_drawing, write_raffle,
+};
+use crate::{
+    CommitRevealEntry, DataKey, Error, RaffleStatus, ORACLE_TIMEOUT_LEDGERS,
 };
 
 pub(crate) fn finalize_raffle(env: Env) -> Result<(), Error> {

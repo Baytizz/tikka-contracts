@@ -1,0 +1,37 @@
+# CODEOWNERS file for Tikka
+# This file defines who should be automatically requested for review
+# based on the files changed in a pull request.
+#
+# Format: <file-pattern> <owner> [<owner> ...]
+# Owners can be GitHub usernames (@username) or teams (@org/team-name)
+#
+# Reference: https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners
+
+# Global fallback - all files
+* @maintainers
+
+# Smart contracts (Rust)
+contracts/** @maintainers
+
+# Oracle service (TypeScript/Node.js)
+oracle/** @maintainers
+
+# GitHub configuration (workflows, templates, etc.)
+.github/** @maintainers
+
+# Documentation
+docs/** @maintainers
+*.md @maintainers
+
+# Deployment scripts
+scripts/** @maintainers
+
+# CI/CD configuration
+.github/workflows/** @maintainers
+
+# Root configuration files
+Cargo.toml @maintainers
+Cargo.lock @maintainers
+package.json @maintainers
+package-lock.json @maintainers
+.env.example @maintainers

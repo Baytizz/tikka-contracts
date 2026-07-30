@@ -95,6 +95,7 @@ pub struct RaffleConfig {
     /// Maximum number of tickets that can ever be sold.
     pub max_tickets: u32,
     /// Maximum tickets a single address may purchase per transaction.
+    /// Zero is invalid and rejected during initialization with `Error::InvalidParameters` (must be in 1..=max_tickets).
     pub max_tickets_per_tx: u32,
     /// Minimum number of tickets required for a successful draw.
     pub min_tickets: u32,
@@ -312,15 +313,45 @@ pub trait RandomnessReceiverTrait {
 /// * `recipient`  – the address that receives the NFT (the ticket buyer).
 /// * `ticket_id`  – the unique ticket ID within this raffle (1-indexed, u32).
 /// * `raffle_id`  – the raffle instance contract address, used as a namespace
-///                  so a single NFT contract can serve multiple raffles.
+///   so a single NFT contract can serve multiple raffles.
 #[soroban_sdk::contractclient(name = "NftTicketClient")]
 pub trait NftTicketTrait {
-    fn mint(
-        env: soroban_sdk::Env,
-        recipient: Address,
-        ticket_id: u32,
-        raffle_id: Address,
-    );
+    fn mint(env: soroban_sdk::Env, recipient: Address, ticket_id: u32, raffle_id: Address);
+}
+
+/// Generate a `require_admin` helper that loads `DataKey::Admin` from persistent
+/// storage at the call site and enforces `require_auth`.
+#[macro_export]
+macro_rules! impl_require_admin {
+    ($error_type:ty, $not_authorized:expr) => {
+        fn require_admin(env: &soroban_sdk::Env) -> Result<soroban_sdk::Address, $error_type> {
+            let admin: soroban_sdk::Address = env
+                .storage()
+                .persistent()
+                .get(&DataKey::Admin)
+                .ok_or($not_authorized)?;
+            admin.require_auth();
+            Ok(admin)
+        }
+    };
+}
+
+/// Generate a not-paused guard that reads instance `DataKey::Paused`.
+#[macro_export]
+macro_rules! impl_require_not_paused {
+    ($error_type:ty, $contract_paused:expr, $fn_name:ident) => {
+        fn $fn_name(env: &soroban_sdk::Env) -> Result<(), $error_type> {
+            if env
+                .storage()
+                .instance()
+                .get(&DataKey::Paused)
+                .unwrap_or(false)
+            {
+                return Err($contract_paused);
+            }
+            Ok(())
+        }
+    };
 }
 
 /// Generates `require_admin` using the embedding crate's `DataKey::Admin`.
