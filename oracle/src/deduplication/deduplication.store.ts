@@ -47,4 +47,19 @@ export class DeduplicationStore {
     this.saveToDisk();
     return false;
   }
+
+  // Check if we've already seen this request (does not mutate state)
+  hasSeen(requestId: bigint, raffleAddress: string): boolean {
+    const key = `${raffleAddress}:${requestId.toString()}`;
+    return this.seen.has(key);
+  }
+
+  // Mark a request as seen and persist immediately
+  markSeen(requestId: bigint, raffleAddress: string): void {
+    const key = `${raffleAddress}:${requestId.toString()}`;
+    if (!this.seen.has(key)) {
+      this.seen.add(key);
+      this.saveToDisk();
+    }
+  }
 }

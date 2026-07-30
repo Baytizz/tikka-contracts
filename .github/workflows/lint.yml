@@ -1,0 +1,22 @@
+name: Lint Workflows
+
+on:
+  push:
+    paths: [ '.github/workflows/**' ]
+  pull_request:
+    paths: [ '.github/workflows/**' ]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  actionlint:
+    name: actionlint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Run actionlint
+        run: |
+          bash <(curl -s https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash) v1.7.12
+          ./actionlint -color .github/workflows/*.yml

@@ -133,6 +133,7 @@ pub(crate) fn buy_tickets(env: Env, buyer: Address, quantity: u32) -> Result<u32
     }
     buyer.require_auth();
     require_not_paused(&env)?;
+    crate::require_global_not_paused(&env)?;
 
     if raffle.status != RaffleStatus::Active {
         return Err(Error::RaffleInactive);
@@ -143,7 +144,7 @@ pub(crate) fn buy_tickets(env: Env, buyer: Address, quantity: u32) -> Result<u32
     if !raffle.prize_deposited {
         return Err(Error::InvalidStateTransition);
     }
-    if !raffle.no_deadline && env.ledger().timestamp() > raffle.end_time {
+    if !raffle.no_deadline && env.ledger().timestamp() >= raffle.end_time {
         return Err(Error::RaffleExpired);
     }
 
@@ -219,7 +220,7 @@ pub(crate) fn buy_tickets(env: Env, buyer: Address, quantity: u32) -> Result<u32
     let mut ticket_ids = Vec::new(&env);
     for i in 0..quantity {
         let ticket_id = snapshot_sold + i + 1;
-        let ticket = Ticket { id: ticket_id, owner: buyer.clone(), purchase_time: timestamp, ticket_number: ticket_id };
+        let ticket = Ticket::new(ticket_id, buyer.clone(), timestamp);
         env.storage().persistent().set(&DataKey::Ticket(ticket_id), &ticket);
         ticket_ids.push_back(ticket_id);
     }
@@ -274,7 +275,7 @@ pub(crate) fn buy_tickets(env: Env, buyer: Address, quantity: u32) -> Result<u32
         ticket_ids,
         quantity,
         ticket_price: raffle.ticket_price,
-        effective_ticket_price: effective_price,
+        effective_ticket_price: raffle.ticket_price,
         total_paid: total_price,
         protocol_fee,
         timestamp,
