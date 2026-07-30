@@ -1,6 +1,6 @@
-use soroban_sdk::{token, Address, BytesN, Env, Vec};
+use soroban_sdk::{auth::InvokerContractAuthEntry, Address, Env, IntoVal, Symbol, Val, Vec};
 
-use crate::events::{RaffleFinalized, RaffleStatusChanged, WinnerDrawn};
+use crate::events::{RaffleFinalized, WinnerDrawn};
 use crate::randomness::{OracleSeedWinnerSelection, WinnerSelectionStrategy};
 use crate::{DataKey, Error, FairnessMetadata, Raffle, RaffleStatus, RandomnessType, Ticket};
 
@@ -158,8 +158,6 @@ pub(crate) fn require_not_paused(env: &Env) -> Result<(), Error> {
     {
         return Err(Error::ContractPaused);
     }
-    Ok(())
-}
 
 pub(crate) fn validate_token_address(env: &Env, token_address: &Address) -> Result<(), Error> {
     let token_client = token::Client::new(env, token_address);
@@ -212,6 +210,54 @@ pub(crate) fn calculate_tier_prize(raffle: &Raffle, tier_index: u32) -> Result<i
         .map(|a| a / 10000)
 }
 
+    initial_index
+}
+
+/// Finalize the raffle using a pre-computed `u64` seed.
+///
+/// This is the common finalization path shared by all three randomness modes
+/// (`Internal`, `External`/VRF, and `Fallback`).  The caller selects the
+/// appropriate seed and [`RandomnessType`] label before calling this function.
+///
+/// ## What this function does
+///
+/// 1. Validates `tickets_sold > 0` and `prizes.len() ≤ tickets_sold`.
+/// 2. Uses [`OracleSeedWinnerSelection`] to pick `prizes.len()` distinct
+///    winning ticket indices using rejection sampling (no modulo bias).
+/// 3. Resolves each winning index to a ticket owner via
+///    [`get_ticket_owner`] and emits a [`events::WinnerDrawn`] event per
+///    winner.
+/// 4. Writes [`FairnessMetadata`] to **persistent** storage under
+///    [`DataKey::RandomnessSeed`] so it survives ledger-entry expiry and can
+///    be queried by [`get_fairness_data`](crate::views::get_fairness_data).
+/// 5. Sets `raffle.status = Finalized`, records `winners`,
+///    `claimed_winners`, and `finalized_at`.
+/// 6. Clears `RandomnessRequested`, `RandomnessRequestId`,
+///    `RandomnessRequestLedger`, and sets `DrawingLock = false`.
+/// 7. Emits [`events::RaffleFinalized`].
+///
+/// # Parameters
+///
+/// - `seed` — The 64-bit random seed to use for winner selection.
+/// - `randomness_type` — Label for the audit trail (PRNG, VRF, or Fallback).
+///
+/// # Errors
+///
+/// - [`Error::NoTicketsSold`] — `tickets_sold == 0`.
+/// - [`Error::MorePrizesThanTickets`] — more prize tiers than tickets sold.
+/// - [`Error::NoActiveTickets`] — zero tickets found (should not happen in
+///   practice if the above checks pass).
+/// - [`Error::InvalidIndex`] — winner index out of range.
+/// - [`Error::TicketNotFound`] — ticket record missing for a winning index.
+/// - [`Error::ArithmeticOverflow`] — overflow in prize calculation.
+///
+/// # Events
+///
+/// - [`events::WinnerDrawn`] — emitted once per winner.
+/// - [`events::RaffleFinalized`] — emitted after all winners are resolved.
+///
+/// See also: [`docs/EVENTS.md`](../../../../docs/EVENTS.md) — `WinnerDrawn`,
+/// `RaffleFinalized`.
 pub(crate) fn do_finalize_with_seed(
     env: &Env,
     mut raffle: Raffle,
@@ -235,7 +281,11 @@ pub(crate) fn do_finalize_with_seed(
     let mut winners = Vec::new(env);
 
     for i in 0..winning_ticket_ids.len() {
-        let idx = winning_ticket_ids.get(i).ok_or(Error::InvalidIndex)?;
+        let mut idx = winning_ticket_ids.get(i).ok_or(Error::InvalidIndex)?;
+        if raffle.unique_winners {
+            idx = resolve_unique_winner(env, seed, i as u32, total_tickets, &winners, idx);
+            winning_ticket_ids.set(i, idx);
+        }
         let winner = get_ticket_owner(env, idx + 1).ok_or(Error::TicketNotFound)?;
         winners.push_back(winner.clone());
         WinnerDrawn {
@@ -263,9 +313,21 @@ pub(crate) fn do_finalize_with_seed(
         },
     );
 
+    env.storage().persistent().set(
+        &DataKey::RandomnessSeed,
+        &FairnessMetadata {
+            seed,
+            randomness_source: raffle.randomness_source.clone(),
+            winning_ticket_indices: winning_ticket_ids.clone(),
+            draw_timestamp: env.ledger().timestamp(),
+            draw_sequence: env.ledger().sequence(),
+            unique_winners: raffle.unique_winners,
+        },
+    );
+
+    let winner_addresses: Vec<Address> = winners.iter().map(|w| w.address.clone()).collect();
     raffle.status = RaffleStatus::Finalized;
-    raffle.winners = winners.clone();
-    raffle.claimed_winners = claimed_winners;
+    raffle.winners = winners;
     raffle.finalized_at = Some(env.ledger().timestamp());
     write_raffle(env, &raffle);
 
@@ -292,4 +354,39 @@ pub(crate) fn do_finalize_with_seed(
     .publish(env);
 
     Ok(())
+}
+
+fn record_leaderboard(env: &Env, raffle: &Raffle) {
+    let factory: Address = match env.storage().instance().get(&DataKey::Factory) {
+        Some(f) => f,
+        None => return,
+    };
+    let raffle_id = env.current_contract_address();
+    let tickets = raffle.tickets_sold as i128;
+    let volume = raffle.ticket_price.saturating_mul(tickets);
+    let args: Vec<Val> = (
+        raffle_id.clone(),
+        tickets,
+        raffle.prize_amount,
+        volume,
+    )
+        .into_val(env);
+
+    use soroban_sdk::auth::{ContractContext, SubContractInvocation};
+    env.authorize_as_current_contract(soroban_sdk::vec![
+        env,
+        InvokerContractAuthEntry::Contract(SubContractInvocation {
+            context: ContractContext {
+                contract: factory.clone(),
+                fn_name: Symbol::new(env, "record_leaderboard_entry"),
+                args: args.clone(),
+            },
+            sub_invocations: Vec::new(env),
+        }),
+    ]);
+    let _ = env.invoke_contract::<()>(
+        &factory,
+        &Symbol::new(env, "record_leaderboard_entry"),
+        args,
+    );
 }
