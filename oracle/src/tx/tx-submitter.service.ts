@@ -27,7 +27,7 @@ export class TxSubmitterService {
     private readonly keyService: KeyService,
     rpcUrl: string = process.env.STELLAR_RPC_URL ?? 'https://soroban-testnet.stellar.org',
     private readonly networkPassphrase: string = process.env.STELLAR_NETWORK_PASSPHRASE ??
-      Networks.TESTNET,
+      Networks.TESTNET
   ) {
     this.server = new SorobanRpc.Server(rpcUrl, { allowHttp: rpcUrl.startsWith('http://') });
   }
@@ -59,7 +59,7 @@ export class TxSubmitterService {
     }
 
     throw new Error(
-      `Failed to submit provide_randomness after ${MAX_RETRIES} attempts: ${lastError?.message}`,
+      `Failed to submit provide_randomness after ${MAX_RETRIES} attempts: ${lastError?.message}`
     );
   }
 
@@ -75,7 +75,7 @@ export class TxSubmitterService {
       nativeToScVal(params.randomSeed, { type: 'u64' }),
       nativeToScVal(Buffer.from(params.publicKey), { type: 'bytes' }),
       nativeToScVal(Buffer.from(params.proof), { type: 'bytes' }),
-      nativeToScVal(params.requestId, { type: 'u64' }),
+      nativeToScVal(params.requestId, { type: 'u64' })
     );
 
     let tx = new TransactionBuilder(sourceAccount, {
@@ -96,9 +96,7 @@ export class TxSubmitterService {
 
     const sendResult = await this.server.sendTransaction(prepared);
     if (sendResult.status === 'ERROR') {
-      throw new Error(
-        `Send failed: ${sendResult.errorResult?.toXDR('base64') ?? 'unknown error'}`,
-      );
+      throw new Error(`Send failed: ${sendResult.errorResult?.toXDR('base64') ?? 'unknown error'}`);
     }
 
     const hash = sendResult.hash;
@@ -120,7 +118,7 @@ export class TxSubmitterService {
   private async pollTransaction(
     hash: string,
     maxAttempts = 30,
-    intervalMs = 2000,
+    intervalMs = 2000
   ): Promise<SorobanRpc.Api.GetTransactionResponse> {
     for (let i = 0; i < maxAttempts; i++) {
       const result = await this.server.getTransaction(hash);
