@@ -2,7 +2,7 @@
 
 Canonical map of Soroban storage keys for **raffle-factory** and **raffle-instance**: tier (instance vs persistent), write pattern, archival risk, and operator TTL guidance.
 
-> Soroban deletes expired entries permanently. These contracts do **not** call `extend_ttl` on-chain; operators must bump TTLs externally (Stellar CLI / cron). See also the TTL section in [DEVELOPMENT.md](../DEVELOPMENT.md).
+> Soroban deletes expired entries permanently. These contracts **do** call `extend_ttl` on-chain in hot paths (`buy_tickets`, `finalize_raffle`) and expose a permissionless `extend_ttl()` entrypoint on every raffle instance so anyone can keep a raffle alive. Operators may still bump TTLs externally (Stellar CLI / cron) for added resilience. See also the TTL section in [DEVELOPMENT.md](../DEVELOPMENT.md).
 
 ## Storage tiers (quick reference)
 
