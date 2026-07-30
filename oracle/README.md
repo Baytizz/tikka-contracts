@@ -82,6 +82,8 @@ The workspace `Cargo.toml` pins `soroban-sdk = "23"` and the README mandates Ste
 
 ```sh
 cd oracle
+nvm use
+npm ci
 npm test
 ```
 
