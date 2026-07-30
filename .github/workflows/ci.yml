@@ -60,6 +60,16 @@ jobs:
     - name: Run Tests
       run: cargo test --workspace
 
+  shellcheck:
+    name: Shell Script Checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install shellcheck
+        run: sudo apt-get update && sudo apt-get install -y shellcheck
+      - name: Run shellcheck
+        run: shellcheck scripts/*.sh
+
   oracle_check:
     name: Oracle Service CI
     runs-on: ubuntu-latest
