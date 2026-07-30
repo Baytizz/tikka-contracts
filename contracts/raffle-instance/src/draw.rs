@@ -1,6 +1,6 @@
-use soroban_sdk::{Address, Bytes, BytesN, Env};
+use soroban_sdk::{xdr::ToXdr, Address, Bytes, BytesN, Env, Vec};
 
-use raffle_shared::{CancelReason, FailureReason, RandomnessType};
+use raffle_shared::{CancelReason, FailureReason, RandomnessSource, RandomnessType};
 
 use crate::events::{
     DrawTriggered, RaffleCancelled, RaffleFailed, RandomnessFallbackTriggered, RandomnessReceived,
@@ -59,7 +59,49 @@ pub(crate) fn finalize_raffle(env: Env) -> Result<(), Error> {
     let pre_status = raffle.status.clone();
     transition_to_drawing(&env, &mut raffle, now)?;
 
-    if raffle.randomness_source == raffle_shared::RandomnessSource::External {
+    // === Quorum fan-out ===
+    if let RandomnessSource::Quorum { k: _, oracles } = &raffle.randomness_source {
+        match request_randomness(&env) {
+            Ok(request_id) => {
+                DrawTriggered {
+                    caller: caller.clone(),
+                    total_tickets_sold: raffle.tickets_sold,
+                    timestamp: now,
+                }
+                .publish(&env);
+
+                // Emit RandomnessRequested for each oracle (fan-out)
+                for i in 0..oracles.len() {
+                    if let Some(addr) = oracles.get(i) {
+                        RandomnessRequested {
+                            oracle: addr,
+                            request_id,
+                            timestamp: now,
+                        }
+                        .publish(&env);
+                    }
+                }
+
+                // Initialise empty quorum submission tracker
+                env.storage()
+                    .instance()
+                    .set(&DataKey::QuorumSubmittedOracles, &Vec::<Address>::new(&env));
+
+                return Ok(());
+            }
+            Err(err) => {
+                raffle.status = pre_status;
+                write_raffle(&env, &raffle);
+                env.storage()
+                    .instance()
+                    .set(&DataKey::DrawingLock, &false);
+                return Err(err);
+            }
+        }
+    }
+
+    // === External (single oracle) ===
+    if raffle.randomness_source == RandomnessSource::External {
         match request_randomness(&env) {
             Ok(request_id) => {
                 DrawTriggered {
@@ -82,7 +124,9 @@ pub(crate) fn finalize_raffle(env: Env) -> Result<(), Error> {
             Err(err) => {
                 raffle.status = pre_status;
                 write_raffle(&env, &raffle);
-                env.storage().instance().set(&DataKey::DrawingLock, &false);
+                env.storage()
+                    .instance()
+                    .set(&DataKey::DrawingLock, &false);
                 return Err(err);
             }
         }
@@ -95,7 +139,7 @@ pub(crate) fn finalize_raffle(env: Env) -> Result<(), Error> {
     }
     .publish(&env);
 
-    if raffle.randomness_source == raffle_shared::RandomnessSource::CommitReveal {
+    if raffle.randomness_source == RandomnessSource::CommitReveal {
         let mut combined = Bytes::new(&env);
         let mut commits_found: u32 = 0;
         for ticket_id in 1..=raffle.tickets_sold {
@@ -122,6 +166,7 @@ pub(crate) fn finalize_raffle(env: Env) -> Result<(), Error> {
     do_finalize_with_seed(&env, raffle, seed, RandomnessType::Prng)
 }
 
+/// Handle a single-oracle VRF randomness submission (existing External mode).
 pub(crate) fn provide_randomness(
     env: Env,
     random_seed: u64,
@@ -139,6 +184,12 @@ pub(crate) fn provide_randomness(
     }
 
     let raffle = read_raffle(&env)?;
+
+    // Reject Quorum-mode submissions on this path
+    if matches!(raffle.randomness_source, RandomnessSource::Quorum { .. }) {
+        return Err(Error::InvalidParameters);
+    }
+
     let oracle = match &raffle.oracle_address {
         Some(addr) => {
             addr.require_auth();
@@ -265,3 +316,4 @@ pub(crate) fn trigger_randomness_fallback(
 
     do_finalize_with_seed(&env, raffle, seed, RandomnessType::Fallback)
 }
+

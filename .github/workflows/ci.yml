@@ -53,6 +53,11 @@ jobs:
         done
         exit $FAILED
 
+    - name: Check Error Docs Sync
+      run: |
+        python3 scripts/generate_error_docs.py
+        git diff --exit-code docs/ERRORS.md || (echo "ERROR: docs/ERRORS.md is out of sync with Error enum in contracts/raffle-instance/src/lib.rs. Run 'python scripts/generate_error_docs.py' to update." && exit 1)
+
     - name: Run Linter (Clippy)
       run: cargo clippy --all-targets --all-features -- -D warnings
 

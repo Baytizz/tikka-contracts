@@ -59,6 +59,16 @@ cargo test -p raffle-factory
 cargo test -p raffle-instance
 ```
 
+## Error Documentation Sync
+
+If you modify or add any variants to the `Error` enum in `contracts/raffle-instance/src/lib.rs`, regenerate `docs/ERRORS.md` before committing:
+
+```bash
+python scripts/generate_error_docs.py
+```
+
+CI will fail if `docs/ERRORS.md` is out of sync with the Rust `Error` enum.
+
 ## Markdown
 
 Run markdownlint before opening a PR to keep documentation style consistent:
