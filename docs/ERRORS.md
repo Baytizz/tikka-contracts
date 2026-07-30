@@ -3,9 +3,11 @@
 This document describes all error codes used in the Tikka Raffle contracts. Frontend applications can use these codes to display user-friendly error messages.
 
 > **Note:** To keep this documentation in sync with the Rust Error enum, run the generation script:
+>
 > ```bash
 > python scripts/generate_error_docs.py
 > ```
+>
 > This script parses `contracts/raffle-instance/src/lib.rs` and outputs the current error codes and their mappings.
 
 ## Table of Contents
@@ -302,7 +304,7 @@ cargo test -p raffle-factory
 ## Best Practices
 
 1. **Always use Result types**: Never use `panic!()` or `expect()` in production code
-2. **Provide meaningful error codes**: Use descriptive error codes that frontend can map to user messages
-3. **Document all errors**: Keep this file updated with any new error codes
-4. **Handle edge cases**: Test all error paths to ensure proper error propagation
-5. **Use appropriate error granularity**: Different errors should have different codes for better UX
+1. **Provide meaningful error codes**: Use descriptive error codes that frontend can map to user messages
+1. **Document all errors**: Keep this file updated with any new error codes
+1. **Handle edge cases**: Test all error paths to ensure proper error propagation
+1. **Use appropriate error granularity**: Different errors should have different codes for better UX
