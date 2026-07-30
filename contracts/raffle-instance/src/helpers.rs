@@ -158,9 +158,9 @@ pub(crate) fn do_finalize_with_seed(
         },
     );
 
+    let winner_addresses: Vec<Address> = winners.iter().map(|w| w.address.clone()).collect();
     raffle.status = RaffleStatus::Finalized;
-    raffle.winners = winners.clone();
-    raffle.claimed_winners = claimed_winners;
+    raffle.winners = winners;
     raffle.finalized_at = Some(env.ledger().timestamp());
     write_raffle(env, &raffle);
 

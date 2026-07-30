@@ -24,7 +24,7 @@ pub(crate) use helpers::do_finalize_with_seed;
 
 use raffle_shared::{
     CancelReason, FailureReason, FairnessData, RaffleConfig, RaffleStatus, RandomnessSource,
-    RandomnessType, Ticket,
+    RandomnessType, Ticket, Winner,
 };
 
 use self::randomness::{
@@ -78,8 +78,10 @@ pub struct Raffle {
     pub tickets_sold: u32,
     pub status: RaffleStatus,
     pub prize_deposited: bool,
-    pub winners: Vec<Address>,
-    pub claimed_winners: Vec<bool>,
+    /// Unified winner list.  Each entry carries the winner's address, claim
+    /// state, and prize tier in a single struct — eliminating the old
+    /// parallel-array pattern (`winners: Vec<Address>` + `claimed_winners: Vec<bool>`).
+    pub winners: Vec<Winner>,
     pub randomness_source: RandomnessSource,
     pub oracle_address: Option<Address>,
     pub protocol_fee_bp: u32,
@@ -567,7 +569,6 @@ impl Contract {
             status: RaffleStatus::PendingPrize,
             prize_deposited: false,
             winners: Vec::new(&env),
-            claimed_winners: Vec::new(&env),
             randomness_source: config.randomness_source.clone(),
             oracle_address: config.oracle_address,
             protocol_fee_bp: config.protocol_fee_bp,
@@ -1194,7 +1195,10 @@ impl Contract {
         }
         .publish(&env);
 
-        Ok(amount)
+    /// Permissionless sweep of unclaimed prizes to treasury after `claim_expiry_seconds`
+    /// has elapsed since finalization.  Returns the number of prizes swept.
+    pub fn sweep_unclaimed(env: Env) -> Result<u32, Error> {
+        crate::claim::sweep_unclaimed(env)
     }
 
     pub fn withdraw_fees(env: Env, recipient: Address, amount: i128) -> Result<(), Error> {
