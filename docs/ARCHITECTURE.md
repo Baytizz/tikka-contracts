@@ -28,11 +28,11 @@ graph TB
 ### Flow explanation
 
 1. A creator calls `create_raffle` on the factory with `RaffleConfig`.
-2. The factory deploys a new raffle instance and returns the new instance address.
-3. Users buy tickets directly on the raffle instance contract.
-4. When finalization starts, the instance emits randomness request events to the network.
-5. The oracle service polls those events and calls `provide_randomness` back on the instance.
-6. The instance finalizes winners, emits finalization events, and winners claim prizes.
+1. The factory deploys a new raffle instance and returns the new instance address.
+1. Users buy tickets directly on the raffle instance contract.
+1. When finalization starts, the instance emits randomness request events to the network.
+1. The oracle service polls those events and calls `provide_randomness` back on the instance.
+1. The instance finalizes winners, emits finalization events, and winners claim prizes.
 
 ## RaffleStatus State Machine
 
@@ -57,3 +57,18 @@ stateDiagram-v2
 - `Finalized`: winners are locked and can claim.
 - `Claimed`: terminal state when all claims are complete.
 - `Cancelled` / `Failed`: terminal non-success states.
+
+### Entrypoint Lifecycle Transition Matrix
+
+The following table summarizes the behavior of mutating contract entrypoints across all 7 `RaffleStatus` states (#623):
+
+| Mutating Entrypoint | PendingPrize | Active | Drawing | Finalized | Cancelled | Failed | Claimed |
+|---|---|---|---|---|---|---|---|
+| `deposit_prize` | **Allowed** (-> Active) | Rejected (`PrizeAlreadyDeposited`) | Rejected (`PrizeAlreadyDeposited`) | Rejected (`PrizeAlreadyDeposited`) | Rejected (`PrizeAlreadyDeposited`) | Rejected (`PrizeAlreadyDeposited`) | Rejected (`PrizeAlreadyDeposited`) |
+| `buy_tickets` | Rejected (`RaffleInactive`) | **Allowed** (-> Active / Drawing) | Rejected (`DrawingAlreadyInProgress` / `RaffleInactive`) | Rejected (`RaffleInactive`) | Rejected (`RaffleInactive`) | Rejected (`RaffleInactive`) | Rejected (`RaffleInactive`) |
+| `finalize_raffle` | Rejected (`InvalidStateTransition`) | **Allowed** (if ended/full) | **Allowed** (if Drawing) | Rejected (`InvalidStatus`) | Rejected (`InvalidStatus`) | Rejected (`InvalidStatus`) | Rejected (`InvalidStatus`) |
+| `provide_randomness` | Rejected (`InvalidStatus`) | Rejected (`InvalidStatus`) | **Allowed** (-> Finalized) | Rejected (`InvalidStatus`) | Rejected (`InvalidStatus`) | Rejected (`InvalidStatus`) | Rejected (`InvalidStatus`) |
+| `claim_prize` | Rejected (`InvalidStatus`) | Rejected (`InvalidStatus`) | Rejected (`InvalidStatus`) | **Allowed** (-> Finalized / Claimed) | Rejected (`InvalidStatus`) | Rejected (`InvalidStatus`) | Rejected (`InvalidStatus`) |
+| `cancel_raffle` | **Allowed** (-> Cancelled) | **Allowed** (-> Cancelled) | **Allowed** (-> Cancelled) | Rejected (`InvalidStatus`) | Rejected (`InvalidStatus`) | **Allowed** (-> Cancelled) | Rejected (`InvalidStatus`) |
+| `refund_ticket` | Rejected (`InvalidStatus`) | Rejected (`InvalidStatus`) | Rejected (`InvalidStatus`) | Rejected (`InvalidStatus`) | **Allowed** | **Allowed** | Rejected (`InvalidStatus`) |
+

@@ -2,7 +2,7 @@
   "name": "oracle-service",
   "version": "1.0.0",
   "description": "Off-chain oracle service for Tikka Contracts",
-  "main": "index.js",
+  "main": "dist/src/index.js",
   "scripts": {
     "build": "tsc",
     "start": "node dist/src/index.js",
