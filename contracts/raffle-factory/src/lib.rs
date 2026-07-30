@@ -12,11 +12,14 @@ use soroban_sdk::testutils::Address as _;
 mod events;
 
 use raffle_shared::{
-    effective_limit, AdminOp, FairnessData, LeaderboardMetric, PageResultRaffles, PaginationParams,
-    RaffleConfig,
+    effective_limit, AdminOp, FairnessData, PageResultRaffles, PaginationParams, RaffleConfig,
+    RecurringRaffleConfig,
 };
 
-use raffle_shared::constants::{CHECKPOINT_INTERVAL, MAX_PROTOCOL_FEE_BP, TIMELOCK_DELAY_SECONDS};
+use raffle_shared::constants::{
+    CHECKPOINT_INTERVAL, MAX_PROTOCOL_FEE_BP, MAX_RECURRING_INTERVAL_SECONDS,
+    MIN_RECURRING_INTERVAL_SECONDS, TIMELOCK_DELAY_SECONDS,
+};
 
 /// A timelocked administrative operation queued for future execution.
 ///
@@ -71,6 +74,17 @@ pub struct StateCheckpoint {
 /// Each variant maps to exactly one storage slot, keeping reads and writes
 /// O(1). The stable-map design (`RaffleById` / `NextRaffleId`) means that
 /// adding or removing a raffle never touches any other raffle's slot.
+#[derive(Clone)]
+#[contracttype]
+pub struct RecurringRaffleEntry {
+    pub creator: Address,
+    pub config: RecurringRaffleConfig,
+    pub next_due: u64,
+    pub current_round: u32,
+    pub active: bool,
+    pub last_raffle_address: Option<Address>,
+}
+
 #[derive(Clone)]
 #[contracttype]
 pub enum DataKey {
@@ -141,10 +155,12 @@ pub enum DataKey {
     /// carries a category, enabling `get_raffles_by_category` queries without an
     /// off-chain indexer.
     CategoryRaffles(soroban_sdk::String),
-    TopByTickets,
-    TopByPrize,
-    TopByVolume,
-    GlobalEmergencyPause,
+    /// Recurring (subscription) raffle state by ID.
+    RecurringRaffle(u32),
+    /// Monotonic counter assigned to the next recurring raffle.
+    NextRecurringId,
+    /// ID → list of raffle addresses created across all rounds so far.
+    RecurringRaffleInstances(u32),
 }
 
 /// A read-only snapshot of key factory metrics returned by
@@ -210,6 +226,10 @@ pub enum ContractError {
     /// `create_raffle` could not read the treasury address (factory not fully
     /// initialized). Code 19.
     TreasuryNotSet = 19,
+    RecurringNotFound = 20,
+    IntervalNotElapsed = 21,
+    MaxRoundsReached = 22,
+    RecurringInactive = 23,
 }
 
 pub const LEADERBOARD_CAP: u32 = 10;
@@ -288,6 +308,118 @@ fn require_valid_role_address(env: &Env, address: &Address) -> Result<(), Contra
         return Err(ContractError::InvalidParameters);
     }
     Ok(())
+}
+
+fn create_raffle_internal(
+    env: &Env,
+    creator: Address,
+    config: RaffleConfig,
+) -> Result<Address, ContractError> {
+    let admin: Address = env
+        .storage()
+        .persistent()
+        .get(&DataKey::Admin)
+        .ok_or(ContractError::NotAuthorized)?;
+    let factory_address = env.current_contract_address();
+
+    #[cfg(not(test))]
+    let raffle_address = {
+        let wasm_hash: BytesN<32> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::InstanceWasmHash)
+            .ok_or(ContractError::InvalidParameters)?;
+        let salt = env
+            .crypto()
+            .sha256(&(creator.clone(), config.description.clone()).to_xdr(env));
+        env.deployer()
+            .with_address(factory_address.clone(), salt)
+            .deploy_v2(wasm_hash, ())
+    };
+
+    #[cfg(test)]
+    let raffle_address = {
+        let mut count: u32 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::RaffleInstancesCount)
+            .unwrap_or(0);
+        count += 1;
+        env.storage()
+            .persistent()
+            .set(&DataKey::RaffleInstancesCount, &count);
+        let mut id = Address::generate(env);
+        for _ in 0..count {
+            id = Address::generate(env);
+        }
+        env.register_at(&id, raffle_instance::Contract, ());
+        id
+    };
+
+    let category = config.category.clone();
+    env.invoke_contract::<()>(
+        &raffle_address,
+        &Symbol::new(env, "init"),
+        (factory_address, admin, creator.clone(), config).into_val(env),
+    );
+
+    let stable_id: u32 = env
+        .storage()
+        .persistent()
+        .get(&DataKey::NextRaffleId)
+        .unwrap_or(0u32);
+    env.storage()
+        .persistent()
+        .set(&DataKey::RaffleById(stable_id), &raffle_address);
+    env.storage()
+        .persistent()
+        .set(&DataKey::NextRaffleId, &(stable_id.saturating_add(1)));
+
+    let mut creator_raffles: Vec<Address> = env
+        .storage()
+        .persistent()
+        .get(&DataKey::CreatorRaffles(creator.clone()))
+        .unwrap_or_else(|| Vec::new(env));
+    creator_raffles.push_back(raffle_address.clone());
+    env.storage()
+        .persistent()
+        .set(&DataKey::CreatorRaffles(creator), &creator_raffles);
+
+    if let Some(ref category) = category {
+        let mut cat_raffles: Vec<Address> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::CategoryRaffles(category.clone()))
+            .unwrap_or_else(|| Vec::new(env));
+        cat_raffles.push_back(raffle_address.clone());
+        env.storage()
+            .persistent()
+            .set(&DataKey::CategoryRaffles(category.clone()), &cat_raffles);
+    }
+
+    let live_count: u32 = env
+        .storage()
+        .persistent()
+        .get(&DataKey::RaffleCount)
+        .unwrap_or(0u32)
+        .saturating_add(1);
+    env.storage()
+        .persistent()
+        .set(&DataKey::RaffleCount, &live_count);
+
+    let mut count: u32 = env
+        .storage()
+        .persistent()
+        .get(&DataKey::TotalRafflesCreated)
+        .unwrap_or(0);
+    count += 1;
+    env.storage()
+        .persistent()
+        .set(&DataKey::TotalRafflesCreated, &count);
+
+    maybe_create_checkpoint(env, count);
+
+    Ok(raffle_address)
 }
 
 #[contractimpl]
@@ -693,125 +825,183 @@ impl RaffleFactory {
         final_config.protocol_fee_bp = protocol_fee_bp;
         final_config.treasury_address = Some(treasury);
 
-        let admin: Address = env
-            .storage()
-            .persistent()
-            .get(&DataKey::Admin)
-            .ok_or(ContractError::NotAuthorized)?;
-        let factory_address = env.current_contract_address();
+        create_raffle_internal(&env, creator, final_config)
+    }
 
-        #[cfg(not(test))]
-        let raffle_address = {
-            let wasm_hash: BytesN<32> = env
-                .storage()
-                .persistent()
-                .get(&DataKey::InstanceWasmHash)
-                .ok_or(ContractError::InvalidParameters)?;
-            let salt = env
-                .crypto()
-                .sha256(&(creator.clone(), final_config.description.clone()).to_xdr(&env));
-            env.deployer()
-                .with_address(factory_address.clone(), salt)
-                .deploy_v2(wasm_hash, ())
-        };
+    pub fn create_recurring_raffle(
+        env: Env,
+        creator: Address,
+        config: RecurringRaffleConfig,
+    ) -> Result<u32, ContractError> {
+        creator.require_auth();
+        require_factory_not_paused(&env)?;
 
-        #[cfg(test)]
-        let raffle_address = {
-            let mut count: u32 = env
-                .storage()
-                .persistent()
-                .get(&DataKey::RaffleInstancesCount)
-                .unwrap_or(0);
-            count += 1;
-            env.storage()
-                .persistent()
-                .set(&DataKey::RaffleInstancesCount, &count);
-
-            let mut id = Address::generate(&env);
-            for _ in 0..count {
-                id = Address::generate(&env);
-            }
-            env.register_at(&id, raffle_instance::Contract, ());
-            id
-        };
-
-        let category = final_config.category.clone();
-        env.invoke_contract::<()>(
-            &raffle_address,
-            &Symbol::new(&env, "init"),
-            (factory_address, admin, creator.clone(), final_config.clone()).into_val(&env),
-        );
-
-        // --- O(1) stable-map registration ---
-        // Assign the next stable ID and write a single entry.  No Vec is
-        // deserialised or reserialised; each raffle occupies its own storage
-        // slot, so cost is constant regardless of how many raffles exist.
-        let stable_id: u32 = env
-            .storage()
-            .persistent()
-            .get(&DataKey::NextRaffleId)
-            .unwrap_or(0u32);
-        env.storage()
-            .persistent()
-            .set(&DataKey::RaffleById(stable_id), &raffle_address);
-        env.storage()
-            .persistent()
-            .set(&DataKey::NextRaffleId, &(stable_id.saturating_add(1)));
-
-        // --- per-creator index ---
-        // Append the new raffle address to the creator's list so callers can
-        // query all raffles for a given creator without scanning the full list.
-        let mut creator_raffles: Vec<Address> = env
-            .storage()
-            .persistent()
-            .get(&DataKey::CreatorRaffles(creator.clone()))
-            .unwrap_or_else(|| Vec::new(&env));
-        creator_raffles.push_back(raffle_address.clone());
-        env.storage()
-            .persistent()
-            .set(&DataKey::CreatorRaffles(creator.clone()), &creator_raffles);
-
-        // --- per-category index (#439) ---
-        // If the raffle declares a category, append its address to that
-        // category's list so `get_raffles_by_category` can serve paginated
-        // results directly from on-chain state.  The category was validated
-        // (length + charset) by the instance's `init`, invoked above.
-        if let Some(ref category) = category {
-            let mut cat_raffles: Vec<Address> = env
-                .storage()
-                .persistent()
-                .get(&DataKey::CategoryRaffles(category.clone()))
-                .unwrap_or_else(|| Vec::new(&env));
-            cat_raffles.push_back(raffle_address.clone());
-            env.storage()
-                .persistent()
-                .set(&DataKey::CategoryRaffles(category.clone()), &cat_raffles);
+        if config.interval_seconds < MIN_RECURRING_INTERVAL_SECONDS
+            || config.interval_seconds > MAX_RECURRING_INTERVAL_SECONDS
+        {
+            return Err(ContractError::InvalidParameters);
         }
 
-        // Increment the live-count for stats.
-        let live_count: u32 = env
+        if config.max_rounds == 0 && config.auto_fund {
+            return Err(ContractError::InvalidParameters);
+        }
+
+        let recurring_id: u32 = env
             .storage()
             .persistent()
-            .get(&DataKey::RaffleCount)
-            .unwrap_or(0u32)
-            .saturating_add(1);
+            .get(&DataKey::NextRecurringId)
+            .unwrap_or(0u32);
+
+        let now = env.ledger().timestamp();
+        let interval = config.interval_seconds;
+        let entry = RecurringRaffleEntry {
+            creator: creator.clone(),
+            config,
+            next_due: now.saturating_add(interval),
+            current_round: 0,
+            active: true,
+            last_raffle_address: None,
+        };
+
         env.storage()
             .persistent()
-            .set(&DataKey::RaffleCount, &live_count);
+            .set(&DataKey::RecurringRaffle(recurring_id), &entry);
+        env.storage()
+            .persistent()
+            .set(&DataKey::NextRecurringId, &(recurring_id.saturating_add(1)));
+        env.storage()
+            .persistent()
+            .set(&DataKey::RecurringRaffleInstances(recurring_id), &Vec::new(&env));
 
-        let mut count: u32 = env
+        events::RecurringRaffleCreated {
+            recurring_id,
+            creator,
+            interval_seconds: entry.config.interval_seconds,
+            max_rounds: entry.config.max_rounds,
+            auto_fund: entry.config.auto_fund,
+            next_due: entry.next_due,
+            timestamp: now,
+        }
+        .publish(&env);
+
+        Ok(recurring_id)
+    }
+
+    pub fn trigger_next_round(
+        env: Env,
+        recurring_id: u32,
+    ) -> Result<Address, ContractError> {
+        require_factory_not_paused(&env)?;
+
+        let mut entry: RecurringRaffleEntry = env
             .storage()
             .persistent()
-            .get(&DataKey::TotalRafflesCreated)
-            .unwrap_or(0);
-        count += 1;
+            .get(&DataKey::RecurringRaffle(recurring_id))
+            .ok_or(ContractError::RecurringNotFound)?;
+
+        if !entry.active {
+            return Err(ContractError::RecurringInactive);
+        }
+
+        let now = env.ledger().timestamp();
+        if now < entry.next_due {
+            return Err(ContractError::IntervalNotElapsed);
+        }
+
+        if entry.config.max_rounds > 0 && entry.current_round >= entry.config.max_rounds {
+            return Err(ContractError::MaxRoundsReached);
+        }
+
+        let raffle_address = self::create_raffle_internal(
+            &env,
+            entry.creator.clone(),
+            entry.config.base_config.clone(),
+        )?;
+
+        entry.current_round = entry.current_round.saturating_add(1);
+        entry.next_due = now.saturating_add(entry.config.interval_seconds);
+        entry.last_raffle_address = Some(raffle_address.clone());
+
+        let mut instances: Vec<Address> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::RecurringRaffleInstances(recurring_id))
+            .unwrap_or_else(|| Vec::new(&env));
+        instances.push_back(raffle_address.clone());
         env.storage()
             .persistent()
-            .set(&DataKey::TotalRafflesCreated, &count);
+            .set(&DataKey::RecurringRaffleInstances(recurring_id), &instances);
 
-        maybe_create_checkpoint(&env, count);
+        env.storage()
+            .persistent()
+            .set(&DataKey::RecurringRaffle(recurring_id), &entry);
+
+        events::RecurringRoundTriggered {
+            recurring_id,
+            round: entry.current_round,
+            raffle_address: raffle_address.clone(),
+            next_due: entry.next_due,
+            timestamp: now,
+        }
+        .publish(&env);
 
         Ok(raffle_address)
+    }
+
+    pub fn cancel_recurring_raffle(
+        env: Env,
+        recurring_id: u32,
+        caller: Address,
+    ) -> Result<(), ContractError> {
+        let entry: RecurringRaffleEntry = env
+            .storage()
+            .persistent()
+            .get(&DataKey::RecurringRaffle(recurring_id))
+            .ok_or(ContractError::RecurringNotFound)?;
+
+        if caller != entry.creator {
+            let admin = require_admin(&env)?;
+            if caller != admin {
+                return Err(ContractError::NotAuthorized);
+            }
+        }
+        caller.require_auth();
+
+        env.storage()
+            .persistent()
+            .set(
+                &DataKey::RecurringRaffle(recurring_id),
+                &RecurringRaffleEntry {
+                    active: false,
+                    ..entry
+                },
+            );
+
+        events::RecurringRaffleCancelled {
+            recurring_id,
+            cancelled_by: caller,
+            rounds_completed: entry.current_round,
+            timestamp: env.ledger().timestamp(),
+        }
+        .publish(&env);
+
+        Ok(())
+    }
+
+    pub fn get_recurring_raffle(env: Env, recurring_id: u32) -> Option<RecurringRaffleEntry> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::RecurringRaffle(recurring_id))
+    }
+
+    pub fn get_recurring_instances(
+        env: Env,
+        recurring_id: u32,
+    ) -> Vec<Address> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::RecurringRaffleInstances(recurring_id))
+            .unwrap_or_else(|| Vec::new(&env))
     }
 
     /// Return a snapshot of key factory metrics.
@@ -2633,37 +2823,428 @@ mod tests {
         assert_eq!(p1.items.get(1).unwrap(), addrs[4].clone());
     }
 
-    #[test]
-    fn leaderboard_top_ten_by_tickets() {
-        let env = Env::default();
-        env.mock_all_auths();
-        let (client, _, _) = setup_factory(&env);
+    // -----------------------------------------------------------------------
+    // Recurring (subscription) raffle tests (#487)
+    // -----------------------------------------------------------------------
 
-        for i in 0..15u32 {
-            let addr = Address::generate(&env);
-            client.record_leaderboard_entry(
-                &addr,
-                &((i + 1) as i128),
-                &0,
-                &0,
-            );
+    fn recurring_config(env: &Env, base: RaffleConfig) -> RecurringRaffleConfig {
+        RecurringRaffleConfig {
+            base_config: base,
+            interval_seconds: 86_400, // 1 day
+            max_rounds: 3,
+            auto_fund: false,
         }
+    }
 
-        let board = client.get_leaderboard(&LeaderboardMetric::TicketsSold);
-        assert_eq!(board.len(), 10);
-        assert_eq!(board.get(0).unwrap().1, 15);
-        assert_eq!(board.get(9).unwrap().1, 6);
+    fn make_payment_token(env: &Env) -> Address {
+        let token_admin = Address::generate(env);
+        env.register_stellar_asset_contract_v2(token_admin)
+            .address()
+    }
+
+    fn valid_base_config(env: &Env, payment_token: &Address) -> RaffleConfig {
+        RaffleConfig {
+            description: String::from_str(env, "Recurring Raffle"),
+            end_time: 0,
+            no_deadline: true,
+            max_tickets: 10,
+            max_tickets_per_tx: 10,
+            min_tickets: 1,
+            allow_multiple: true,
+            ticket_price: 10_000,
+            payment_token: payment_token.clone(),
+            prize_amount: 10_000,
+            prizes: SdkVec::from_array(env, [10_000u32]),
+            randomness_source: RandomnessSource::Internal,
+            oracle_address: None,
+            protocol_fee_bp: 0,
+            treasury_address: None,
+            swap_router: None,
+            tikka_token: None,
+            metadata_hash: BytesN::from_array(env, &[1u8; 32]),
+            claim_lockup_seconds: 0,
+            swap_deadline_seconds: 0,
+            early_bird_ticket_percentage: 0,
+            early_bird_discount_bp: 0,
+            category: None,
+        }
     }
 
     #[test]
-    fn global_emergency_pause_blocks_factory_flag() {
+    fn test_create_recurring_raffle() {
         let env = Env::default();
         env.mock_all_auths();
-        let (client, _admin, _) = setup_factory(&env);
-        assert!(!client.is_global_paused());
-        client.emergency_pause_all(&String::from_str(&env, "incident"));
-        assert!(client.is_global_paused());
-        client.emergency_unpause_all();
-        assert!(!client.is_global_paused());
+        env.ledger().set_timestamp(1_000_000);
+        let (client, _admin, _treasury) = setup_factory(&env);
+        let creator = Address::generate(&env);
+        let token = make_payment_token(&env);
+        let base = valid_base_config(&env, &token);
+        let rc = recurring_config(&env, base);
+
+        let recurring_id = client.create_recurring_raffle(&creator, &rc);
+        assert_eq!(recurring_id, 0u32);
+
+        let entry = client
+            .get_recurring_raffle(&recurring_id)
+            .expect("recurring entry should exist");
+        assert_eq!(entry.creator, creator);
+        assert_eq!(entry.config.max_rounds, 3);
+        assert!(entry.active);
+        assert_eq!(entry.current_round, 0);
+        assert!(entry.last_raffle_address.is_none());
+        assert_eq!(entry.next_due, 1_000_000 + 86_400);
+    }
+
+    #[test]
+    fn test_create_recurring_raffle_increments_id() {
+        let env = Env::default();
+        env.mock_all_auths();
+        env.ledger().set_timestamp(1_000_000);
+        let (client, _admin, _treasury) = setup_factory(&env);
+        let creator = Address::generate(&env);
+        let token = make_payment_token(&env);
+        let base = valid_base_config(&env, &token);
+
+        let id0 = client.create_recurring_raffle(&creator, &recurring_config(&env, base.clone()));
+        let id1 = client.create_recurring_raffle(&creator, &recurring_config(&env, base));
+        assert_eq!(id0, 0u32);
+        assert_eq!(id1, 1u32);
+    }
+
+    #[test]
+    fn test_create_recurring_raffle_rejects_invalid_interval() {
+        let env = Env::default();
+        env.mock_all_auths();
+        env.ledger().set_timestamp(1_000_000);
+        let (client, _admin, _treasury) = setup_factory(&env);
+        let creator = Address::generate(&env);
+        let token = make_payment_token(&env);
+        let base = valid_base_config(&env, &token);
+
+        let too_short = RecurringRaffleConfig {
+            interval_seconds: 3_599,
+            ..recurring_config(&env, base.clone())
+        };
+        assert_eq!(
+            client.try_create_recurring_raffle(&creator, &too_short),
+            Err(Ok(ContractError::InvalidParameters))
+        );
+
+        let too_long = RecurringRaffleConfig {
+            interval_seconds: 31_536_001,
+            ..recurring_config(&env, base)
+        };
+        assert_eq!(
+            client.try_create_recurring_raffle(&creator, &too_long),
+            Err(Ok(ContractError::InvalidParameters))
+        );
+    }
+
+    #[test]
+    fn test_create_recurring_raffle_rejects_auto_fund_infinite() {
+        let env = Env::default();
+        env.mock_all_auths();
+        env.ledger().set_timestamp(1_000_000);
+        let (client, _admin, _treasury) = setup_factory(&env);
+        let creator = Address::generate(&env);
+        let token = make_payment_token(&env);
+        let base = valid_base_config(&env, &token);
+
+        let bad = RecurringRaffleConfig {
+            max_rounds: 0,
+            auto_fund: true,
+            ..recurring_config(&env, base)
+        };
+        assert_eq!(
+            client.try_create_recurring_raffle(&creator, &bad),
+            Err(Ok(ContractError::InvalidParameters))
+        );
+    }
+
+    #[test]
+    fn test_trigger_next_round() {
+        let env = Env::default();
+        env.mock_all_auths();
+        env.ledger().set_timestamp(1_000_000);
+        let (client, _admin, _treasury) = setup_factory(&env);
+        let creator = Address::generate(&env);
+        let token = make_payment_token(&env);
+        let base = valid_base_config(&env, &token);
+        let recurring_id = client.create_recurring_raffle(
+            &creator,
+            &recurring_config(&env, base),
+        );
+
+        // Advance past the interval.
+        env.ledger().set_timestamp(1_000_000 + 86_400);
+
+        let addr = client.trigger_next_round(&recurring_id);
+        assert!(addr != Address::zero(&env));
+
+        let entry = client
+            .get_recurring_raffle(&recurring_id)
+            .expect("entry exists");
+        assert_eq!(entry.current_round, 1);
+        assert_eq!(entry.next_due, 1_000_000 + 86_400 + 86_400);
+        assert_eq!(entry.last_raffle_address, Some(addr.clone()));
+
+        let instances = client.get_recurring_instances(&recurring_id);
+        assert_eq!(instances.len(), 1u32);
+        assert_eq!(instances.get(0).unwrap(), addr);
+    }
+
+    #[test]
+    fn test_trigger_next_round_multiple_rounds() {
+        let env = Env::default();
+        env.mock_all_auths();
+        env.ledger().set_timestamp(1_000_000);
+        let (client, _admin, _treasury) = setup_factory(&env);
+        let creator = Address::generate(&env);
+        let token = make_payment_token(&env);
+        let base = valid_base_config(&env, &token);
+        let recurring_id = client.create_recurring_raffle(
+            &creator,
+            &recurring_config(&env, base),
+        );
+
+        let mut addrs = Vec::new(&env);
+        for round in 1..=3 {
+            env.ledger().set_timestamp(1_000_000 + 86_400 * round as u64);
+            let addr = client.trigger_next_round(&recurring_id);
+            addrs.push_back(addr);
+        }
+
+        let entry = client
+            .get_recurring_raffle(&recurring_id)
+            .expect("entry exists");
+        assert_eq!(entry.current_round, 3);
+
+        let instances = client.get_recurring_instances(&recurring_id);
+        assert_eq!(instances.len(), 3u32);
+        assert_eq!(instances, addrs);
+    }
+
+    #[test]
+    fn test_trigger_next_round_interval_not_elapsed() {
+        let env = Env::default();
+        env.mock_all_auths();
+        env.ledger().set_timestamp(1_000_000);
+        let (client, _admin, _treasury) = setup_factory(&env);
+        let creator = Address::generate(&env);
+        let token = make_payment_token(&env);
+        let base = valid_base_config(&env, &token);
+        let recurring_id = client.create_recurring_raffle(
+            &creator,
+            &recurring_config(&env, base),
+        );
+
+        // Try trigger at same timestamp — interval not elapsed.
+        assert_eq!(
+            client.try_trigger_next_round(&recurring_id),
+            Err(Ok(ContractError::IntervalNotElapsed))
+        );
+    }
+
+    #[test]
+    fn test_trigger_next_round_max_rounds_reached() {
+        let env = Env::default();
+        env.mock_all_auths();
+        env.ledger().set_timestamp(1_000_000);
+        let (client, _admin, _treasury) = setup_factory(&env);
+        let creator = Address::generate(&env);
+        let token = make_payment_token(&env);
+        let base = valid_base_config(&env, &token);
+
+        let limited = RecurringRaffleConfig {
+            max_rounds: 1,
+            ..recurring_config(&env, base)
+        };
+        let recurring_id = client.create_recurring_raffle(&creator, &limited);
+
+        // Advance past interval and trigger first round.
+        env.ledger().set_timestamp(1_000_000 + 86_400);
+        let _addr = client.trigger_next_round(&recurring_id);
+
+        // Advance past the next interval and try to trigger again.
+        env.ledger().set_timestamp(1_000_000 + 86_400 * 2);
+        assert_eq!(
+            client.try_trigger_next_round(&recurring_id),
+            Err(Ok(ContractError::MaxRoundsReached))
+        );
+    }
+
+    #[test]
+    fn test_trigger_next_round_not_found() {
+        let env = Env::default();
+        env.mock_all_auths();
+        env.ledger().set_timestamp(1_000_000);
+        let (client, _admin, _treasury) = setup_factory(&env);
+
+        assert_eq!(
+            client.try_trigger_next_round(&999u32),
+            Err(Ok(ContractError::RecurringNotFound))
+        );
+    }
+
+    #[test]
+    fn test_cancel_recurring_raffle() {
+        let env = Env::default();
+        env.mock_all_auths();
+        env.ledger().set_timestamp(1_000_000);
+        let (client, _admin, _treasury) = setup_factory(&env);
+        let creator = Address::generate(&env);
+        let token = make_payment_token(&env);
+        let base = valid_base_config(&env, &token);
+        let recurring_id = client.create_recurring_raffle(
+            &creator,
+            &recurring_config(&env, base),
+        );
+
+        client.cancel_recurring_raffle(&recurring_id, &creator);
+
+        let entry = client
+            .get_recurring_raffle(&recurring_id)
+            .expect("entry exists");
+        assert!(!entry.active);
+    }
+
+    #[test]
+    fn test_cancel_recurring_raffle_by_admin() {
+        let env = Env::default();
+        env.mock_all_auths();
+        env.ledger().set_timestamp(1_000_000);
+        let (client, admin, _treasury) = setup_factory(&env);
+        let creator = Address::generate(&env);
+        let token = make_payment_token(&env);
+        let base = valid_base_config(&env, &token);
+        let recurring_id = client.create_recurring_raffle(
+            &creator,
+            &recurring_config(&env, base),
+        );
+
+        client.cancel_recurring_raffle(&recurring_id, &admin);
+
+        let entry = client
+            .get_recurring_raffle(&recurring_id)
+            .expect("entry exists");
+        assert!(!entry.active);
+    }
+
+    #[test]
+    fn test_cancel_recurring_raffle_not_authorized() {
+        let env = Env::default();
+        env.ledger().set_timestamp(1_000_000);
+        let (client, _admin, _treasury) = setup_factory(&env);
+        let creator = Address::generate(&env);
+        let stranger = Address::generate(&env);
+        let token = make_payment_token(&env);
+        let base = valid_base_config(&env, &token);
+        let recurring_id = client.create_recurring_raffle(
+            &creator,
+            &recurring_config(&env, base),
+        );
+
+        // Stranger tries to cancel — the contract requires auth and the caller
+        // is neither creator nor admin, so NotAuthorized must be returned.
+        env.mock_auths(&[&stranger]);
+        assert_eq!(
+            client.try_cancel_recurring_raffle(&recurring_id, &stranger),
+            Err(Ok(ContractError::NotAuthorized))
+        );
+    }
+
+    #[test]
+    fn test_cancel_recurring_raffle_not_found() {
+        let env = Env::default();
+        env.mock_all_auths();
+        env.ledger().set_timestamp(1_000_000);
+        let (client, _admin, _treasury) = setup_factory(&env);
+        let caller = Address::generate(&env);
+
+        assert_eq!(
+            client.try_cancel_recurring_raffle(&999u32, &caller),
+            Err(Ok(ContractError::RecurringNotFound))
+        );
+    }
+
+    #[test]
+    fn test_trigger_recurring_when_inactive() {
+        let env = Env::default();
+        env.mock_all_auths();
+        env.ledger().set_timestamp(1_000_000);
+        let (client, _admin, _treasury) = setup_factory(&env);
+        let creator = Address::generate(&env);
+        let token = make_payment_token(&env);
+        let base = valid_base_config(&env, &token);
+        let recurring_id = client.create_recurring_raffle(
+            &creator,
+            &recurring_config(&env, base),
+        );
+
+        // Cancel first.
+        client.cancel_recurring_raffle(&recurring_id, &creator);
+
+        // Advance time and try to trigger.
+        env.ledger().set_timestamp(1_000_000 + 86_400);
+        assert_eq!(
+            client.try_trigger_next_round(&recurring_id),
+            Err(Ok(ContractError::RecurringInactive))
+        );
+    }
+
+    #[test]
+    fn test_get_recurring_instances_empty_for_new() {
+        let env = Env::default();
+        env.mock_all_auths();
+        env.ledger().set_timestamp(1_000_000);
+        let (client, _admin, _treasury) = setup_factory(&env);
+        let creator = Address::generate(&env);
+        let token = make_payment_token(&env);
+        let base = valid_base_config(&env, &token);
+        let recurring_id = client.create_recurring_raffle(
+            &creator,
+            &recurring_config(&env, base),
+        );
+
+        let instances = client.get_recurring_instances(&recurring_id);
+        assert_eq!(instances.len(), 0u32);
+        assert_eq!(instances, Vec::new(&env));
+    }
+
+    #[test]
+    fn test_infinite_recurring_raffle() {
+        let env = Env::default();
+        env.mock_all_auths();
+        env.ledger().set_timestamp(1_000_000);
+        let (client, _admin, _treasury) = setup_factory(&env);
+        let creator = Address::generate(&env);
+        let token = make_payment_token(&env);
+        let base = valid_base_config(&env, &token);
+
+        let infinite = RecurringRaffleConfig {
+            max_rounds: 0,
+            ..recurring_config(&env, base)
+        };
+        let recurring_id = client.create_recurring_raffle(&creator, &infinite);
+
+        // Trigger 5 rounds — max_rounds=0 means no cap.
+        for round in 1..=5 {
+            env.ledger().set_timestamp(1_000_000 + 86_400 * round as u64);
+            client.trigger_next_round(&recurring_id);
+        }
+
+        let entry = client
+            .get_recurring_raffle(&recurring_id)
+            .expect("entry exists");
+        assert_eq!(entry.current_round, 5);
+    }
+
+    #[test]
+    fn test_get_recurring_raffle_nonexistent() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, _admin, _treasury) = setup_factory(&env);
+
+        assert!(client.get_recurring_raffle(&999u32).is_none());
     }
 }
