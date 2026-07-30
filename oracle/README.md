@@ -30,7 +30,7 @@ For local development or testing, provide the secret key via environment variabl
 ```sh
 ORACLE_SECRET_KEY="S..."
 STELLAR_RPC_URL="https://soroban-testnet.stellar.org"
-ORACLE_ADDRESS="G..."
+FACTORY_CONTRACT_ID="C..."
 ```
 
 The `KeyService` validates the key on startup and never logs the private key.
