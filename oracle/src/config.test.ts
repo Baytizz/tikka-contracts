@@ -15,11 +15,9 @@ describe('loadAndValidateConfig', () => {
     delete process.env.ORACLE_POLL_INTERVAL_MS;
     delete process.env.LOG_LEVEL;
 
-    exitSpy = jest
-      .spyOn(process, 'exit')
-      .mockImplementation(((code?: number) => {
-        throw new Error(`process.exit:${code ?? 0}`);
-      }) as never);
+    exitSpy = jest.spyOn(process, 'exit').mockImplementation(((code?: number) => {
+      throw new Error(`process.exit:${code ?? 0}`);
+    }) as never);
     errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
   });
 
@@ -43,9 +41,7 @@ describe('loadAndValidateConfig', () => {
     process.env.FACTORY_CONTRACT_ID = 'CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M';
 
     expect(() => loadAndValidateConfig()).toThrow('process.exit:1');
-    expect(errorSpy).toHaveBeenCalledWith(
-      ' - ORACLE_SECRET_KEY is not a valid Ed25519 secret key',
-    );
+    expect(errorSpy).toHaveBeenCalledWith(' - ORACLE_SECRET_KEY is not a valid Ed25519 secret key');
   });
 
   it('returns validated config when env is valid', () => {

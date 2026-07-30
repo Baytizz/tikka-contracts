@@ -1,1 +1,1 @@
-console.log("Oracle service starting...");
+console.log('Oracle service starting...');

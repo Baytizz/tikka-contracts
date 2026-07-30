@@ -28,18 +28,16 @@ cp .env.example .env
 
 Every script under `scripts/` loads `.env` when present (`export $(cat .env | xargs)`).
 
-| Variable | Required by | Purpose |
-|---|---|---|
-| `DEPLOYER_SECRET_KEY` | `deploy-*.sh`, `invoke.sh` | Account that signs deploy/invoke txs (`S...`) |
-| `RAFFLE_CONTRACT_ADDRESS` | `invoke.sh`, `verify.sh` | Contract ID to invoke or verify (`C...`) |
-| `STELLAR_NETWORK` | `invoke.sh`, `verify.sh` | Network name (`testnet` default, or `mainnet`) |
-| `STELLAR_RPC_URL` | oracle / manual CLI | Soroban RPC endpoint |
-| `FACTORY_CONTRACT_ID` | oracle service | Factory ID the oracle listens on |
-| `ORACLE_SECRET_KEY` | oracle service | Oracle secret used to sign `provide_randomness` |
-| `POLL_INTERVAL_MS` | oracle service | Primary event poll interval (ms) |
-| `ORACLE_POLL_INTERVAL_MS` | oracle service | Fallback / listener poll interval (ms) |
-| `LOG_LEVEL` | oracle service | Oracle log verbosity |
-| `ADMIN_ADDRESS` | manual init | Factory admin G-address |
+| Variable                               | Required by                | Purpose                                        |
+| -------------------------------------- | -------------------------- | ---------------------------------------------- |
+| `DEPLOYER_SECRET_KEY`                  | `deploy-*.sh`, `invoke.sh` | Account that signs deploy/invoke txs (`S...`)  |
+| `RAFFLE_CONTRACT_ADDRESS`              | `invoke.sh`, `verify.sh`   | Contract ID to invoke or verify (`C...`)       |
+| `STELLAR_NETWORK`                      | `invoke.sh`, `verify.sh`   | Network name (`testnet` default, or `mainnet`) |
+| `STELLAR_RPC_URL`                      | oracle / manual CLI        | Soroban RPC endpoint                           |
+| `STELLAR_HORIZON_URL`                  | optional                   | Horizon endpoint                               |
+| `FACTORY_CONTRACT_ID`                  | oracle service             | Factory ID the oracle listens on               |
+| `ORACLE_ADDRESS` / `ORACLE_SECRET_KEY` | oracle / External raffles  | Oracle identity for `provide_randomness`       |
+| `ADMIN_ADDRESS`                        | manual init                | Factory admin G-address                        |
 
 > **Security:** Never commit `.env` or secret keys. `DEPLOYER_SECRET_KEY` and `ORACLE_SECRET_KEY` must stay local or in a secrets manager.
 
@@ -80,7 +78,7 @@ export DEPLOYER_SECRET_KEY="S..."
 
 **Expected output:**
 
-```
+```text
 Building WASM...
 Deploying to Testnet...
 Deployment successful!
@@ -155,7 +153,7 @@ stellar contract build   # or cargo build --release --target ...
 
 **Expected output on match:**
 
-```
+```text
 Local WASM Hash:  <hex>
 Remote WASM Hash: <hex>
 Verification Result: Match: YES
@@ -221,6 +219,13 @@ stellar contract install \
 
 Exact CLI flag spelling follows `stellar contract invoke --help` for your CLI version. `protocol_fee_bp` is basis points (250 = 2.5%); see [FEE_MODEL.md](FEE_MODEL.md).
 
+### Upgrade procedure
+
+1. Propose a new instance WASM hash through the factory timelock with `propose_wasm_upgrade`.
+2. Confirm the proposal is pending and cannot be executed before `TIMELOCK_DELAY_SECONDS` elapses.
+3. Advance the ledger time past the delay, then invoke `execute_config_change` to apply the upgrade.
+4. Verify the new instance WASM is active and that existing raffles remain readable after the upgrade.
+
 ### 6. Create a raffle
 
 ```bash
@@ -236,10 +241,10 @@ Exact CLI flag spelling follows `stellar contract invoke --help` for your CLI ve
 Typical instance lifecycle (see [ARCHITECTURE.md](ARCHITECTURE.md)):
 
 1. `deposit_prize` — creator escrows the prize (`PendingPrize` → `Active`)
-2. `buy_tickets` — buyers purchase entries
-3. `finalize_raffle` — starts the draw (Internal / External / CommitReveal)
-4. For `External`: run the `oracle/` service so it calls `provide_randomness`
-5. `claim_prize` — winners withdraw after claim lockup
+1. `buy_tickets` — buyers purchase entries
+1. `finalize_raffle` — starts the draw (Internal / External / CommitReveal)
+1. For `External`: run the `oracle/` service so it calls `provide_randomness`
+1. `claim_prize` — winners withdraw after claim lockup
 
 Example finalize:
 
@@ -261,10 +266,10 @@ export RAFFLE_CONTRACT_ADDRESS="$(jq -r .contractId deployments/testnet.json)"
 
 Deployment scripts write a small JSON receipt after a successful deploy:
 
-| File | Written by | Contents |
-|---|---|---|
+| File                       | Written by          | Contents                                            |
+| -------------------------- | ------------------- | --------------------------------------------------- |
 | `deployments/testnet.json` | `deploy-testnet.sh` | `network`, `contractId`, `timestamp` (UTC ISO-8601) |
-| `deployments/mainnet.json` | `deploy-mainnet.sh` | same shape for mainnet |
+| `deployments/mainnet.json` | `deploy-mainnet.sh` | same shape for mainnet                              |
 
 Example (`deployments/testnet.json`):
 
@@ -279,9 +284,9 @@ Example (`deployments/testnet.json`):
 ### Recording a new deployment
 
 1. Run `./scripts/deploy-testnet.sh` or `./scripts/deploy-mainnet.sh`.
-2. The script overwrites the corresponding JSON file with the new `contractId` and timestamp.
-3. Commit the updated JSON when the deployment is meant to be the shared reference address for the team (optional; treat secrets separately).
-4. Update `.env` (`RAFFLE_CONTRACT_ADDRESS` / `FACTORY_CONTRACT_ID`) to match.
+1. The script overwrites the corresponding JSON file with the new `contractId` and timestamp.
+1. Commit the updated JSON when the deployment is meant to be the shared reference address for the team (optional; treat secrets separately).
+1. Update `.env` (`RAFFLE_CONTRACT_ADDRESS` / `FACTORY_CONTRACT_ID`) to match.
 
 The scripts currently record the **factory** contract ID only. Instance addresses from `create_raffle` should be tracked separately (notes, frontend config, or an extended deployments file of your own).
 

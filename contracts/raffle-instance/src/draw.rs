@@ -132,7 +132,7 @@ pub(crate) fn provide_randomness(
 
 pub(crate) fn trigger_randomness_fallback(env: Env, caller: Address, do_refund: bool) -> Result<(), Error> {
     let drawing_lock: bool = env.storage().instance().get(&DataKey::DrawingLock).unwrap_or(false);
-    if drawing_lock { return Err(Error::DrawingAlreadyInProgress); }
+    if !drawing_lock { return Err(Error::DrawingAlreadyComplete); }
 
     caller.require_auth();
     let mut raffle = read_raffle(&env)?;
