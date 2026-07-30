@@ -1590,12 +1590,6 @@ if config.randomness_source == RandomnessSource::External {
 
         // Allow emergency withdraw only after a long timeout.
         match raffle.status {
-            RaffleStatus::Finalized => {
-                if let Some(finalized_at) = raffle.finalized_at {
-                    if now < finalized_at + EMERGENCY_WITHDRAW_DELAY_SECONDS {
-                        return Err(Error::EmergencyTooEarly);
-                    }
-                } else {
             RaffleStatus::Finalized | RaffleStatus::Claimed => {
                 let finalized_at = raffle.finalized_at.ok_or(Error::InvalidStatus)?;
                 if now < finalized_at + EMERGENCY_WITHDRAW_DELAY_SECONDS {
@@ -1640,26 +1634,12 @@ if config.randomness_source == RandomnessSource::External {
                 }
             }
             _ => return Err(Error::InvalidStatus),
-        }
         };
-
-        // Mark prize as withdrawn and transfer back to creator
-        raffle.prize_deposited = false;
-        raffle.status = RaffleStatus::Cancelled;
-        write_raffle(&env, &raffle);
-
-        let token_client = token::Client::new(&env, &raffle.prize_token);
-        token_client.transfer(
-            &env.current_contract_address(),
-            &raffle.creator,
-            &raffle.prize_amount,
-        );
 
         EmergencyWithdrawn {
             withdrawn_by: caller,
             to: raffle.creator.clone(),
             amount: raffle.prize_amount,
-            token: raffle.prize_token.clone(),
             timestamp: env.ledger().timestamp(),
         }
         .publish(&env);
@@ -1773,7 +1753,9 @@ if config.randomness_source == RandomnessSource::External {
 
         if total_refund > 0 {
             let token_client = token::Client::new(&env, &raffle.payment_token);
-            token_client.transfer(&env.current_contract_address(), &owner, &total_refund);
+            token_client
+                .try_transfer(&env.current_contract_address(), &owner, &total_refund)
+                .map_err(|_| Error::TokenTransferFailed)?;
         }
 
         release_guard(&env);
@@ -2091,4 +2073,3 @@ if config.randomness_source == RandomnessSource::External {
 }
 #[cfg(test)]
 mod test;
-
