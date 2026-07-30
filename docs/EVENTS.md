@@ -122,11 +122,11 @@ Emitted when a new admin operation is proposed through the timelock mechanism.
 | Field | Type | Description |
 |-------|------|-------------|
 | `op_id` | `u32` | Unique operation identifier (auto-incremented) |
-| `op` | `AdminOp` | The proposed admin operation: `SetConfig(u32, Address)` (fee_bp + treasury) or `UpdateWasmHash(BytesN<32>)` |
+| `op` | `AdminOp` | The proposed admin operation: `SetConfig(ConfigKey, Address)`, `SetProtocolFeeBP(u32)`, or `UpdateWasmHash(BytesN<32>)` |
 | `effective_timestamp` | `u64` | Timestamp when the operation becomes executable (after timelock delay) |
 | `proposed_by` | `Address` | Address that proposed the operation |
 
-**Emitted by:** `set_config`
+**Emitted by:** `propose_config_change`, `propose_fee_change`
 **When:** Admin proposes a config change. The operation is stored with a timelock before it can be executed.
 
 ---
@@ -173,7 +173,7 @@ Emitted when the factory-level treasury address is changed.
 | `changed_by` | `Address` | Address that authorized the change (indexed topic) |
 | `timestamp` | `u64` | Ledger timestamp of the change |
 
-**Emitted by:** (dead code — `TreasuryChanged` is defined but the treasury update path uses `AdminOpExecuted` + `SetConfig` instead)
+**Emitted by:** (dead code — `TreasuryChanged` is defined but the treasury update path uses `AdminOpExecuted` + `SetConfig(ConfigKey::Treasury, Address)` instead)
 **When:** Treasury address is changed via an executed admin operation. The factory's actual behavior emits `AdminOpProposed` → `AdminOpExecuted` with a `SetConfig` payload.
 
 ---
@@ -281,6 +281,37 @@ Emitted when the factory contract's WASM code is upgraded.
 
 **Emitted by:** `upgrade`
 **When:** Admin upgrades the factory contract to a new WASM implementation.
+
+---
+
+## ProfileNameSet
+
+Emitted when a creator sets or updates their profile display name.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `creator` | `Address` | Address of the profile owner |
+| `name` | `String` | Display name set by the creator (max 1000 bytes) |
+| `timestamp` | `u64` | Ledger timestamp of the update |
+
+**Emitted by:** `set_profile_name`
+**When:** A creator self-updates their on-chain profile name.
+
+---
+
+## VerifiedStatusSet
+
+Emitted when the admin grants or revokes a verified badge for a creator.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `creator` | `Address` | Address of the profile being updated |
+| `verified` | `bool` | Verified status (`true` = verified, `false` = unverified) |
+| `set_by` | `Address` | Admin address that made the change |
+| `timestamp` | `u64` | Ledger timestamp of the update |
+
+**Emitted by:** `set_verified`
+**When:** Admin grants or revokes verified status for a creator profile.
 
 ---
 

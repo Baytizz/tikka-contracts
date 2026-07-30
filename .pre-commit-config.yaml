@@ -1,0 +1,18 @@
+repos:
+  - repo: local
+    hooks:
+      - id: cargo-fmt-check
+        name: cargo fmt --check
+        entry: cargo fmt --all -- --check
+        language: system
+        pass_filenames: false
+      - id: cargo-clippy
+        name: cargo clippy
+        entry: cargo clippy --all-targets --all-features -- -D warnings
+        language: system
+        pass_filenames: false
+      - id: prettier-oracle
+        name: prettier oracle
+        entry: bash -lc 'cd oracle && npx prettier --check "**/*.{js,jsx,ts,tsx,json,md}"'
+        language: system
+        pass_filenames: false
