@@ -328,22 +328,28 @@ Then add the `S...` secret as a repository secret named `TESTNET_SECRET_KEY` in 
 ### **Run Tests**
 
 ```bash
-cargo test -p raffle-factory
-cargo test -p raffle-instance
-cargo test -p raffle-shared
+make test
 ```
 
 ### **Build the Contract**
 
 ```bash
-cargo build -p raffle-factory
-cargo build -p raffle-instance
-cargo build -p raffle-shared
+make build
 ```
 
 ## 🛠️ Development
 
-For local setup, build, and test workflows, see `DEVELOPMENT.md`.
+The repo provides a top-level `Makefile` for local development. Common targets:
+
+```bash
+make build       # Build all contracts
+make test        # Run all tests
+make lint        # Format + clippy
+make fuzz        # Run fuzz targets
+make all         # lint + test + build (CI-like)
+```
+
+For additional setup details and build prerequisites, see `DEVELOPMENT.md`.
 
 ## 🤝 Contributing
 

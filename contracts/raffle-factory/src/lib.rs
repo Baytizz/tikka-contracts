@@ -1892,6 +1892,7 @@ mod tests {
     use super::*;
     use raffle_shared::{LeaderboardMetric, RandomnessSource, DEFAULT_PAGE_LIMIT, MAX_PAGE_LIMIT};
     use soroban_sdk::{String, Vec as SdkVec};
+    use soroban_sdk::testutils::{Ledger, MockAuth, MockAuthInvoke};
 
     fn setup_factory(env: &Env) -> (RaffleFactoryClient<'_>, Address, Address) {
         let admin = Address::generate(env);
@@ -2729,9 +2730,15 @@ mod tests {
         env.mock_all_auths();
         client.transfer_factory_admin(&admin_b);
 
-        // Only admin_c is authorized — admin_b is the pending, so rejecting admin_b
-        // proves the caller must match PendingAdmin.
-        env.mock_auths(&[&admin_b]);
+        env.mock_auths(&[MockAuth {
+            address: &admin_c,
+            invoke: &MockAuthInvoke {
+                contract: &client.address,
+                fn_name: "accept_factory_admin",
+                args: ().into_val(&env),
+                sub_invokes: &[],
+            },
+        }]);
         assert!(client.try_accept_factory_admin().is_err());
     }
 
@@ -2750,6 +2757,15 @@ mod tests {
         assert!(pending_before);
 
         // Proposing the current admin clears the pending entry
+        env.mock_auths(&[MockAuth {
+            address: &admin,
+            invoke: &MockAuthInvoke {
+                contract: &client.address,
+                fn_name: "transfer_factory_admin",
+                args: (&admin,).into_val(&env),
+                sub_invokes: &[],
+            },
+        }]);
         client.transfer_factory_admin(&admin);
 
         let pending_after: bool = env.as_contract(&client.address, || {
@@ -2773,7 +2789,15 @@ mod tests {
         client.transfer_factory_admin(&new_admin);
 
         // Old admin tries to accept — should fail because require_auth checks caller == PendingAdmin
-        env.mock_auths(&[&admin]);
+        env.mock_auths(&[MockAuth {
+            address: &admin,
+            invoke: &MockAuthInvoke {
+                contract: &client.address,
+                fn_name: "accept_factory_admin",
+                args: ().into_val(&env),
+                sub_invokes: &[],
+            },
+        }]);
         assert!(client.try_accept_factory_admin().is_err());
     }
 

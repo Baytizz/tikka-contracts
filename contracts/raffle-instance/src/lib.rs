@@ -34,6 +34,7 @@ use raffle_shared::{
     CancelReason, FailureReason, FairnessData, RaffleConfig, RaffleStatus, RandomnessSource,
     RandomnessType, Ticket, Winner,
 };
+use raffle_shared::events::{ContractPaused, ContractUnpaused};
 
 use self::randomness::{
     build_vrf_proof_message, OracleSeedWinnerSelection, WinnerSelectionStrategy,

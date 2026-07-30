@@ -1,4 +1,5 @@
 use raffle_shared::AdminOp;
+pub use raffle_shared::events::{ContractPaused, ContractUnpaused};
 use soroban_sdk::{contractevent, Address, BytesN};
 
 #[allow(dead_code)]
