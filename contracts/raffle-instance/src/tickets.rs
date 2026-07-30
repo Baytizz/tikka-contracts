@@ -133,6 +133,7 @@ pub(crate) fn buy_tickets(env: Env, buyer: Address, quantity: u32) -> Result<u32
     }
     buyer.require_auth();
     require_not_paused(&env)?;
+    crate::require_global_not_paused(&env)?;
 
     if raffle.status != RaffleStatus::Active {
         return Err(Error::RaffleInactive);
@@ -274,7 +275,7 @@ pub(crate) fn buy_tickets(env: Env, buyer: Address, quantity: u32) -> Result<u32
         ticket_ids,
         quantity,
         ticket_price: raffle.ticket_price,
-        effective_ticket_price: effective_price,
+        effective_ticket_price: raffle.ticket_price,
         total_paid: total_price,
         protocol_fee,
         timestamp,

@@ -189,7 +189,6 @@ pub trait WinnerSelectionStrategy {
 /// **For low-stakes raffles only** — see [`build_internal_seed`] and the
 /// module documentation for the full security caveat.
 pub struct PrngWinnerSelection {
-    /// The raffle contract address used as a per-raffle entropy source.
     pub raffle_id: Address,
     /// Number of tickets sold at draw time, mixed into the seed so that
     /// identical raffle setups with different participation produce different
@@ -200,10 +199,7 @@ pub struct PrngWinnerSelection {
 impl PrngWinnerSelection {
     /// Create a new `PrngWinnerSelection` for the given raffle and ticket count.
     pub fn new(raffle_id: Address, tickets_sold: u32) -> Self {
-        Self {
-            raffle_id,
-            tickets_sold,
-        }
+        Self { raffle_id, tickets_sold }
     }
 
     /// Return a compact `u64` fingerprint of the draw seed.
