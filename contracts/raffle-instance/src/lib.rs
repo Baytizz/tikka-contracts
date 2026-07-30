@@ -1596,7 +1596,31 @@ if config.randomness_source == RandomnessSource::External {
                         return Err(Error::EmergencyTooEarly);
                     }
                 } else {
+            RaffleStatus::Finalized | RaffleStatus::Claimed => {
+                let finalized_at = raffle.finalized_at.ok_or(Error::InvalidStatus)?;
+                if now < finalized_at + EMERGENCY_WITHDRAW_DELAY_SECONDS {
                     return Err(Error::EmergencyTooEarly);
+                }
+
+                let mut total_claimed_amount = 0i128;
+                for i in 0..raffle.winners.len() {
+                    if raffle.winners.get(i).ok_or(Error::InvalidIndex)?.claimed {
+                        let tier_prize = calculate_tier_prize(&raffle, i)?;
+                        total_claimed_amount = total_claimed_amount
+                            .checked_add(tier_prize)
+                            .ok_or(Error::ArithmeticOverflow)?;
+                    }
+                }
+
+                let unclaimed_amount = raffle.prize_amount.checked_sub(total_claimed_amount).ok_or(Error::ArithmeticOverflow)?;
+
+                if unclaimed_amount > 0 {
+                    let token_client = token::Client::new(&env, &raffle.prize_token);
+                    token_client.transfer(&env.current_contract_address(), &raffle.creator, &unclaimed_amount);
+
+                    raffle.prize_deposited = false;
+                    raffle.status = RaffleStatus::Claimed;
+                    write_raffle(&env, &raffle);
                 }
             }
             RaffleStatus::Drawing => {
@@ -1617,6 +1641,7 @@ if config.randomness_source == RandomnessSource::External {
             }
             _ => return Err(Error::InvalidStatus),
         }
+        };
 
         // Mark prize as withdrawn and transfer back to creator
         raffle.prize_deposited = false;
