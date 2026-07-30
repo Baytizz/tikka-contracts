@@ -616,9 +616,6 @@ impl Contract {
             return Err(Error::PrizeAlreadyDeposited);
         }
 
-        let _old_status = raffle.status.clone();
-        raffle.prize_deposited = true;
-        write_raffle(&env, &raffle);
         let old_status = raffle.status.clone();
 
         // Move tokens first. If the transfer fails we want the contract state
@@ -926,7 +923,6 @@ impl Contract {
         // #169: zero tickets sold is always a failure regardless of min_tickets,
         // ensuring the creator can recover their deposited prize via refund_prize.
         if raffle.tickets_sold == 0 || raffle.tickets_sold < raffle.min_tickets {
-            let _old_status = raffle.status.clone();
             raffle.status = RaffleStatus::Failed;
             write_raffle(&env, &raffle);
 
@@ -1253,7 +1249,56 @@ impl Contract {
     }
 
     pub fn cancel_raffle(env: Env, reason: CancelReason) -> Result<(), Error> {
-        self::admin::cancel_raffle(env, reason)
+        let mut raffle = read_raffle(&env)?;
+
+        match reason {
+            CancelReason::AdminCancelled => {
+                let admin: Address = env
+                    .storage()
+                    .instance()
+                    .get(&DataKey::Admin)
+                    .ok_or(Error::NotAuthorized)?;
+                admin.require_auth();
+            }
+            _ => raffle.creator.require_auth(),
+        }
+
+        if raffle.status == RaffleStatus::Finalized
+            || raffle.status == RaffleStatus::Cancelled
+            || raffle.status == RaffleStatus::Claimed
+        {
+            return Err(Error::InvalidStatus);
+        }
+
+        let was_drawing = raffle.status == RaffleStatus::Drawing;
+        raffle.status = RaffleStatus::Cancelled;
+        write_raffle(&env, &raffle);
+
+        // If cancellation happens during drawing, clear pending randomness and
+        // release the drawing lock so the contract cannot remain bricked.
+        if was_drawing {
+            env.storage()
+                .instance()
+                .remove(&DataKey::RandomnessRequested);
+            env.storage()
+                .instance()
+                .remove(&DataKey::RandomnessRequestId);
+            env.storage()
+                .instance()
+                .remove(&DataKey::RandomnessRequestLedger);
+            env.storage().instance().set(&DataKey::DrawingLock, &false);
+        }
+
+        RaffleCancelled {
+            creator: raffle.creator.clone(),
+            reason,
+            tickets_sold: raffle.tickets_sold,
+            prize_refunded: raffle.prize_deposited,
+            timestamp: env.ledger().timestamp(),
+        }
+        .publish(&env);
+
+        Ok(())
     }
 
     /// Executes a previously scheduled admin cancellation (#406).
@@ -1330,11 +1375,6 @@ impl Contract {
         write_raffle(&env, &raffle);
 
         let token_client = token::Client::new(&env, &raffle.payment_token);
-        token_client.transfer(
-            &env.current_contract_address(),
-            &raffle.creator,
-            &raffle.prize_amount,
-        );
         let _ = token_client
             .try_transfer(
                 &env.current_contract_address(),
@@ -1468,11 +1508,6 @@ impl Contract {
             .set(&DataKey::TicketRefunded(ticket_id), &true);
 
         let token_client = token::Client::new(&env, &raffle.payment_token);
-        token_client.transfer(
-            &env.current_contract_address(),
-            &ticket.owner,
-            &raffle.ticket_price,
-        );
         let _ = token_client
             .try_transfer(
                 &env.current_contract_address(),
