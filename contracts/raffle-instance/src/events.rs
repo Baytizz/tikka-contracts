@@ -1,3 +1,4 @@
+pub use raffle_shared::events::{ContractPaused, ContractUnpaused};
 use raffle_shared::{CancelReason, FailureReason, RandomnessSource, RandomnessType};
 use soroban_sdk::{contractevent, Address, BytesN, String, Vec};
 
@@ -17,6 +18,16 @@ pub struct RaffleCreated {
     pub randomness_source: RandomnessSource,
     #[topic]
     pub metadata_hash: BytesN<32>,
+    pub unique_winners: bool,
+}
+
+#[derive(Clone)]
+#[contractevent]
+pub struct MetadataHashUpdated {
+    pub old_hash: BytesN<32>,
+    pub new_hash: BytesN<32>,
+    pub updated_by: Address,
+    pub timestamp: u64,
 }
 
 #[derive(Clone)]
@@ -103,6 +114,7 @@ pub struct RaffleFinalized {
     pub randomness_source: RandomnessSource,
     pub randomness_type: RandomnessType,
     pub finalized_at: u64,
+    pub unique_winners: bool,
 }
 
 #[derive(Clone)]
@@ -311,7 +323,7 @@ pub struct AdminChanged {
     pub timestamp: u64,
 }
 
-/// Emitted once per ticket after an NFT receipt is successfully minted
+/// Emitted once per NFT receipt is successfully minted
 /// by the configured `nft_contract`.
 #[derive(Clone)]
 #[contractevent]
@@ -326,4 +338,22 @@ pub struct TicketNftMinted {
     /// The NFT contract that performed the mint.
     pub nft_contract: Address,
     pub timestamp: u64,
+}
+
+/// Emitted once per unclaimed winner when `sweep_unclaimed` runs after
+/// `claim_expiry_seconds` has elapsed since finalization.  The prize share
+/// is transferred to the raffle's `treasury_address`.
+#[derive(Clone)]
+#[contractevent]
+pub struct PrizeSwept {
+    /// Original winner address whose unclaimed prize was swept.
+    pub winner: Address,
+    /// Prize tier index (0-based, matches `prizes` array).
+    pub tier_index: u32,
+    /// Treasury address that received the swept prize.
+    pub treasury: Address,
+    /// Amount transferred to treasury.
+    pub amount: i128,
+    /// Ledger timestamp of the sweep.
+    pub swept_at: u64,
 }

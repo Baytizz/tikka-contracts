@@ -8,20 +8,20 @@ The oracle requires a secure keypair to sign reveal transactions. The `KeyServic
 
 ### Required environment variables
 
-| Variable | Required | Description |
-|----------|----------|-------------|
-| `ORACLE_SECRET_KEY` | Yes | Oracle secret key (`S...`), 32-byte hex, or base64 seed |
-| `STELLAR_RPC_URL` | Yes | Soroban RPC endpoint |
-| `FACTORY_CONTRACT_ID` | Yes | Contract id that the listener subscribes to at startup |
-| `STELLAR_NETWORK_PASSPHRASE` | No | Network passphrase for transaction signing |
-| `RAFFLE_CONTRACT_ADDRESS` | Integration tests | Deployed raffle instance contract |
-| `RANDOMNESS_REQUEST_ID` | Integration tests | Pending randomness request id |
-| `RANDOMNESS_SEED` | No | Seed value for integration tests |
-| `POLL_INTERVAL_MS` | No | Event poller interval (default: `5000`) |
-| `ORACLE_POLL_INTERVAL_MS` | No | Backward-compatible poll interval alias |
-| `LOG_LEVEL` | No | Log verbosity (`info` by default) |
-| `ORACLE_CHECKPOINT_PATH` | No | Ledger checkpoint file for restart recovery |
-| `ORACLE_ADDRESS` | Event listener | This oracle's public key (`G...`) |
+| Variable                     | Required          | Description                                             |
+| ---------------------------- | ----------------- | ------------------------------------------------------- |
+| `ORACLE_SECRET_KEY`          | Yes               | Oracle secret key (`S...`), 32-byte hex, or base64 seed |
+| `STELLAR_RPC_URL`            | Yes               | Soroban RPC endpoint                                    |
+| `FACTORY_CONTRACT_ID`        | Yes               | Contract id that the listener subscribes to at startup  |
+| `STELLAR_NETWORK_PASSPHRASE` | No                | Network passphrase for transaction signing              |
+| `RAFFLE_CONTRACT_ADDRESS`    | Integration tests | Deployed raffle instance contract                       |
+| `RANDOMNESS_REQUEST_ID`      | Integration tests | Pending randomness request id                           |
+| `RANDOMNESS_SEED`            | No                | Seed value for integration tests                        |
+| `POLL_INTERVAL_MS`           | No                | Event poller interval (default: `5000`)                 |
+| `ORACLE_POLL_INTERVAL_MS`    | No                | Backward-compatible poll interval alias                 |
+| `LOG_LEVEL`                  | No                | Log verbosity (`info` by default)                       |
+| `ORACLE_CHECKPOINT_PATH`     | No                | Ledger checkpoint file for restart recovery             |
+| `ORACLE_ADDRESS`             | Event listener    | This oracle's public key (`G...`)                       |
 
 ### Local Development (Environment Variables)
 
@@ -30,7 +30,7 @@ For local development or testing, provide the secret key via environment variabl
 ```sh
 ORACLE_SECRET_KEY="S..."
 STELLAR_RPC_URL="https://soroban-testnet.stellar.org"
-ORACLE_ADDRESS="G..."
+FACTORY_CONTRACT_ID="C..."
 ```
 
 The `KeyService` validates the key on startup and never logs the private key.
@@ -59,15 +59,31 @@ Register a new oracle public key on-chain via the raffle admin/oracle update flo
 
 ## Architecture
 
-* **`KeyService` (`src/keys/key.service.ts`)**: securely loads the keypair and exposes `.getPublicKey()`, `.getPublicKeyBytes()`, `.sign()`, and `.shutdown()`.
-* **`VrfService` (`src/vrf/vrf.service.ts`)**: signs context-bound randomness proofs for `provide_randomness`.
-* **`TxSubmitterService` (`src/tx/tx-submitter.service.ts`)**: submits `provide_randomness` transactions to Soroban RPC.
-* **`EventListenerService` (`src/listener/event-listener.service.ts`)**: polls `RandomnessRequested` contract events and enqueues work for this oracle.
+- **`KeyService` (`src/keys/key.service.ts`)**: securely loads the keypair and exposes `.getPublicKey()`, `.getPublicKeyBytes()`, `.sign()`, and `.shutdown()`.
+- **`VrfService` (`src/vrf/vrf.service.ts`)**: signs context-bound randomness proofs for `provide_randomness`.
+- **`TxSubmitterService` (`src/tx/tx-submitter.service.ts`)**: submits `provide_randomness` transactions to Soroban RPC.
+- **`EventListenerService` (`src/listener/event-listener.service.ts`)**: polls `RandomnessRequested` contract events and enqueues work for this oracle.
+
+## Dependency Policy
+
+### `@stellar/stellar-sdk` ↔ Soroban Protocol Version Alignment
+
+The `@stellar/stellar-sdk` major version must match the Soroban protocol version used by the contracts:
+
+| Soroban Protocol | `@stellar/stellar-sdk` | Stellar CLI |
+|------------------|------------------------|-------------|
+| 23               | 14.x                   | 23.x        |
+
+When the protocol upgrades (e.g., Protocol 24), the SDK major must be bumped to the corresponding major (15.x) before deployment. Dependabot PRs that bump the SDK major version must be reviewed against this policy to confirm alignment with the target protocol version.
+
+The workspace `Cargo.toml` pins `soroban-sdk = "23"` and the README mandates Stellar CLI v23.x; the JS SDK major must stay in sync.
 
 ## Testing
 
 ```sh
 cd oracle
+nvm use
+npm ci
 npm test
 ```
 

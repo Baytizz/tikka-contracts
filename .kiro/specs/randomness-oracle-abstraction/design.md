@@ -13,7 +13,7 @@ The existing `provide_randomness` entry-point is preserved for backward compatib
 
 ## Architecture
 
-```
+```text
 ┌─────────────────────────────────────────────────────┐
 │                  Raffle Instance                     │
 │                                                      │

@@ -19,6 +19,7 @@
 ## Effective Total Fee
 
 For a raffle with protocol_fee_bp = 250 (2.5%), ticket_price = 100 XLM, 10 tickets, prize = 800 XLM:
+
 - Ticket fees: 10 × 2.5 XLM = 25 XLM
 - Prize claim fee: 800 × 2.5% = 20 XLM  
 - **Total protocol revenue: 45 XLM**
