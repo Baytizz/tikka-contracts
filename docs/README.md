@@ -4,6 +4,11 @@ This directory contains comprehensive documentation for the Tikka decentralized 
 
 ## Document Overview
 
+### [GLOSSARY.md](GLOSSARY.md)
+
+**Audience:** All  
+Defines key terms used throughout the Tikka system (e.g., `RaffleStatus`, `Ticket`, `Randomness Source`) with one-paragraph explanations and direct links to their code definitions. Start here when you encounter unfamiliar terminology.
+
 ### [ARCHITECTURE.md](ARCHITECTURE.md)
 
 **Audience:** Contributors, Integrators, Auditors  

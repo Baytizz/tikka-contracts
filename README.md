@@ -378,9 +378,12 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ## 🆘 Support
 
-- **Documentation**: Check our guides
-- **Issues**: Report bugs and feature requests
-- **Community**: Join our Discord for discussions
+For questions, bug reports, and feature requests, see [`SUPPORT.md`](SUPPORT.md).
+
+- **Questions & How-Tos**: [GitHub Discussions](https://github.com/stellar/tikka-contracts/discussions)
+- **Report Bugs**: [GitHub Issues](https://github.com/stellar/tikka-contracts/issues)
+- **Request Features**: [GitHub Issues](https://github.com/stellar/tikka-contracts/issues)
+- **Documentation**: Check [`docs/README.md`](docs/README.md) and [`docs/FAQ.md`](docs/FAQ.md)
 
 ---
 
