@@ -117,9 +117,9 @@ No new event types are needed.
 Both contracts use **instance storage** for `DataKey::Paused`. Instance storage is the correct choice because:
 
 1. It is tied to the contract instance's ledger entry, so it survives TTL extension alongside all other instance-storage keys.
-2. It avoids the per-key TTL management overhead of persistent storage for a single boolean flag.
+1. It avoids the per-key TTL management overhead of persistent storage for a single boolean flag.
 
-```
+```text
 RaffleFactory instance storage:
   DataKey::Paused  →  bool  (absent = false)
 
@@ -225,6 +225,7 @@ Both unit tests (specific examples and edge cases) and property-based tests (uni
 ### Unit tests (in `contracts/raffle/src/instance/test.rs` and a new factory test module)
 
 Focus areas:
+
 - Pause/unpause happy paths on both contracts, verifying `is_paused` return value and emitted events.
 - `create_raffle` blocked when factory is paused; succeeds when unpaused.
 - `buy_ticket` and `deposit_prize` blocked when instance is paused; succeed when unpaused.

@@ -6,11 +6,12 @@ This document describes all events emitted by the Tikka raffle system, covering 
 
 All events use a consistent two-symbol topic structure:
 
-```
+```text
 ("tikka", "event_name")
 ```
 
 Where:
+
 - First symbol: `"tikka"` (constant namespace identifier)
 - Second symbol: Event name in snake_case matching the struct name (e.g. `ticket_purchased`, `raffle_created`)
 
@@ -121,11 +122,11 @@ Emitted when a new admin operation is proposed through the timelock mechanism.
 | Field | Type | Description |
 |-------|------|-------------|
 | `op_id` | `u32` | Unique operation identifier (auto-incremented) |
-| `op` | `AdminOp` | The proposed admin operation: `SetConfig(u32, Address)` (fee_bp + treasury) or `UpdateWasmHash(BytesN<32>)` |
+| `op` | `AdminOp` | The proposed admin operation: `SetConfig(ConfigKey, Address)`, `SetProtocolFeeBP(u32)`, or `UpdateWasmHash(BytesN<32>)` |
 | `effective_timestamp` | `u64` | Timestamp when the operation becomes executable (after timelock delay) |
 | `proposed_by` | `Address` | Address that proposed the operation |
 
-**Emitted by:** `set_config`
+**Emitted by:** `propose_config_change`, `propose_fee_change`
 **When:** Admin proposes a config change. The operation is stored with a timelock before it can be executed.
 
 ---
@@ -172,7 +173,7 @@ Emitted when the factory-level treasury address is changed.
 | `changed_by` | `Address` | Address that authorized the change (indexed topic) |
 | `timestamp` | `u64` | Ledger timestamp of the change |
 
-**Emitted by:** (dead code — `TreasuryChanged` is defined but the treasury update path uses `AdminOpExecuted` + `SetConfig` instead)
+**Emitted by:** (dead code — `TreasuryChanged` is defined but the treasury update path uses `AdminOpExecuted` + `SetConfig(ConfigKey::Treasury, Address)` instead)
 **When:** Treasury address is changed via an executed admin operation. The factory's actual behavior emits `AdminOpProposed` → `AdminOpExecuted` with a `SetConfig` payload.
 
 ---
@@ -319,6 +320,7 @@ Emitted whenever the raffle status transitions between lifecycle states.
 | `timestamp` | `u64` | Ledger timestamp of the transition |
 
 **RaffleStatus values:**
+
 | Value | Name | Description |
 |-------|------|-------------|
 | `6` | `PendingPrize` | Raffle created, awaiting prize deposit |
@@ -755,13 +757,13 @@ Emitted when the raffle instance admin is changed.
 # Indexer Implementation Notes
 
 1. **Event Ordering**: Events are emitted in chronological order within each transaction.
-2. **Multi-ticket Support**: `ticket_ids` in `TicketPurchased` is a vector supporting batch purchases.
-3. **Optional Fields**: Fields typed as `Option<T>` may be `None` — indexer must handle both cases.
-4. **Status Transitions**: `RaffleStatusChanged` events accompany most lifecycle events for redundancy.
-5. **Timestamps**: All timestamps are Unix seconds from the ledger.
-6. **Fee Calculation**: Platform fees are calculated as `(amount * fee_bp) / 10000`.
-7. **Randomness Flow**: External randomness requires `RandomnessRequested` → `RandomnessReceived`; on timeout, `RandomnessFallbackTriggered` is emitted instead.
-8. **Dead-Code Events**: Events marked as dead code (never emitted in the current implementation) may be activated in future versions — indexers should handle them gracefully.
+1. **Multi-ticket Support**: `ticket_ids` in `TicketPurchased` is a vector supporting batch purchases.
+1. **Optional Fields**: Fields typed as `Option<T>` may be `None` — indexer must handle both cases.
+1. **Status Transitions**: `RaffleStatusChanged` events accompany most lifecycle events for redundancy.
+1. **Timestamps**: All timestamps are Unix seconds from the ledger.
+1. **Fee Calculation**: Platform fees are calculated as `(amount * fee_bp) / 10000`.
+1. **Randomness Flow**: External randomness requires `RandomnessRequested` → `RandomnessReceived`; on timeout, `RandomnessFallbackTriggered` is emitted instead.
+1. **Dead-Code Events**: Events marked as dead code (never emitted in the current implementation) may be activated in future versions — indexers should handle them gracefully.
 
 ## Event Emission Guarantees
 
