@@ -3,14 +3,14 @@ use soroban_sdk::{xdr::ToXdr, Address, Bytes, BytesN, Env, Vec};
 use raffle_shared::{CancelReason, FailureReason, RandomnessSource, RandomnessType};
 
 use crate::events::{
-    DrawTriggered, OracleSeedDelivered, RaffleCancelled, RaffleFailed,
-    RandomnessFallbackTriggered, RandomnessReceived, RandomnessRequested,
+    DrawTriggered, RaffleCancelled, RaffleFailed, RandomnessFallbackTriggered, RandomnessReceived,
+    RandomnessRequested,
 };
-use crate::randomness::{aggregate_quorum_seeds, build_vrf_proof_message};
 use crate::helpers::{
     build_internal_seed_u64, do_finalize_with_seed, read_raffle, request_randomness,
     transition_to_drawing, write_raffle,
 };
+use crate::randomness::build_vrf_proof_message;
 use crate::{CommitRevealEntry, DataKey, Error, RaffleStatus, ORACLE_TIMEOUT_LEDGERS};
 
 pub(crate) fn finalize_raffle(env: Env) -> Result<(), Error> {
@@ -110,7 +110,6 @@ pub(crate) fn finalize_raffle(env: Env) -> Result<(), Error> {
                     timestamp: now,
                 }
                 .publish(&env);
-
                 RandomnessRequested {
                     oracle: raffle
                         .oracle_address
@@ -234,163 +233,6 @@ pub(crate) fn provide_randomness(
     Ok(env.current_contract_address())
 }
 
-/// Handle a Quorum-mode randomness submission from a registered oracle.
-///
-/// The caller must be a registered oracle address and must present a valid
-/// Ed25519 VRF proof.  Seeds are accumulated per-oracle; once `k` distinct
-/// oracles have delivered, the aggregated seed is used to finalize the draw.
-pub(crate) fn provide_quorum_randomness(
-    env: Env,
-    random_seed: u64,
-    public_key: BytesN<32>,
-    proof: BytesN<64>,
-    request_id: u64,
-    oracle: Address,
-) -> Result<Address, Error> {
-    let drawing_lock: bool = env
-        .storage()
-        .instance()
-        .get(&DataKey::DrawingLock)
-        .unwrap_or(false);
-    if !drawing_lock {
-        return Err(Error::DrawingAlreadyComplete);
-    }
-
-    // Authenticate the caller as the claimed oracle address
-    oracle.require_auth();
-
-    let raffle = read_raffle(&env)?;
-
-    // Ensure we are in Quorum mode
-    let (k, oracles) = match &raffle.randomness_source {
-        RandomnessSource::Quorum { k, oracles } => (*k, oracles.clone()),
-        _ => return Err(Error::InvalidParameters),
-    };
-
-    if raffle.status != RaffleStatus::Drawing {
-        return Err(Error::InvalidStateTransition);
-    }
-
-    let pending: bool = env
-        .storage()
-        .instance()
-        .get(&DataKey::RandomnessRequested)
-        .unwrap_or(false);
-    if !pending {
-        return Err(Error::NoRandomnessRequest);
-    }
-
-    let stored: u64 = env
-        .storage()
-        .instance()
-        .get(&DataKey::RandomnessRequestId)
-        .ok_or(Error::NoRandomnessRequest)?;
-    if stored != request_id {
-        return Err(Error::InvalidParameters);
-    }
-
-    // Verify the oracle is in the registered set
-    let mut is_registered = false;
-    for i in 0..oracles.len() {
-        if let Some(addr) = oracles.get(i) {
-            if addr == oracle {
-                is_registered = true;
-                break;
-            }
-        }
-    }
-    if !is_registered {
-        return Err(Error::OracleNotRegistered);
-    }
-
-    // Verify the VRF proof
-    let message = build_vrf_proof_message(&env, request_id, random_seed);
-    env.crypto().ed25519_verify(&public_key, &message, &proof);
-
-    // Reject duplicate submissions
-    if env
-        .storage()
-        .persistent()
-        .has(&DataKey::QuorumSeed(oracle.clone()))
-    {
-        return Err(Error::DuplicateOracleSubmission);
-    }
-
-    // Store this oracle's seed
-    env.storage()
-        .persistent()
-        .set(&DataKey::QuorumSeed(oracle.clone()), &random_seed);
-
-    // Track submission order
-    let mut submitted: Vec<Address> = env
-        .storage()
-        .instance()
-        .get(&DataKey::QuorumSubmittedOracles)
-        .unwrap_or_else(|| Vec::new(&env));
-    submitted.push_back(oracle.clone());
-    env.storage()
-        .instance()
-        .set(&DataKey::QuorumSubmittedOracles, &submitted);
-
-    let delivered_count = submitted.len();
-
-    // Emit delivery event
-    OracleSeedDelivered {
-        oracle: oracle.clone(),
-        seed: random_seed,
-        request_id,
-        current_count: delivered_count as u32,
-        threshold: k,
-        timestamp: env.ledger().timestamp(),
-    }
-    .publish(&env);
-
-    // Check if we've reached k submissions
-    if delivered_count >= k as usize {
-        // Aggregate all delivered seeds (sorted by address for canonical order)
-        let mut seeds: Vec<(Address, u64)> = Vec::new(&env);
-        for i in 0..submitted.len() {
-            if let Some(addr) = submitted.get(i) {
-                if let Some(seed) = env
-                    .storage()
-                    .persistent()
-                    .get::<_, u64>(&DataKey::QuorumSeed(addr.clone()))
-                {
-                    seeds.push_back((addr, seed));
-                }
-            }
-        }
-
-        let aggregated_seed = aggregate_quorum_seeds(&env, &seeds);
-
-        // Clean up quorum storage
-        for i in 0..submitted.len() {
-            if let Some(addr) = submitted.get(i) {
-                env.storage()
-                    .persistent()
-                    .remove(&DataKey::QuorumSeed(addr));
-            }
-        }
-        env.storage()
-            .instance()
-            .remove(&DataKey::QuorumSubmittedOracles);
-
-        do_finalize_with_seed(&env, raffle, aggregated_seed, RandomnessType::Vrf)?;
-        RandomnessReceived {
-            oracle, // the last oracle to deliver triggers finalization
-            seed: aggregated_seed,
-            request_id,
-            timestamp: env.ledger().timestamp(),
-        }
-        .publish(&env);
-
-        return Ok(env.current_contract_address());
-    }
-
-    // Not enough submissions yet; return Ok without finalizing
-    Ok(env.current_contract_address())
-}
-
 pub(crate) fn trigger_randomness_fallback(
     env: Env,
     caller: Address,
@@ -401,8 +243,8 @@ pub(crate) fn trigger_randomness_fallback(
         .instance()
         .get(&DataKey::DrawingLock)
         .unwrap_or(false);
-    if !drawing_lock {
-        return Err(Error::DrawingAlreadyComplete);
+    if drawing_lock {
+        return Err(Error::DrawingAlreadyInProgress);
     }
 
     caller.require_auth();
@@ -438,23 +280,6 @@ pub(crate) fn trigger_randomness_fallback(
         return Err(Error::FallbackTooEarly);
     }
 
-    // Clean up quorum state if present
-    let submitted: Vec<Address> = env
-        .storage()
-        .instance()
-        .get(&DataKey::QuorumSubmittedOracles)
-        .unwrap_or_else(|| Vec::new(&env));
-    for i in 0..submitted.len() {
-        if let Some(addr) = submitted.get(i) {
-            env.storage()
-                .persistent()
-                .remove(&DataKey::QuorumSeed(addr));
-        }
-    }
-    env.storage()
-        .instance()
-        .remove(&DataKey::QuorumSubmittedOracles);
-
     if do_refund {
         raffle.status = RaffleStatus::Cancelled;
         write_raffle(&env, &raffle);
@@ -467,9 +292,7 @@ pub(crate) fn trigger_randomness_fallback(
         env.storage()
             .instance()
             .remove(&DataKey::RandomnessRequestLedger);
-        env.storage()
-            .instance()
-            .set(&DataKey::DrawingLock, &false);
+        env.storage().instance().set(&DataKey::DrawingLock, &false);
         RaffleCancelled {
             creator: raffle.creator.clone(),
             reason: CancelReason::OracleTimeout,
