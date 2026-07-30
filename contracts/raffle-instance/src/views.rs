@@ -15,8 +15,9 @@
 
 use soroban_sdk::{Env, Vec};
 
-use raffle_shared::FairnessData;
+use raffle_shared::{BuyQuote, FairnessData};
 
+use crate::helpers::calculate_buy_quote;
 use crate::{read_raffle, DataKey, Error, FairnessMetadata};
 
 /// Return the full [`Raffle`](crate::Raffle) struct from instance storage.
@@ -107,4 +108,33 @@ pub(crate) fn is_ticket_sales_paused(env: Env) -> bool {
 /// fully withdrawn.
 pub(crate) fn get_accumulated_fees(env: Env) -> i128 {
     env.storage().instance().get(&DataKey::AccumulatedFees).unwrap_or(0)
+}
+
+/// Quote the exact cost of buying `quantity` tickets including early-bird
+/// discounts and protocol fees.
+///
+/// This is a **read-only** view — it does not mutate state, does not require
+/// authorisation, and does not check business-rule validations such as
+/// raffle status, pausing, or ticket availability.  It exists purely to let
+/// wallets and frontends compute the precise amount that
+/// [`buy_tickets`](crate::tickets::buy_tickets) would charge for a given
+/// `quantity` at the current `tickets_sold`.
+///
+/// The underlying helper [`calculate_buy_quote`](crate::helpers::calculate_buy_quote)
+/// is the **same function** called by `buy_tickets` at execution time, so
+/// the preview can never diverge from the on-chain charge.
+///
+/// # Returns
+///
+/// [`BuyQuote`] with `{ gross, discount, fee, net_to_pay, effective_ticket_price }`.
+///
+/// # Errors
+///
+/// - [`Error::NotInitialized`] — the contract has not been initialised.
+/// - [`Error::InvalidQuantity`] — `quantity == 0`.
+/// - [`Error::InvalidParameters`] — overflow computing the gross total.
+/// - [`Error::ArithmeticOverflow`] — overflow in discount or fee math.
+pub(crate) fn preview_buy(env: Env, quantity: u32) -> Result<BuyQuote, Error> {
+    let raffle = read_raffle(&env)?;
+    calculate_buy_quote(&raffle, quantity)
 }

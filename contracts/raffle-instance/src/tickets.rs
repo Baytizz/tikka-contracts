@@ -42,6 +42,7 @@ use soroban_sdk::{
 use raffle_shared::{RandomnessSource, Ticket};
 
 use crate::events::{DrawTriggered, RandomnessRequested, TicketPurchased};
+use crate::helpers::calculate_buy_quote;
 use crate::{
     request_randomness, require_not_paused, transition_to_drawing, CommitRevealEntry, DataKey,
     Error, RaffleStatus,
@@ -310,7 +311,7 @@ pub(crate) fn buy_tickets(env: Env, buyer: Address, quantity: u32) -> Result<u32
         ticket_ids,
         quantity,
         ticket_price: raffle.ticket_price,
-        effective_ticket_price: raffle.ticket_price,
+        effective_ticket_price: effective_price,
         total_paid: total_price,
         protocol_fee,
         timestamp,

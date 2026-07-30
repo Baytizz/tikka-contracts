@@ -1792,6 +1792,18 @@ impl Contract {
             .unwrap_or(false)
     }
 
+    /// Quote the exact cost of buying `quantity` tickets including early-bird
+    /// discounts and protocol fees.
+    ///
+    /// Read-only — does not mutate state, does not require auth, does not
+    /// check raffle status, pausing, or availability.  Returns a
+    /// [`BuyQuote`] with the full pricing breakdown.  Uses the same
+    /// internal helper as `buy_tickets` so quote and execution cannot
+    /// diverge.
+    pub fn preview_buy(env: Env, quantity: u32) -> Result<BuyQuote, Error> {
+        self::views::preview_buy(env, quantity)
+    }
+
     /// Sweep tokens that were accidentally sent to this contract.
     /// The raffle's own payment_token cannot be swept while a prize is held in escrow,
     /// ensuring active raffle funds are never at risk.
