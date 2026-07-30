@@ -2048,6 +2048,22 @@ if config.randomness_source == RandomnessSource::External {
 
 }
 
+    /// Permissionless entrypoint — anyone may call this to prevent a raffle
+    /// from being archived by Soroban's TTL expiry.
+    ///
+    /// Bumps both the instance storage TTL and all persistent ticket entries
+    /// for tickets issued so far.  Safe to call at any point during the raffle
+    /// lifecycle; a no-op on a terminal (Claimed/Cancelled/Failed) raffle is
+    /// harmless.
+    ///
+    /// No authorization is required so long-running or no-deadline raffles can
+    /// be kept alive by participants, integrators, or automated keepers.
+    pub fn extend_ttl(env: Env) -> Result<(), Error> {
+        let raffle = read_raffle(&env)?;
+        crate::helpers::bump_raffle_ttl(&env, raffle.tickets_sold);
+        Ok(())
+    }
+}
 #[cfg(test)]
 mod test;
 

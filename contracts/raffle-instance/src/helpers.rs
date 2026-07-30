@@ -353,6 +353,7 @@ pub(crate) fn do_finalize_with_seed(
     }
     .publish(env);
 
+    bump_raffle_ttl(env, total_tickets);
     Ok(())
 }
 

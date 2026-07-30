@@ -297,6 +297,10 @@ pub enum AdminOp {
     SetProtocolFeeBP(u32),
     /// Rotate target contract WASM hash for upgrades.
     UpdateWasmHash(BytesN<32>),
+    /// Add an oracle address to the factory's approved-oracle allowlist.
+    ApproveOracle(Address),
+    /// Remove an oracle address from the factory's approved-oracle allowlist.
+    RemoveOracle(Address),
 }
 
 // Re-export constants from the single source of truth

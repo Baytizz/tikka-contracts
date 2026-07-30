@@ -702,6 +702,28 @@ impl RaffleFactory {
                     .persistent()
                     .set(&DataKey::InstanceWasmHash, &new_hash);
             }
+            AdminOp::ApproveOracle(oracle) => {
+                env.storage()
+                    .persistent()
+                    .set(&DataKey::ApprovedOracle(oracle.clone()), &true);
+                events::OracleApproved {
+                    oracle,
+                    approved_by: admin.clone(),
+                    timestamp: env.ledger().timestamp(),
+                }
+                .publish(&env);
+            }
+            AdminOp::RemoveOracle(oracle) => {
+                env.storage()
+                    .persistent()
+                    .remove(&DataKey::ApprovedOracle(oracle.clone()));
+                events::OracleRemoved {
+                    oracle,
+                    removed_by: admin.clone(),
+                    timestamp: env.ledger().timestamp(),
+                }
+                .publish(&env);
+            }
         }
 
         env.storage()
