@@ -378,37 +378,47 @@ macro_rules! impl_require_not_paused {
     };
 }
 
-/// Generates `require_admin` using the embedding crate's `DataKey::Admin`.
-#[macro_export]
-macro_rules! impl_require_admin {
-    ($err:ty, $not_auth:expr) => {
-        fn require_admin(env: &soroban_sdk::Env) -> Result<soroban_sdk::Address, $err> {
-            let admin: soroban_sdk::Address = env
-                .storage()
-                .instance()
-                .get(&crate::DataKey::Admin)
-                .or_else(|| env.storage().persistent().get(&crate::DataKey::Admin))
-                .ok_or($not_auth)?;
-            admin.require_auth();
-            Ok(admin)
-        }
-    };
-}
+#[cfg(test)]
+mod effective_limit_tests {
+    use super::{effective_limit, DEFAULT_PAGE_LIMIT, MAX_PAGE_LIMIT};
 
-/// Generates a pause guard using the embedding crate's `DataKey::Paused`.
-#[macro_export]
-macro_rules! impl_require_not_paused {
-    ($err:ty, $paused_err:expr, $fn_name:ident) => {
-        fn $fn_name(env: &soroban_sdk::Env) -> Result<(), $err> {
-            if env
-                .storage()
-                .instance()
-                .get(&crate::DataKey::Paused)
-                .unwrap_or(false)
-            {
-                return Err($paused_err);
-            }
-            Ok(())
-        }
-    };
+    #[test]
+    fn zero_requests_default_page_limit() {
+        assert_eq!(effective_limit(0), DEFAULT_PAGE_LIMIT);
+    }
+
+    #[test]
+    fn one_is_unchanged() {
+        assert_eq!(effective_limit(1), 1);
+    }
+
+    #[test]
+    fn ninety_nine_is_unchanged() {
+        assert_eq!(effective_limit(99), 99);
+    }
+
+    #[test]
+    fn default_page_limit_is_unchanged() {
+        assert_eq!(effective_limit(DEFAULT_PAGE_LIMIT), DEFAULT_PAGE_LIMIT);
+    }
+
+    #[test]
+    fn one_below_max_is_unchanged() {
+        assert_eq!(effective_limit(MAX_PAGE_LIMIT - 1), MAX_PAGE_LIMIT - 1);
+    }
+
+    #[test]
+    fn max_page_limit_is_unchanged() {
+        assert_eq!(effective_limit(MAX_PAGE_LIMIT), MAX_PAGE_LIMIT);
+    }
+
+    #[test]
+    fn one_above_max_clamps_to_max() {
+        assert_eq!(effective_limit(MAX_PAGE_LIMIT + 1), MAX_PAGE_LIMIT);
+    }
+
+    #[test]
+    fn u32_max_clamps_to_max() {
+        assert_eq!(effective_limit(u32::MAX), MAX_PAGE_LIMIT);
+    }
 }
