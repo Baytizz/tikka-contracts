@@ -5,6 +5,7 @@
 This design adds limit/offset pagination to the two unbounded list-returning query functions in the Tikka raffle protocol. The goal is to prevent Soroban CPU/memory budget exhaustion as the factory accumulates raffle instances and individual raffles accumulate ticket entries.
 
 Two functions are affected:
+
 - `get_raffles` on `RaffleFactory` (`contracts/raffle/src/lib.rs`) — currently returns all deployed raffle addresses as a `Vec<Address>`
 - `get_tickets` on `Contract` (`contracts/raffle/src/instance/mod.rs`) — currently does not exist as a public query; tickets are stored individually under `DataKey::Ticket(u32)` keys
 
@@ -12,7 +13,7 @@ The approach introduces a shared `PaginationParams` struct and two `PageResult` 
 
 ### Constants
 
-```
+```text
 DEFAULT_PAGE_LIMIT = 100   // effective limit when params.limit == 0
 MAX_PAGE_LIMIT     = 200   // hard cap; requests above this are clamped
 ```
@@ -23,7 +24,7 @@ MAX_PAGE_LIMIT     = 200   // hard cap; requests above this are clamped
 
 The pagination types live in a new `types` module at `contracts/raffle/src/types.rs`, re-exported from `lib.rs`. Both `RaffleFactory` and `Contract` import from this shared module, ensuring a single canonical definition.
 
-```
+```text
 contracts/raffle/src/
 ├── lib.rs              ← RaffleFactory; imports types; adds get_raffles_page
 ├── types.rs            ← NEW: PaginationParams, PageResult_Raffles, PageResult_Tickets
@@ -35,7 +36,7 @@ contracts/raffle/src/
 
 ### Data flow for `get_raffles_page`
 
-```
+```text
 Caller → get_raffles_page(env, PaginationParams { limit, offset })
   │
   ├─ resolve effective_limit (clamp/default)
@@ -47,7 +48,7 @@ Caller → get_raffles_page(env, PaginationParams { limit, offset })
 
 ### Data flow for `get_tickets`
 
-```
+```text
 Caller → get_tickets(env, PaginationParams { limit, offset })
   │
   ├─ resolve effective_limit (clamp/default)
@@ -229,7 +230,6 @@ pub fn get_raffles(env: Env) -> Vec<Address> { ... }
 
 Tickets are stored under `DataKey::Ticket(ticket_number)` where `ticket_number` starts at 1 and increments with each `buy_ticket` call. The `get_tickets` implementation iterates `offset+1 ..= end` to load tickets in ascending `ticket_number` order without requiring a separate index.
 
-
 ---
 
 ## Correctness Properties
@@ -245,6 +245,7 @@ Tickets are stored under `DataKey::Ticket(ticket_number)` where `ticket_number` 
 ### Property 2: get_raffles_page slice correctness
 
 *For any* factory state with `N` stored raffle addresses and any `PaginationParams { offset, limit }`, the returned `PageResult_Raffles` must satisfy:
+
 - `total == N`
 - `items` equals the sub-slice `all_raffles[offset .. min(offset + effective_limit(limit), N)]` (empty slice when `offset >= N`)
 - `has_more == (offset + items.len() < N)`
@@ -254,6 +255,7 @@ Tickets are stored under `DataKey::Ticket(ticket_number)` where `ticket_number` 
 ### Property 3: get_tickets slice correctness
 
 *For any* raffle instance with `N` tickets sold and any `PaginationParams { offset, limit }`, the returned `PageResult_Tickets` must satisfy:
+
 - `total == N`
 - `items` equals the sub-slice of tickets ordered by `ticket_number` from index `offset` to `min(offset + effective_limit(limit), N)` (empty slice when `offset >= N`)
 - `has_more == (offset + items.len() < N)`
@@ -320,7 +322,7 @@ Each correctness property above is implemented by exactly one property-based tes
 
 ### Property test specifications
 
-```
+```rust
 // Feature: paginated-query-system, Property 1: effective_limit correctness
 proptest! {
     fn prop_effective_limit_correctness(limit: u32) { ... }

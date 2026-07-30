@@ -78,7 +78,7 @@ export DEPLOYER_SECRET_KEY="S..."
 
 **Expected output:**
 
-```
+```text
 Building WASM...
 Deploying to Testnet...
 Deployment successful!
@@ -153,7 +153,7 @@ stellar contract build   # or cargo build --release --target ...
 
 **Expected output on match:**
 
-```
+```text
 Local WASM Hash:  <hex>
 Remote WASM Hash: <hex>
 Verification Result: Match: YES
@@ -241,10 +241,10 @@ Exact CLI flag spelling follows `stellar contract invoke --help` for your CLI ve
 Typical instance lifecycle (see [ARCHITECTURE.md](ARCHITECTURE.md)):
 
 1. `deposit_prize` — creator escrows the prize (`PendingPrize` → `Active`)
-2. `buy_tickets` — buyers purchase entries
-3. `finalize_raffle` — starts the draw (Internal / External / CommitReveal)
-4. For `External`: run the `oracle/` service so it calls `provide_randomness`
-5. `claim_prize` — winners withdraw after claim lockup
+1. `buy_tickets` — buyers purchase entries
+1. `finalize_raffle` — starts the draw (Internal / External / CommitReveal)
+1. For `External`: run the `oracle/` service so it calls `provide_randomness`
+1. `claim_prize` — winners withdraw after claim lockup
 
 Example finalize:
 
@@ -284,9 +284,9 @@ Example (`deployments/testnet.json`):
 ### Recording a new deployment
 
 1. Run `./scripts/deploy-testnet.sh` or `./scripts/deploy-mainnet.sh`.
-2. The script overwrites the corresponding JSON file with the new `contractId` and timestamp.
-3. Commit the updated JSON when the deployment is meant to be the shared reference address for the team (optional; treat secrets separately).
-4. Update `.env` (`RAFFLE_CONTRACT_ADDRESS` / `FACTORY_CONTRACT_ID`) to match.
+1. The script overwrites the corresponding JSON file with the new `contractId` and timestamp.
+1. Commit the updated JSON when the deployment is meant to be the shared reference address for the team (optional; treat secrets separately).
+1. Update `.env` (`RAFFLE_CONTRACT_ADDRESS` / `FACTORY_CONTRACT_ID`) to match.
 
 The scripts currently record the **factory** contract ID only. Instance addresses from `create_raffle` should be tracked separately (notes, frontend config, or an extended deployments file of your own).
 
