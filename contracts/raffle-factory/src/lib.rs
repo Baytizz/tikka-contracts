@@ -43,6 +43,28 @@ pub struct PendingOp {
     pub proposed_by: Address,
 }
 
+/// On-chain creator profile with display name, verified badge, and track record.
+///
+/// Creators can self-set a display name via [`RaffleFactory::set_profile_name`],
+/// and the admin can grant a verified badge via [`RaffleFactory::set_verified`].
+/// The `raffles_created` counter is automatically incremented on each successful
+/// [`RaffleFactory::create_raffle`] call.
+///
+/// Frontends can query profiles with [`RaffleFactory::get_profile`] to show
+/// creator reputation, verified status, and activity level without off-chain
+/// infrastructure.
+#[derive(Clone)]
+#[contracttype]
+pub struct CreatorProfile {
+    /// Self-set display name (max length [`MAX_DESCRIPTION_LENGTH`]).
+    /// Empty string if never set.
+    pub name: soroban_sdk::String,
+    /// Admin-granted verified badge. `true` indicates a trusted/reputable organizer.
+    pub verified: bool,
+    /// Number of raffles this creator has successfully launched.
+    pub raffles_created: u32,
+}
+
 /// A periodic state snapshot recording factory health at a milestone raffle
 /// count.
 ///
@@ -1722,6 +1744,147 @@ impl RaffleFactory {
 
         Ok(())
     }
+
+    /// Set the display name for the caller's creator profile.
+    ///
+    /// Creators can self-service update their profile name to provide a
+    /// human-readable identity for frontends. The name is capped at
+    /// [`MAX_DESCRIPTION_LENGTH`] (1 000 bytes).
+    ///
+    /// # Auth
+    ///
+    /// Requires authorization from the creator address whose profile is being
+    /// updated.
+    ///
+    /// # Parameters
+    ///
+    /// - `creator` — Address of the profile owner.
+    /// - `name` — Display name string (max 1 000 bytes).
+    ///
+    /// # Errors
+    ///
+    /// - [`ContractError::InvalidParameters`] — name exceeds
+    ///   [`MAX_DESCRIPTION_LENGTH`].
+    ///
+    /// # Events
+    ///
+    /// Emits [`events::ProfileNameSet`] on success.
+    pub fn set_profile_name(
+        env: Env,
+        creator: Address,
+        name: soroban_sdk::String,
+    ) -> Result<(), ContractError> {
+        creator.require_auth();
+
+        if name.len() > MAX_DESCRIPTION_LENGTH {
+            return Err(ContractError::InvalidParameters);
+        }
+
+        let mut profile: CreatorProfile = env
+            .storage()
+            .persistent()
+            .get(&DataKey::CreatorProfile(creator.clone()))
+            .unwrap_or(CreatorProfile {
+                name: soroban_sdk::String::from_str(&env, ""),
+                verified: false,
+                raffles_created: 0,
+            });
+
+        profile.name = name.clone();
+        env.storage()
+            .persistent()
+            .set(&DataKey::CreatorProfile(creator.clone()), &profile);
+
+        events::ProfileNameSet {
+            creator,
+            name,
+            timestamp: env.ledger().timestamp(),
+        }
+        .publish(&env);
+
+        Ok(())
+    }
+
+    /// Grant or revoke the verified badge for a creator profile.
+    ///
+    /// The admin can set the `verified` flag on any creator's profile to
+    /// signal trustworthiness and reputation to frontends. This provides a
+    /// lightweight on-chain trust signal without requiring off-chain
+    /// infrastructure.
+    ///
+    /// # Auth
+    ///
+    /// Requires authorization from the current admin address.
+    ///
+    /// # Parameters
+    ///
+    /// - `creator` — Address of the profile to update.
+    /// - `verified` — `true` to grant the badge, `false` to revoke it.
+    ///
+    /// # Errors
+    ///
+    /// - [`ContractError::NotAuthorized`] — caller is not the admin.
+    ///
+    /// # Events
+    ///
+    /// Emits [`events::VerifiedStatusSet`] on success.
+    pub fn set_verified(
+        env: Env,
+        creator: Address,
+        verified: bool,
+    ) -> Result<(), ContractError> {
+        let admin = require_admin(&env)?;
+
+        let mut profile: CreatorProfile = env
+            .storage()
+            .persistent()
+            .get(&DataKey::CreatorProfile(creator.clone()))
+            .unwrap_or(CreatorProfile {
+                name: soroban_sdk::String::from_str(&env, ""),
+                verified: false,
+                raffles_created: 0,
+            });
+
+        profile.verified = verified;
+        env.storage()
+            .persistent()
+            .set(&DataKey::CreatorProfile(creator.clone()), &profile);
+
+        events::VerifiedStatusSet {
+            creator,
+            verified,
+            set_by: admin,
+            timestamp: env.ledger().timestamp(),
+        }
+        .publish(&env);
+
+        Ok(())
+    }
+
+    /// Retrieve the creator profile for a given address.
+    ///
+    /// Returns the on-chain profile containing the creator's display name,
+    /// verified status, and number of raffles created. If no profile exists
+    /// for the address, returns a default profile with an empty name,
+    /// `verified = false`, and `raffles_created = 0`.
+    ///
+    /// # Parameters
+    ///
+    /// - `creator` — Address to query.
+    ///
+    /// # Returns
+    ///
+    /// [`CreatorProfile`] containing name, verified badge, and track record.
+    pub fn get_profile(env: Env, creator: Address) -> CreatorProfile {
+        env.storage()
+            .persistent()
+            .get(&DataKey::CreatorProfile(creator))
+            .unwrap_or(CreatorProfile {
+                name: soroban_sdk::String::from_str(&env, ""),
+                verified: false,
+                raffles_created: 0,
+            })
+    }
 }
 
 #[cfg(test)]
@@ -3296,3 +3459,4 @@ mod tests {
         assert!(client.get_recurring_raffle(&999u32).is_none());
     }
 }
+

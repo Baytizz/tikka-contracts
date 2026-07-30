@@ -24,6 +24,11 @@ Detailed explanation of the three randomness modes: Internal PRNG, External orac
 **Audience:** Contributors, Integrators  
 In-depth technical documentation of the Commit-Reveal randomness protocol. Explains the four-phase lifecycle (creation, commit, draw, reveal), ticket transfer invariants, fallback behavior, and includes TypeScript and Rust code examples for generating commit hashes.
 
+### [CREATOR_PROFILES.md](CREATOR_PROFILES.md)
+
+**Audience:** Frontend Developers, Integrators  
+Documentation for the on-chain creator profile system. Explains display names, verified badges, and track records. Covers profile management APIs, frontend integration patterns, trust indicators, and storage costs. Required for building creator reputation features.
+
 ### [STORAGE.md](STORAGE.md)
 
 **Audience:** Contributors, Operators, Auditors  

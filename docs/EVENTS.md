@@ -284,6 +284,37 @@ Emitted when the factory contract's WASM code is upgraded.
 
 ---
 
+## ProfileNameSet
+
+Emitted when a creator sets or updates their profile display name.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `creator` | `Address` | Address of the profile owner |
+| `name` | `String` | Display name set by the creator (max 1000 bytes) |
+| `timestamp` | `u64` | Ledger timestamp of the update |
+
+**Emitted by:** `set_profile_name`
+**When:** A creator self-updates their on-chain profile name.
+
+---
+
+## VerifiedStatusSet
+
+Emitted when the admin grants or revokes a verified badge for a creator.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `creator` | `Address` | Address of the profile being updated |
+| `verified` | `bool` | Verified status (`true` = verified, `false` = unverified) |
+| `set_by` | `Address` | Admin address that made the change |
+| `timestamp` | `u64` | Ledger timestamp of the update |
+
+**Emitted by:** `set_verified`
+**When:** Admin grants or revokes verified status for a creator profile.
+
+---
+
 # Raffle Instance Events
 
 ## RaffleCreated
