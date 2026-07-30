@@ -189,7 +189,6 @@ pub trait WinnerSelectionStrategy {
 /// **For low-stakes raffles only** — see [`build_internal_seed`] and the
 /// module documentation for the full security caveat.
 pub struct PrngWinnerSelection {
-    /// The raffle contract address used as a per-raffle entropy source.
     pub raffle_id: Address,
     /// Number of tickets sold at draw time, mixed into the seed so that
     /// identical raffle setups with different participation produce different
@@ -200,10 +199,7 @@ pub struct PrngWinnerSelection {
 impl PrngWinnerSelection {
     /// Create a new `PrngWinnerSelection` for the given raffle and ticket count.
     pub fn new(raffle_id: Address, tickets_sold: u32) -> Self {
-        Self {
-            raffle_id,
-            tickets_sold,
-        }
+        Self { raffle_id, tickets_sold }
     }
 
     /// Return a compact `u64` fingerprint of the draw seed.
@@ -345,7 +341,11 @@ impl OracleSeedWinnerSelection {
     /// Pure (no-`Env`) version of [`select_winner_indices`] used in tests and
     /// off-chain tooling.  Available only when `std` is in scope.
     #[cfg(any(test, feature = "std"))]
-    pub fn select_winner_indices_pure(&self, total_tickets: u32, winner_count: u32) -> std::vec::Vec<u32> {
+    pub fn select_winner_indices_pure(
+        &self,
+        total_tickets: u32,
+        winner_count: u32,
+    ) -> std::vec::Vec<u32> {
         let mut indices = std::vec::Vec::new();
         if total_tickets == 0 || winner_count == 0 {
             return indices;
@@ -424,6 +424,34 @@ impl WinnerSelectionStrategy for OracleSeedWinnerSelection {
 
         indices
     }
+}
+
+/// Aggregate multiple oracle seeds into a single deterministic seed.
+///
+/// Uses SHA-256 over the concatenation of all delivered seeds
+/// in submission order.  The first 8 bytes of the hash become the `u64` seed.
+///
+/// # Security
+///
+/// As long as at least one of the seeds was provided by an honest oracle,
+/// the SHA-256 output is cryptographically uniform and cannot be biased.
+pub fn aggregate_quorum_seeds(env: &Env, seeds: &Vec<(Address, u64)>) -> u64 {
+    if seeds.is_empty() {
+        return 0u64;
+    }
+
+    let mut combined = Bytes::new(env);
+    for i in 0..seeds.len() {
+        if let Some((_, seed)) = seeds.get(i) {
+            combined.extend_from_array(&seed.to_be_bytes());
+        }
+    }
+
+    let hash: BytesN<32> = env.crypto().sha256(&combined).into();
+    let arr = hash.to_array();
+    let mut seed_bytes = [0u8; 8];
+    seed_bytes.copy_from_slice(&arr[..8]);
+    u64::from_be_bytes(seed_bytes)
 }
 
 #[cfg(test)]
@@ -534,12 +562,10 @@ mod tests {
             .register_stellar_asset_contract_v2(Address::generate(&env))
             .address();
         let first = env.as_contract(&contract_id, || {
-            PrngWinnerSelection::new(raffle_id.clone(), 17)
-                .select_winner_indices(&env, 17, 8)
+            PrngWinnerSelection::new(raffle_id.clone(), 17).select_winner_indices(&env, 17, 8)
         });
         let second = env.as_contract(&contract_id, || {
-            PrngWinnerSelection::new(raffle_id, 17)
-                .select_winner_indices(&env, 17, 8)
+            PrngWinnerSelection::new(raffle_id, 17).select_winner_indices(&env, 17, 8)
         });
 
         assert_eq!(

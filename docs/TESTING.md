@@ -1,316 +1,181 @@
 # Testing Guide
 
-This document describes how to run tests and measure code coverage for the Tikka raffle platform.
+This guide explains how to run and extend Tikka’s unit, integration, and fuzz tests. Commands below work from a fresh clone after installing the prerequisites for each layer.
 
-## Table of Contents
+## Prerequisites
 
-- [Running Tests](#running-tests)
-- [Code Coverage](#code-coverage)
-  - [Prerequisites](#prerequisites)
-  - [Running Coverage Locally](#running-coverage-locally)
-  - [Understanding Coverage Reports](#understanding-coverage-reports)
-  - [CI/CD Coverage](#cicd-coverage)
-- [Test Structure](#test-structure)
-- [Writing Tests](#writing-tests)
-- [Best Practices](#best-practices)
+| Layer | Requirements |
+|-------|----------------|
+| Contract unit / integration | Stable Rust, `wasm32-unknown-unknown` target (`rustup target add wasm32-unknown-unknown`) |
+| Oracle Jest suite | Node.js 20+, packages in `oracle/` (`cd oracle && npm ci`) |
+| Fuzz targets | Nightly Rust, `cargo-fuzz`, Linux or WSL (`rustup toolchain install nightly && cargo install cargo-fuzz`) |
 
-## Running Tests
+Setup troubleshooting (WASM target, Stellar CLI skew, Node version) is covered in [`FAQ.md`](FAQ.md).
 
-### Rust Contract Tests
-
-Run all workspace tests:
+## Quick reference
 
 ```bash
+# Contract crates (from repo root)
+cargo test -p raffle-shared
+cargo test -p raffle-factory
+cargo test -p raffle-instance
+cargo test --workspace
+
+# Oracle (from oracle/)
+cd oracle
+npm ci
+npm test
+
+# Fuzz (Linux/WSL, nightly; from repo root)
+cargo +nightly fuzz run fuzz_buy_ticket -- -max_total_time=60
+cargo +nightly fuzz run fuzz_finalize_raffle -- -max_total_time=60
+cargo +nightly fuzz run fuzz_winner_selection -- -max_total_time=60
+
+# Cross-platform fuzz smoke tests (stable Rust, any OS)
+cargo test -p raffle-fuzz
+```
+
+CI runs `cargo test --workspace` and `npm test` in `oracle/` on every pull request (see `.github/workflows/ci.yml`).
+
+---
+
+## Unit and integration tests (Rust / Soroban)
+
+### What lives where
+
+| Crate | Role | Where tests live |
+|-------|------|------------------|
+| `raffle-shared` | Shared types and pure helpers (e.g. `effective_limit`) | `#[cfg(test)]` modules in `contracts/raffle-shared/src/lib.rs` |
+| `raffle-factory` | Factory contract | Tests co-located in `contracts/raffle-factory/src/lib.rs` / related modules |
+| `raffle-instance` | Per-raffle instance contract | `contracts/raffle-instance/src/test.rs` |
+
+Contract tests use the Soroban SDK test environment (`Env::default()`, `env.mock_all_auths()`, `testutils`). They are integration-style: they register contracts, mint test tokens, and exercise public entrypoints.
+
+### Commands
+
+From the repository root:
+
+```bash
+cargo test -p raffle-shared
+cargo test -p raffle-factory
+cargo test -p raffle-instance
+
+# Optional: filter by test name
+cargo test -p raffle-instance test_oracle_fallback
+
+# Full workspace (matches CI)
 cargo test --workspace
 ```
 
-Run tests for a specific contract:
+Before opening a PR, also run formatting and Clippy as CI does:
 
 ```bash
-cargo test -p raffle-factory
-cargo test -p raffle-instance
-cargo test -p raffle-shared
+cargo fmt --all -- --check
+cargo clippy --all-targets --all-features -- -D warnings
 ```
 
-Run tests with output:
+### Naming and helper conventions (`test.rs`)
 
-```bash
-cargo test --workspace -- --nocapture
-```
+Follow the house style used in `contracts/raffle-instance/src/test.rs`:
 
-Run a specific test:
+1. **Module header** — start with `#![cfg(test)]`, `use super::*;`, and Soroban `testutils` imports.
+2. **Test names** — prefer descriptive `snake_case` names that state the behavior under test (`test_oracle_fallback_with_ledger_delays`, `non_winner_cannot_claim`). Prefix with `test_` when it aids grepping; issue numbers in comments (`// #449`) are welcome for context.
+3. **Env bootstrap** — every test typically starts with:
+   ```rust
+   let env = Env::default();
+   env.mock_all_auths();
+   ```
+   Advance time or sequence with `env.ledger().with_mut(|l| { ... })` when testing deadlines or timeouts.
+4. **Shared setup helpers** — extract repeated scaffolding instead of duplicating it:
+   - `setup_active_raffle(...)` — funded raffle ready for ticket sales
+   - `setup_external_drawing_raffle(...)` — external-oracle drawing path
+   - `lifecycle_config(...)` — builds a `RaffleConfig` with sensible defaults
+   - Small assert helpers such as `assert_drawing_lock_cleared(...)`
+5. **Config builders** — construct `RaffleConfig { ... }` explicitly for the scenario; use named constants from `raffle_shared` (e.g. `DEFAULT_CLAIM_LOCKUP_SECONDS`) in assertions rather than magic numbers when those constants define the expected behavior.
+6. **Token setup** — register a stellar asset with `env.register_stellar_asset_contract_v2(...)`, then mint via `StellarAssetClient`.
+7. **Clients** — register with `env.register(RaffleInstance, ())` and call through `RaffleInstanceClient`. Prefer `try_*` methods when asserting specific `Error` variants.
 
-```bash
-cargo test test_name -- --nocapture
-```
+When adding tests to other crates, mirror the same patterns: focused helpers, clear names, and assertions against shared constants where applicable.
 
-### Oracle Service Tests
+---
 
-Navigate to the oracle directory and run:
+## Oracle tests (TypeScript / Jest)
+
+The off-chain oracle under `oracle/` has a Jest suite (`*.test.ts` next to sources).
 
 ```bash
 cd oracle
-npm test
+npm ci          # clean install from package-lock.json
+npm run build   # TypeScript compile check
+npm test        # jest --passWithNoTests
 ```
 
-For watch mode during development:
+Write new tests as `*.test.ts` beside the module under test. Prefer small, deterministic unit tests for services (keys, VRF, submitter, listener). Integration-style checks that need live RPC or secrets should stay behind env vars documented in `oracle/README.md` and should not break the default `npm test` run.
+
+---
+
+## Fuzz tests (`cargo-fuzz`)
+
+Fuzz targets live in `fuzz/fuzz_targets/` and exercise pure numeric / state-machine guards extracted from contract logic (no Soroban host). Details and corpus/crash reproduction are also documented in [`fuzz/README.md`](../fuzz/README.md).
+
+| Target | Focus |
+|--------|--------|
+| `fuzz_buy_ticket` | Sold-out cap, deadline, multi-ticket policy, sold counter |
+| `fuzz_finalize_raffle` | Winner-index bounds for internal and external randomness paths |
+| `fuzz_winner_selection` | Winner selection invariants |
+
+### Running with nightly
+
+`cargo-fuzz` requires nightly and typically Linux or WSL:
 
 ```bash
-npm test -- --watch
+rustup toolchain install nightly
+cargo install cargo-fuzz
+
+# From repo root — short smoke run
+cargo +nightly fuzz run fuzz_buy_ticket -- -max_total_time=60
+
+# Longer soak (e.g. 30 minutes)
+cargo +nightly fuzz run fuzz_finalize_raffle -- -max_total_time=1800
+cargo +nightly fuzz run fuzz_winner_selection -- -max_total_time=1800
 ```
 
-## Code Coverage
+### Smoke tests on any platform
 
-### Prerequisites
-
-Install `cargo-llvm-cov` for coverage reporting:
+Each fuzz target embeds deterministic smoke tests runnable on stable Rust:
 
 ```bash
-cargo install cargo-llvm-cov
+cargo test -p raffle-fuzz
 ```
 
-The tool requires `llvm-tools-preview` component:
+### Crashes and corpus
 
-```bash
-rustup component add llvm-tools-preview
-```
+- Crashes land in `fuzz/artifacts/<target-name>/crash-<hash>` — reproduce with  
+  `cargo +nightly fuzz run <target-name> fuzz/artifacts/<target-name>/crash-<hash>`
+- Interesting inputs accumulate in `fuzz/corpus/<target-name>/` — commit corpus updates that lock in regressions you care about.
 
-### Running Coverage Locally
+---
 
-#### Generate Coverage Report (LCOV format)
+## When to add a unit test vs a fuzz target
 
-This generates a `lcov.info` file suitable for Codecov or other coverage tools:
+| Prefer… | When… |
+|---------|--------|
+| **Unit / integration test** | You know the inputs and expected outcomes (happy path, specific error code, boundary values like `effective_limit(0)` / `u32::MAX`). Regression for a fixed bug. API contract changes. |
+| **Fuzz target** | Invariants must hold for *arbitrary* inputs (index always in bounds, counters never overflow policy, sold-out never oversells). Large combinatorial state spaces where hand-written cases miss edge combinations. |
 
-```bash
-cargo llvm-cov --workspace --lcov --output-path lcov.info
-```
+Practical rule of thumb:
 
-#### Generate HTML Coverage Report
+1. Fix or feature first gets a focused `#[test]` (or Jest case) with named constants and clear asserts.
+2. If the logic is a closed numeric/state machine with many interacting fields, add or extend a fuzz harness that asserts invariants, plus a few smoke cases in the same file so `cargo test -p raffle-fuzz` stays green on Windows/macOS CI contributors.
 
-For a human-readable HTML report:
+Do **not** replace unit tests with fuzz-only coverage: CI always runs `cargo test --workspace`; long fuzz soaks are optional local/CI jobs.
 
-```bash
-cargo llvm-cov --workspace --html
-```
+---
 
-The report will be generated in `target/llvm-cov/html/`. Open `target/llvm-cov/html/index.html` in your browser to view it.
+## Checklist before opening a PR
 
-#### View Coverage Summary in Terminal
-
-For a quick summary in the terminal:
-
-```bash
-cargo llvm-cov --workspace
-```
-
-This will show coverage percentages for each file and the overall project.
-
-#### Coverage for a Specific Package
-
-To generate coverage for just one contract:
-
-```bash
-cargo llvm-cov -p raffle-factory --html
-cargo llvm-cov -p raffle-instance --html
-```
-
-#### Advanced Options
-
-Run coverage and open the HTML report automatically:
-
-```bash
-cargo llvm-cov --workspace --html --open
-```
-
-Generate coverage with test output:
-
-```bash
-cargo llvm-cov --workspace --html -- --nocapture
-```
-
-Exclude certain files or directories:
-
-```bash
-cargo llvm-cov --workspace --html --ignore-filename-regex 'test\.rs$'
-```
-
-### Understanding Coverage Reports
-
-Coverage metrics include:
-
-- **Line Coverage**: Percentage of executable lines that were executed during tests
-- **Function Coverage**: Percentage of functions that were called during tests
-- **Branch Coverage**: Percentage of conditional branches that were taken
-
-#### Coverage Goals
-
-- **Critical paths** (ticket purchase, winner selection, prize claims): Aim for >90% coverage
-- **Administrative functions**: Aim for >80% coverage
-- **Overall project**: Maintain >75% coverage
-
-### CI/CD Coverage
-
-Coverage is automatically measured on every pull request and push to master via GitHub Actions.
-
-#### Viewing Coverage in CI
-
-1. **Codecov Dashboard**: Visit the Codecov badge in the README or go to `https://codecov.io/gh/OWNER/tikka-contracts`
-2. **GitHub Actions Artifacts**: 
-   - Go to the Actions tab in GitHub
-   - Select a workflow run
-   - Download the `coverage-report` artifact
-   - Extract and open `index.html`
-
-#### Coverage Requirements
-
-The CI pipeline:
-- Generates coverage reports for every PR
-- Uploads results to Codecov
-- Creates an HTML artifact for manual review
-- Does not fail builds on coverage decrease (informational only)
-
-## Test Structure
-
-### Contract Tests
-
-The main test suite is in `contracts/raffle-instance/src/test.rs` (~1,800 lines), which covers:
-
-- **Initialization tests**: Raffle creation and setup
-- **Ticket purchase flows**: Single/multiple tickets, edge cases
-- **Winner selection**: Internal randomness and oracle integration
-- **Prize claiming**: Winner claims, refunds for cancelled raffles
-- **Administrative operations**: Pausing, cancellation, parameter updates
-- **Edge cases**: Boundary conditions, error paths
-
-### Test Organization
-
-Tests are organized by functionality:
-
-```rust
-#[cfg(test)]
-mod tests {
-    // Setup helpers
-    fn setup_raffle() -> ... { }
-    
-    // Initialization tests
-    #[test]
-    fn test_create_raffle() { }
-    
-    // Ticket purchase tests
-    #[test]
-    fn test_buy_ticket() { }
-    
-    // Winner selection tests
-    #[test]
-    fn test_select_winner() { }
-    
-    // etc.
-}
-```
-
-## Writing Tests
-
-### Test Template
-
-```rust
-#[test]
-fn test_feature_name() {
-    let env = Env::default();
-    env.mock_all_auths();
-    
-    // Setup
-    let contract = setup_test_contract(&env);
-    
-    // Execute
-    let result = contract.function_to_test(&args);
-    
-    // Assert
-    assert_eq!(result, expected_value);
-}
-```
-
-### Testing Error Cases
-
-```rust
-#[test]
-#[should_panic(expected = "ErrorCode::InvalidInput")]
-fn test_invalid_input_fails() {
-    let env = Env::default();
-    let contract = setup_test_contract(&env);
-    
-    contract.function_with_invalid_input(&bad_args);
-}
-```
-
-### Using Test Fixtures
-
-Create reusable test fixtures in a separate module:
-
-```rust
-#[cfg(test)]
-mod fixtures {
-    pub fn standard_raffle_params() -> RaffleParams {
-        RaffleParams {
-            ticket_price: 100,
-            max_tickets: 1000,
-            // ...
-        }
-    }
-}
-```
-
-## Best Practices
-
-### General Testing Principles
-
-1. **Test behavior, not implementation**: Focus on what the contract does, not how
-2. **One assertion per test**: Keep tests focused and easy to debug
-3. **Use descriptive test names**: `test_buying_ticket_after_deadline_fails` is better than `test_buy_ticket_2`
-4. **Test edge cases**: Zero values, maximum values, boundary conditions
-5. **Test error paths**: Ensure errors are raised when expected
-
-### Coverage Best Practices
-
-1. **Don't chase 100% coverage**: Focus on meaningful tests, not just hitting lines
-2. **Prioritize critical paths**: Ticket purchases, prize distribution, winner selection
-3. **Review uncovered code**: Use coverage reports to identify untested code paths
-4. **Update tests with code changes**: Keep tests synchronized with implementation
-5. **Document untested code**: If something is intentionally not tested, document why
-
-### Performance
-
-- Run full coverage reports only when needed (they're slower than regular tests)
-- Use `cargo test` for rapid iteration during development
-- Use `cargo llvm-cov` before submitting PRs or when investigating test gaps
-
-## Continuous Improvement
-
-### Identifying Test Gaps
-
-Use coverage reports to find:
-- Uncovered error handling paths
-- Edge cases that aren't tested
-- New features without tests
-- Complex logic with low coverage
-
-### Adding Tests
-
-When adding tests for previously uncovered code:
-
-1. Run coverage to identify the gap
-2. Write a test that exercises the uncovered code
-3. Run coverage again to verify the gap is closed
-4. Ensure the test is meaningful (not just hitting lines)
-
-## Resources
-
-- [cargo-llvm-cov documentation](https://github.com/taiki-e/cargo-llvm-cov)
-- [Soroban testing guide](https://soroban.stellar.org/docs/getting-started/testing)
-- [Codecov documentation](https://docs.codecov.com/)
-
-## Support
-
-For questions about testing:
-- Check existing tests in `contracts/raffle-instance/src/test.rs` for examples
-- Review the [CONTRIBUTING.md](../CONTRIBUTING.md) guide
-- Open an issue for testing-related questions
+- [ ] `cargo test -p <crate>` (or `--workspace`) passes for crates you touched
+- [ ] `cargo fmt --all` applied; Clippy clean if you changed Rust
+- [ ] If you changed `oracle/`, `cd oracle && npm test` (and format checks if configured) passes
+- [ ] New behavior has a unit/integration test, or a documented fuzz invariant when appropriate
+- [ ] Docs updated when test commands or conventions change

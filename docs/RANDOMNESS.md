@@ -9,6 +9,8 @@ Tikka raffles select winners using one of three `RandomnessSource` values (`cont
 | **Internal** | Honest-enough validators + unpredictable timing | Finalizer timing; validators biasing ledger timestamp/sequence | Lowest — single finalize tx | Low-stakes (README guide: **≲ ~500 XLM** prize) |
 | **External** | Honest oracle key + live oracle service | Oracle (bounded by Ed25519 proof over request); timeout fallback | Oracle hosting + callback tx; possible fallback tx | Medium / high-stakes |
 | **CommitReveal** | Enough buyers submit unpredictable commits | Buyers who commit; last-mover / withholding risks; zero-commit → Internal fallback | Per-ticket `submit_commit` txs | Medium-stakes when buyers are engaged |
+| **Quorum** | At least 1 honest oracle out of k-of-n delivered | Single oracle cannot bias outcome; requires k-of-n collusion to manipulate | Multi-oracle hosting + k callback txs | High-stakes / large treasuries |
+
 
 If you need protocol detail for commits, also read [COMMIT_REVEAL.md](COMMIT_REVEAL.md).
 
@@ -124,6 +126,49 @@ One `submit_commit` per participating ticket (user-paid) plus finalize. No oracl
 Medium-stakes raffles where buyers can be asked to commit, and you want stronger bias resistance than Internal without operating an oracle. Educate users to commit; otherwise you silently degrade to Internal.
 
 ---
+
+## 4. Quorum-of-oracles randomness (`RandomnessSource::Quorum { k, oracles }`)
+
+### How the seed is built
+
+1. On draw initiation (`finalize_raffle` or ticket sales complete), the contract transitions to `Drawing` and emits `RandomnessRequested` events for all $n$ registered oracle addresses (`request fan-out`).
+2. Each oracle submits its randomness via `provide_randomness(random_seed, public_key, proof, request_id)`.
+3. The contract verifies the Ed25519 proof, matches `public_key` to a registered oracle in `oracles`, calls `oracle.require_auth()`, and enforces per-oracle deduplication (`duplicate submissions rejected`).
+4. Delivered seeds are accumulated on-chain under `DataKey::QuorumSeeds` and `DataKey::QuorumOraclesSubmitted`.
+5. Once at least $k$ unique registered oracles have submitted valid seeds, the contract aggregates all delivered seeds via SHA-256 over their concatenated big-endian bytes (`aggregate_quorum_seeds`) to form the final 64-bit seed.
+6. The raffle is finalized via `do_finalize_with_seed` using the aggregated VRF seed.
+
+
+## K-of-N Quorum Randomness Scheme
+
+To eliminate single-oracle trust assumptions in high-stakes raffles, the contract supports a `Quorum` randomness mode.
+
+### Architecture & Protocol Steps
+
+1. **Request Fan-out**: When a draw is initiated, a `Quorum { k, oracles }` configuration specifies the threshold `k` and the set of $n$ authorized oracle addresses (`Vec<Address>`).
+2. **Per-Oracle Deduplication**: Each registered oracle can submit its seed via `provide_randomness(env, caller, seed)`. The contract tracks delivered seeds in storage using an `AddressSet` / map indexed by oracle address. Duplicate submissions from the same oracle are rejected with `Error::DuplicateOracleSubmission`.
+3. **Aggregation Function**: The aggregated seed is accumulated iteratively as seeds arrive using bitwise XOR and SHA-256 hashing:
+   $$\text{Aggregated Seed} = \text{SHA-256}(\text{Accumulated Seed} \oplus \text{Oracle Seed})$$
+   Once $k$ unique valid oracle submissions are delivered, the state transitions to `Ready` and the draw can be executed.
+4. **Timeout & Fallback**: If $k$ oracles fail to submit seeds within `ORACLE_TIMEOUT_LEDGERS` ledgers from the draw request height, any caller can trigger a fallback mechanism (e.g., falling back to commit-reveal or admin fallback seed depending on protocol fallback policy).
+
+### Who can influence it
+
+- No single oracle alone can bias or predict the outcome.
+- As long as at least 1 of the $k$ delivered seeds comes from an honest oracle, the output of the SHA-256 aggregation function is cryptographically uniform and un-biasable.
+- Collusion among at least $k$ oracles is required to manipulate or predict the outcome.
+
+### Timeout / fallback (`ORACLE_TIMEOUT_LEDGERS = 200`)
+
+If fewer than $k$ oracles deliver valid seeds before `request_ledger + 200`:
+
+| `trigger_randomness_fallback(..., do_refund)` | Result |
+|---|---|
+| `do_refund = true` | Status → `Cancelled` (`CancelReason::OracleTimeout`); clears request & quorum state |
+| `do_refund = false` | Finalize with **Internal** u64 seed and `RandomnessType::Fallback` |
+
+---
+
 
 ## Guidance thresholds
 
