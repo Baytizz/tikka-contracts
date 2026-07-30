@@ -529,14 +529,11 @@ impl RaffleFactory {
     /// `AdminOpProposed`.
     pub fn set_config(
         env: Env,
-        protocol_fee_bp: u32,
-        treasury: Address,
+        key: ConfigKey,
+        address: Address,
     ) -> Result<u32, ContractError> {
         let admin = require_admin(&env)?;
-        if protocol_fee_bp > MAX_PROTOCOL_FEE_BP {
-            return Err(ContractError::InvalidParameters);
-        }
-        require_valid_role_address(&env, &treasury)?;
+        require_valid_role_address(&env, &address)?;
 
         let op_id = env
             .storage()
@@ -548,7 +545,44 @@ impl RaffleFactory {
         env.storage().persistent().set(&DataKey::OpCounter, &op_id);
 
         let effective_timestamp = env.ledger().timestamp() + TIMELOCK_DELAY_SECONDS;
-        let op = AdminOp::SetConfig(protocol_fee_bp, treasury.clone());
+        let op = AdminOp::SetConfig(key, address);
+        let pending = PendingOp {
+            op: op.clone(),
+            effective_timestamp,
+            proposed_by: admin.clone(),
+        };
+        env.storage()
+            .persistent()
+            .set(&DataKey::PendingOp(op_id), &pending);
+
+        events::AdminOpProposed {
+            op_id,
+            op,
+            effective_timestamp,
+            proposed_by: admin,
+        }
+        .publish(&env);
+
+        Ok(op_id)
+    }
+
+    pub fn propose_fee_change(env: Env, protocol_fee_bp: u32) -> Result<u32, ContractError> {
+        let admin = require_admin(&env)?;
+        if protocol_fee_bp > MAX_PROTOCOL_FEE_BP {
+            return Err(ContractError::InvalidParameters);
+        }
+
+        let op_id = env
+            .storage()
+            .persistent()
+            .get::<_, u32>(&DataKey::OpCounter)
+            .unwrap_or(0)
+            .saturating_add(1);
+
+        env.storage().persistent().set(&DataKey::OpCounter, &op_id);
+
+        let effective_timestamp = env.ledger().timestamp() + TIMELOCK_DELAY_SECONDS;
+        let op = AdminOp::SetProtocolFeeBP(protocol_fee_bp);
         let pending = PendingOp {
             op: op.clone(),
             effective_timestamp,
@@ -615,17 +649,31 @@ impl RaffleFactory {
         }
 
         match pending.op.clone() {
-            AdminOp::SetConfig(protocol_fee_bp, treasury) => {
+            AdminOp::SetConfig(key, address) => {
+                require_valid_role_address(&env, &address)?;
+                match key {
+                    ConfigKey::Treasury => {
+                        env.storage()
+                            .persistent()
+                            .set(&DataKey::Treasury, &address);
+                    }
+                    ConfigKey::Oracle => {
+                        // The factory doesn't store a global Oracle address right now,
+                        // but if we add it to DataKey in the future we would set it here.
+                        // Currently, this is a placeholder per the user's request.
+                    }
+                    ConfigKey::SwapRouter => {
+                        // Same here, placeholder.
+                    }
+                }
+            }
+            AdminOp::SetProtocolFeeBP(protocol_fee_bp) => {
                 if protocol_fee_bp > MAX_PROTOCOL_FEE_BP {
                     return Err(ContractError::InvalidParameters);
                 }
-                require_valid_role_address(&env, &treasury)?;
                 env.storage()
                     .persistent()
                     .set(&DataKey::ProtocolFeeBP, &protocol_fee_bp);
-                env.storage()
-                    .persistent()
-                    .set(&DataKey::Treasury, &treasury);
             }
             AdminOp::UpdateWasmHash(new_hash) => {
                 env.storage()
@@ -1811,14 +1859,14 @@ mod tests {
     }
 
     #[test]
-    fn test_set_config_rejects_excessive_protocol_fee() {
+    fn test_propose_fee_change_rejects_excessive_protocol_fee() {
         let env = Env::default();
         env.mock_all_auths();
-        let (client, _admin, treasury) = setup_factory(&env);
+        let (client, _admin, _treasury) = setup_factory(&env);
         let excessive_fee = MAX_PROTOCOL_FEE_BP + 1;
 
         assert_eq!(
-            client.try_set_config(&excessive_fee, &treasury),
+            client.try_propose_fee_change(&excessive_fee),
             Err(Ok(ContractError::InvalidParameters))
         );
     }
@@ -1933,26 +1981,26 @@ mod tests {
     }
 
     #[test]
-    fn test_set_config_rejects_zero_treasury() {
+    fn test_propose_config_change_rejects_zero_treasury() {
         let env = Env::default();
         env.mock_all_auths();
         let (client, _admin, _treasury) = setup_factory(&env);
 
         assert_eq!(
-            client.try_set_config(&0u32, &zero_address(&env)),
+            client.try_propose_config_change(&ConfigKey::Treasury, &zero_address(&env)),
             Err(Ok(ContractError::InvalidParameters))
         );
     }
 
     #[test]
-    fn test_set_config_rejects_self_treasury() {
+    fn test_propose_config_change_rejects_self_treasury() {
         let env = Env::default();
         env.mock_all_auths();
         let (client, _admin, _treasury) = setup_factory(&env);
         let self_address = client.address.clone();
 
         assert_eq!(
-            client.try_set_config(&0u32, &self_address),
+            client.try_propose_config_change(&ConfigKey::Treasury, &self_address),
             Err(Ok(ContractError::InvalidParameters))
         );
     }
