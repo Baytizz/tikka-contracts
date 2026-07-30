@@ -2,7 +2,10 @@
 #![cfg_attr(not(test), deny(clippy::unwrap_used))]
 
 pub mod constants;
+pub mod events;
 
+#[cfg(test)]
+mod nft_mint_test;
 use soroban_sdk::{contracttype, Address, BytesN, String, Vec};
 
 /// Lifecycle state of a raffle instance.
@@ -79,6 +82,24 @@ pub enum RandomnessType {
     Fallback = 2,
 }
 
+/// Configuration for a recurring (subscription) raffle.
+///
+/// Enables automatic creation of new raffle instances at a fixed interval
+/// without manual re-deployment.  Designed for weekly / monthly raffles.
+#[derive(Clone)]
+#[contracttype]
+pub struct RecurringRaffleConfig {
+    /// The base raffle configuration reused for every round.
+    pub base_config: RaffleConfig,
+    /// Seconds between successive raffle rounds (e.g. 604800 for weekly).
+    pub interval_seconds: u64,
+    /// Maximum number of rounds (0 = infinite).
+    pub max_rounds: u32,
+    /// If true, the creator must pre-authorise the prize funds (not yet
+    /// implemented — reserved for future use).
+    pub auto_fund: bool,
+}
+
 /// Configuration payload used when creating a new raffle.
 ///
 /// Values are validated by contract initialization before the raffle becomes
@@ -95,7 +116,11 @@ pub struct RaffleConfig {
     /// Maximum number of tickets that can ever be sold.
     pub max_tickets: u32,
     /// Maximum tickets a single address may purchase per transaction.
+    /// Zero is invalid and rejected during initialization with `Error::InvalidParameters` (must be in 1..=max_tickets).
     pub max_tickets_per_tx: u32,
+    /// Maximum total tickets a single address may own (0 = unlimited).
+    /// When set, must be <= max_tickets. Supersedes allow_multiple.
+    pub max_tickets_per_address: u32,
     /// Minimum number of tickets required for a successful draw.
     pub min_tickets: u32,
     /// Whether one address may own multiple tickets.
@@ -140,6 +165,21 @@ pub struct RaffleConfig {
     /// instance's `init`; the factory maintains a per-category index so clients
     /// can query raffles by category without an off-chain indexer. See #439.
     pub category: Option<String>,
+    /// When true, each address may win at most one prize tier (#485).
+    pub unique_winners: bool,
+    /// Optional tiered bundle pricing for ticket purchases.
+    pub bundles: Vec<TicketBundle>,
+    /// Optional prize token override (defaults to `payment_token`).
+    pub prize_token: Option<Address>,
+    /// Optional NFT contract for ticket receipts.
+    pub nft_contract: Option<Address>,
+}
+
+#[derive(Clone)]
+#[contracttype]
+pub struct TicketBundle {
+    pub quantity: u32,
+    pub price_per_ticket: i128,
 }
 
 impl RaffleConfig {
@@ -154,6 +194,12 @@ impl RaffleConfig {
     }
 }
 
+/// Ticket record stored for each purchased raffle ticket.
+///
+/// `id` is the monotonic, storage-scoped identifier used for lookups and draw
+/// indexing. `ticket_number` is the human-facing number exposed in UX and
+/// refund events. In the current contract implementation, every ticket is
+/// created with `ticket_number == id`, and that relationship is pinned by tests.
 #[derive(Clone)]
 #[contracttype]
 pub struct Ticket {
@@ -164,7 +210,16 @@ pub struct Ticket {
     /// Unix timestamp when the ticket was purchased.
     pub purchase_time: u64,
     /// Human-facing ticket number used in draw/result UX.
+    /// It is kept equal to `id` for the current contract implementation.
     pub ticket_number: u32,
+}
+
+impl Ticket {
+    /// Create a ticket with the canonical invariant that the human-facing ticket
+    /// number matches the monotonic storage id.
+    pub fn new(id: u32, owner: Address, purchase_time: u64) -> Self {
+        Self { id, owner, purchase_time, ticket_number: id }
+    }
 }
 
 /// Audit data proving how a draw outcome was derived.
@@ -183,6 +238,8 @@ pub struct FairnessData {
     pub draw_timestamp: u64,
     /// Sequence counter for draws/re-draws within the raffle.
     pub draw_sequence: u32,
+    /// Whether unique-address winner fairness was enabled for this draw (#485).
+    pub unique_winners: bool,
 }
 
 /// Generic pagination request for list queries.
@@ -219,22 +276,31 @@ pub struct PageResultTickets {
     pub has_more: bool,
 }
 
+#[derive(Clone)]
+#[contracttype]
+pub enum ConfigKey {
+    Treasury,
+    Oracle,
+    SwapRouter,
+}
+
 /// Administrative operations that can be timelocked or proposed.
 #[derive(Clone)]
 #[contracttype]
 pub enum AdminOp {
-    /// Update protocol configuration entry `u32` with a new address value.
-    SetConfig(u32, Address),
+    /// Update a protocol configuration address.
+    SetConfig(ConfigKey, Address),
+    /// Update the protocol fee basis points.
+    SetProtocolFeeBP(u32),
     /// Rotate target contract WASM hash for upgrades.
     UpdateWasmHash(BytesN<32>),
 }
 
-/// Default page size when callers request zero items.
-pub const DEFAULT_PAGE_LIMIT: u32 = 100;
-/// Hard maximum page size accepted by query helpers.
-pub const MAX_PAGE_LIMIT: u32 = 200;
-pub const DEFAULT_CLAIM_LOCKUP_SECONDS: u64 = 3_600;
-pub const DEFAULT_SWAP_DEADLINE_SECONDS: u64 = 300;
+// Re-export constants from the single source of truth
+pub use constants::{
+    DEFAULT_CLAIM_LOCKUP_SECONDS, DEFAULT_PAGE_LIMIT, DEFAULT_SWAP_DEADLINE_SECONDS,
+    MAX_PAGE_LIMIT,
+};
 
 /// Returns a safe pagination limit clamped to supported bounds.
 pub fn effective_limit(requested: u32) -> u32 {
@@ -287,6 +353,19 @@ pub trait RandomnessReceiverTrait {
 /// * `ticket_id`  – the unique ticket ID within this raffle (1-indexed, u32).
 /// * `raffle_id`  – the raffle instance contract address, used as a namespace
 ///   so a single NFT contract can serve multiple raffles.
+///
+/// Failure semantics
+/// ------------------
+/// Callers are expected to invoke this hook via the generated
+/// `NftTicketClient::mint` (not `try_mint`). A panic in the NFT contract's
+/// `mint` therefore propagates and aborts the calling transaction — the
+/// ticket purchase and the NFT mint succeed or roll back atomically. This is
+/// a deliberate choice: it keeps ticket state and NFT ownership from ever
+/// diverging, at the cost of ticket sales being unavailable if the
+/// configured NFT contract is broken. A caller that instead wants purchases
+/// to survive a broken NFT contract must explicitly use `try_mint` and
+/// handle the `Result`; see the failure-path tests in `nft_mint_test` for
+/// both behaviors pinned side by side.
 #[soroban_sdk::contractclient(name = "NftTicketClient")]
 pub trait NftTicketTrait {
     fn mint(env: soroban_sdk::Env, recipient: Address, ticket_id: u32, raffle_id: Address);
@@ -325,4 +404,49 @@ macro_rules! impl_require_not_paused {
             Ok(())
         }
     };
+}
+
+#[cfg(test)]
+mod effective_limit_tests {
+    use super::{effective_limit, DEFAULT_PAGE_LIMIT, MAX_PAGE_LIMIT};
+
+    #[test]
+    fn zero_requests_default_page_limit() {
+        assert_eq!(effective_limit(0), DEFAULT_PAGE_LIMIT);
+    }
+
+    #[test]
+    fn one_is_unchanged() {
+        assert_eq!(effective_limit(1), 1);
+    }
+
+    #[test]
+    fn ninety_nine_is_unchanged() {
+        assert_eq!(effective_limit(99), 99);
+    }
+
+    #[test]
+    fn default_page_limit_is_unchanged() {
+        assert_eq!(effective_limit(DEFAULT_PAGE_LIMIT), DEFAULT_PAGE_LIMIT);
+    }
+
+    #[test]
+    fn one_below_max_is_unchanged() {
+        assert_eq!(effective_limit(MAX_PAGE_LIMIT - 1), MAX_PAGE_LIMIT - 1);
+    }
+
+    #[test]
+    fn max_page_limit_is_unchanged() {
+        assert_eq!(effective_limit(MAX_PAGE_LIMIT), MAX_PAGE_LIMIT);
+    }
+
+    #[test]
+    fn one_above_max_clamps_to_max() {
+        assert_eq!(effective_limit(MAX_PAGE_LIMIT + 1), MAX_PAGE_LIMIT);
+    }
+
+    #[test]
+    fn u32_max_clamps_to_max() {
+        assert_eq!(effective_limit(u32::MAX), MAX_PAGE_LIMIT);
+    }
 }
