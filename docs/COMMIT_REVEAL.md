@@ -7,26 +7,33 @@ This document explains the `RandomnessSource::CommitReveal` protocol, a multi-ph
 The Commit-Reveal raffle lifecycle consists of four distinct phases:
 
 ### 1.1 Raffle Creation
+
 The raffle creator initializes the raffle with `randomness_source = CommitReveal`.
 
 ### 1.2 Commit Phase (Active State)
+
 During the raffle's Active state:
+
 - Each ticket buyer generates a local secret: `secret = random_bytes(32)`
 - The buyer computes a cryptographic hash: `hash = sha256(secret)`
 - The buyer calls `submit_commit(ticket_id, hash)` to commit their hash on-chain
 
 ### 1.3 Draw Phase (finalize_raffle)
+
 When `finalize_raffle` is called:
+
 - The contract queries all existing `CommitEntry(ticket_id)` records
 - All collected hashes are concatenated and hashed sequentially: `combined = sha256(hash_1 || hash_2 || ... || hash_n)`
 - The first 8 bytes of the `combined` hash are extracted and used as the final draw seed
 
 ### 1.4 Reveal Phase (Off-Chain, Optional)
+
 After the raffle finalizes, winners can reveal their original secret off-chain to mathematically prove the entropy generation was honest and unmanipulated.
 
 ## 2. Ticket Transfer Invariant
 
 Commit entries are **structurally keyed by ticket ID**, not by the owner's public address. This means:
+
 - A commit submitted by the original buyer remains entirely intact and preserved even if the associated ticket is transferred or traded before finalization occurs
 - This prevents the silent loss of entropy when tickets change hands
 

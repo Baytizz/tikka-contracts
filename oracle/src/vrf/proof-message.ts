@@ -7,7 +7,7 @@ import { Address, nativeToScVal, xdr } from '@stellar/stellar-sdk';
 export function buildVrfProofMessage(
   raffleContract: string,
   requestId: bigint,
-  randomSeed: bigint,
+  randomSeed: bigint
 ): Buffer {
   const address = new Address(raffleContract);
   const scVal = xdr.ScVal.scvVec([

@@ -8,6 +8,7 @@ Small delta implementation: add `require_not_paused` guards to `buy_ticket` and 
 
 - [x] 1. Add `require_not_paused` guard to RaffleInstance write operations
   - In `contracts/raffle/src/instance/mod.rs`, confirm or add the `require_not_paused` helper:
+
     ```rust
     fn require_not_paused(env: &Env) -> Result<(), Error> {
         if env.storage().instance().get(&DataKey::Paused).unwrap_or(false) {
@@ -16,6 +17,7 @@ Small delta implementation: add `require_not_paused` guards to `buy_ticket` and 
         Ok(())
     }
     ```
+
   - Add `require_not_paused(&env)?;` as the first statement in `buy_ticket`
   - Add `require_not_paused(&env)?;` as the first statement in `deposit_prize`
   - _Requirements: 4.1, 4.2, 4.3, 4.4_
@@ -118,7 +120,7 @@ Small delta implementation: add `require_not_paused` guards to `buy_ticket` and 
     - **Validates: Requirements 6.1, 6.2**
 
 - [x] 7. Final checkpoint — ensure all tests pass
-  - Run `cargo test -p raffle` and confirm all tests pass
+  - Run `cargo test -p raffle-factory` and confirm all tests pass
   - Ensure all tests pass, ask the user if questions arise.
 
 ## Notes

@@ -1,3 +1,39 @@
+//! Ticket purchase and commit-reveal entropy submission.
+//!
+//! This module implements the two buyer-facing entry points:
+//!
+//! - [`buy_tickets`] — the primary ticket-purchase function.  It validates the
+//!   buyer's request, charges the payment token, issues [`Ticket`] records,
+//!   and — when the last ticket sells — automatically triggers the drawing
+//!   phase.
+//!
+//! - [`submit_commit`] — used exclusively with the
+//!   [`RandomnessSource::CommitReveal`] mode.  Ticket holders submit a hash
+//!   commitment before the draw so that their entropy is folded into the final
+//!   seed during [`finalize_raffle`].
+//!
+//! ## Ticket numbering
+//!
+//! Tickets are numbered starting at 1.  The `ticket_id` of the `i`th ticket
+//! purchased in a transaction equals `tickets_sold_before_tx + i`.  IDs are
+//! monotonically increasing and never reused or reordered.
+//!
+//! ## Concurrent purchase guard
+//!
+//! `buy_tickets` performs a snapshot-then-verify pattern: it reads
+//! `tickets_sold` before charging the buyer, then re-reads it from storage
+//! immediately before writing new tickets to detect concurrent modifications.
+//! If the counts diverge, it returns [`Error::InvalidStateTransition`].
+//!
+//! ## Automatic draw trigger
+//!
+//! When the purchase fills the last available slot (`tickets_sold >=
+//! max_tickets`), `buy_tickets` calls [`transition_to_drawing`] and, for
+//! `External` randomness, calls [`request_randomness`] to notify the oracle.
+//!
+//! See [`docs/RANDOMNESS.md`](../../../../docs/RANDOMNESS.md) for the full
+//! description of each randomness mode.
+
 use soroban_sdk::{
     token,
     auth::{ContractContext, InvokerContractAuthEntry, SubContractInvocation},
@@ -12,6 +48,77 @@ use crate::{
     CommitRevealEntry, DataKey, Error, RaffleStatus,
 };
 
+/// Purchase one or more raffle tickets for `buyer`.
+///
+/// ## Purchase flow
+///
+/// 1. Validates [`DrawingLock`](DataKey::DrawingLock) is not set — an active
+///    draw blocks new purchases.
+/// 2. Validates `quantity > 0` and `quantity ≤ raffle.max_tickets_per_tx`.
+/// 3. Requires authorization from `buyer`.
+/// 4. Checks the contract is not paused and ticket sales are not paused.
+/// 5. Verifies the raffle is `Active`, prize has been deposited, and the
+///    deadline has not passed (unless `no_deadline` is set).
+/// 6. Checks `allow_multiple` — when `false`, each address may only hold one
+///    ticket across all transactions.
+/// 7. Performs a double-read concurrency guard (snapshot vs. persisted state).
+/// 8. Writes each [`Ticket`] to persistent storage under
+///    [`DataKey::Ticket(id)`](crate::DataKey::Ticket).
+/// 9. Charges `ticket_price * quantity` from the buyer via
+///    `try_transfer`; deducts `protocol_fee` to the treasury.
+/// 10. If the purchase fills the raffle, calls [`transition_to_drawing`] and
+///     (for `External` mode) [`request_randomness`].
+/// 11. Reports volume to the factory via a cross-contract `record_volume` call.
+///
+/// ## Protocol fee
+///
+/// The fee is collected at purchase time only — **not** again at prize claim.
+/// Formula: `floor(total_price × protocol_fee_bp / 10 000)`.
+///
+/// # Auth
+///
+/// Requires authorization from `buyer`.
+///
+/// # Parameters
+///
+/// - `buyer` — Address purchasing tickets (pays `ticket_price * quantity`).
+/// - `quantity` — Number of tickets to purchase in this transaction.
+///
+/// # Returns
+///
+/// The new total number of tickets sold across the entire raffle after this
+/// purchase completes.
+///
+/// # Errors
+///
+/// - [`Error::DrawingAlreadyInProgress`] — `DrawingLock` is set; draw is in
+///   progress.
+/// - [`Error::InvalidQuantity`] — `quantity == 0`.
+/// - [`Error::ExceedsMaxTicketsPerTx`] — `quantity > max_tickets_per_tx`.
+/// - [`Error::NotInitialized`] — raffle state missing.
+/// - [`Error::ContractPaused`] — contract or ticket sales are paused.
+/// - [`Error::RaffleInactive`] — raffle is not in `Active` status.
+/// - [`Error::InvalidStateTransition`] — prize not yet deposited, or
+///   concurrent modification detected.
+/// - [`Error::RaffleExpired`] — deadline passed and `no_deadline` is false.
+/// - [`Error::TicketsSoldOut`] — purchase would exceed `max_tickets`.
+/// - [`Error::MultipleTicketsNotAllowed`] — `allow_multiple` is false and
+///   buyer already holds a ticket or `quantity > 1`.
+/// - [`Error::InvalidParameters`] — arithmetic overflow computing
+///   `total_price`.
+/// - [`Error::ArithmeticOverflow`] — arithmetic overflow computing
+///   `protocol_fee`.
+/// - [`Error::TokenTransferFailed`] — payment token transfer failed.
+///
+/// # Events
+///
+/// - [`events::TicketPurchased`] — always emitted on success.
+/// - [`events::DrawTriggered`] — emitted when the purchase fills the raffle.
+/// - [`events::RandomnessRequested`] — emitted when `External` randomness is
+///   requested after a sell-out.
+///
+/// See also: [`docs/EVENTS.md`](../../../../docs/EVENTS.md) —
+/// `TicketPurchased`, `DrawTriggered`, `RandomnessRequested`.
 pub(crate) fn buy_tickets(env: Env, buyer: Address, quantity: u32) -> Result<u32, Error> {
     let drawing_lock: bool = env.storage().instance().get(&crate::DataKey::DrawingLock).unwrap_or(false);
     if drawing_lock {
@@ -26,6 +133,7 @@ pub(crate) fn buy_tickets(env: Env, buyer: Address, quantity: u32) -> Result<u32
     }
     buyer.require_auth();
     require_not_paused(&env)?;
+    crate::require_global_not_paused(&env)?;
 
     if raffle.status != RaffleStatus::Active {
         return Err(Error::RaffleInactive);
@@ -36,7 +144,7 @@ pub(crate) fn buy_tickets(env: Env, buyer: Address, quantity: u32) -> Result<u32
     if !raffle.prize_deposited {
         return Err(Error::InvalidStateTransition);
     }
-    if !raffle.no_deadline && env.ledger().timestamp() > raffle.end_time {
+    if !raffle.no_deadline && env.ledger().timestamp() >= raffle.end_time {
         return Err(Error::RaffleExpired);
     }
 
@@ -51,7 +159,45 @@ pub(crate) fn buy_tickets(env: Env, buyer: Address, quantity: u32) -> Result<u32
     }
 
     let timestamp = env.ledger().timestamp();
-    let total_price = raffle.ticket_price.checked_mul(quantity as i128).ok_or(Error::InvalidParameters)?;
+    let (total_price, effective_price) = if raffle.early_bird_ticket_percentage > 0 {
+        let early_bird_cap = raffle.max_tickets * raffle.early_bird_ticket_percentage / 100;
+        if snapshot_sold < early_bird_cap {
+            let early_bird_count = (early_bird_cap - snapshot_sold).min(quantity);
+            let full_price_count = quantity - early_bird_count;
+            let discounted_price = raffle
+                .ticket_price
+                .checked_mul((10000 - raffle.early_bird_discount_bp) as i128)
+                .ok_or(Error::ArithmeticOverflow)?
+                / 10000;
+            let total = discounted_price
+                .checked_mul(early_bird_count as i128)
+                .ok_or(Error::ArithmeticOverflow)?
+                .checked_add(
+                    raffle
+                        .ticket_price
+                        .checked_mul(full_price_count as i128)
+                        .ok_or(Error::ArithmeticOverflow)?,
+                )
+                .ok_or(Error::ArithmeticOverflow)?;
+            (total, discounted_price)
+        } else {
+            (
+                raffle
+                    .ticket_price
+                    .checked_mul(quantity as i128)
+                    .ok_or(Error::InvalidParameters)?,
+                raffle.ticket_price,
+            )
+        }
+    } else {
+        (
+            raffle
+                .ticket_price
+                .checked_mul(quantity as i128)
+                .ok_or(Error::InvalidParameters)?,
+            raffle.ticket_price,
+        )
+    };
     let protocol_fee = total_price.checked_mul(raffle.protocol_fee_bp as i128).ok_or(Error::ArithmeticOverflow)? / 10000;
 
     let persisted = crate::read_raffle(&env)?;
@@ -74,7 +220,7 @@ pub(crate) fn buy_tickets(env: Env, buyer: Address, quantity: u32) -> Result<u32
     let mut ticket_ids = Vec::new(&env);
     for i in 0..quantity {
         let ticket_id = snapshot_sold + i + 1;
-        let ticket = Ticket { id: ticket_id, owner: buyer.clone(), purchase_time: timestamp, ticket_number: ticket_id };
+        let ticket = Ticket::new(ticket_id, buyer.clone(), timestamp);
         env.storage().persistent().set(&DataKey::Ticket(ticket_id), &ticket);
         ticket_ids.push_back(ticket_id);
     }
@@ -138,6 +284,48 @@ pub(crate) fn buy_tickets(env: Env, buyer: Address, quantity: u32) -> Result<u32
     Ok(raffle.tickets_sold)
 }
 
+/// Submit a hash commitment for the [`RandomnessSource::CommitReveal`] path.
+///
+/// In the commit-reveal scheme each ticket holder contributes entropy to the
+/// draw by committing a hash before `finalize_raffle` is called.  During
+/// finalization, all discovered commits are concatenated and hashed together to
+/// form the final draw seed — see [`finalize_raffle`] for details.
+///
+/// ## Why keyed by ticket ID?
+///
+/// Commits are stored under [`DataKey::CommitEntry(ticket_id)`] rather than
+/// the owner's address so that the commit remains valid even if the ticket is
+/// transferred after submission.  The original committer's address is preserved
+/// in [`CommitRevealEntry::committer`] for audit purposes, but the draw logic
+/// looks up entries by ticket ID.
+///
+/// ## Timing
+///
+/// Commits may be submitted while the raffle is `Active` **or** `Drawing`.
+/// Submitting after `finalize_raffle` has already been called is rejected with
+/// [`Error::InvalidStatus`].
+///
+/// # Auth
+///
+/// Requires authorization from the **current owner** of `ticket_id`.  If the
+/// ticket has been transferred, the new owner must authorize.
+///
+/// # Parameters
+///
+/// - `ticket_id` — 1-indexed ID of the ticket whose entropy is being committed.
+/// - `hash` — 32-byte hash of the secret pre-image.  The contract does not
+///   inspect or validate the pre-image — it is the caller's responsibility to
+///   reveal it off-chain during finalization monitoring.
+///
+/// # Errors
+///
+/// - [`Error::InvalidParameters`] — randomness source is not `CommitReveal`.
+/// - [`Error::InvalidStatus`] — raffle is not `Active` or `Drawing`.
+/// - [`Error::TicketNotFound`] — no ticket with `ticket_id` exists in storage.
+///
+/// See also: [`docs/RANDOMNESS.md`](../../../../docs/RANDOMNESS.md) —
+/// Commit-Reveal mode,
+/// [`docs/COMMIT_REVEAL.md`](../../../../docs/COMMIT_REVEAL.md).
 pub(crate) fn submit_commit(env: Env, ticket_id: u32, hash: BytesN<32>) -> Result<(), Error> {
     let raffle = crate::read_raffle(&env)?;
 
