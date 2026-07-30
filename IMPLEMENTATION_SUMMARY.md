@@ -3,11 +3,13 @@
 ## Completed Tasks
 
 ### 1. Created `contracts/raffle/src/events.rs`
+
 - Defined all 18 required event structs (10 lifecycle + 8 admin events)
 - All structs derive `Clone` and are annotated with `#[contracttype]`
 - Includes comprehensive inline documentation for each event
 
 ### 2. Standardized Event Topics
+
 - Implemented consistent two-symbol topic scheme: `("tikka", "event_name")`
 - Created helper function `publish_event()` to ensure consistency
 - All event names use snake_case matching struct names
@@ -15,6 +17,7 @@
 ### 3. Updated Event Emissions in Contract Functions
 
 #### Lifecycle Events Implemented:
+
 - `raffle_created` - Emitted in `init()`
 - `prize_deposited` - Emitted in `deposit_prize()`
 - `ticket_purchased` - Emitted in `buy_ticket()` (supports multi-ticket via Vec)
@@ -27,6 +30,7 @@
 - `status_changed` - Emitted on all status transitions
 
 #### Admin Events (Implemented):
+
 - `oracle_address_updated` (Available in instance)
 - `fee_updated` (Emitted in `set_config`)
 - `treasury_updated` (Emitted in `set_config`)
@@ -39,6 +43,7 @@
 Note: Admin events are defined in the events module but require corresponding admin functions to be implemented in the contract.
 
 ### 4. Created `docs/EVENTS.md`
+
 - Comprehensive documentation for all events
 - Includes topic format, field descriptions, and types
 - Provides indexer implementation notes
@@ -46,6 +51,7 @@ Note: Admin events are defined in the events module but require corresponding ad
 - Includes event emission guarantees
 
 ### 5. Extended Unit Tests
+
 - Added 10 new event emission tests
 - Tests verify events are emitted for:
   - raffle_created
@@ -63,6 +69,7 @@ Note: Admin events are defined in the events module but require corresponding ad
 ## Key Implementation Details
 
 ### Event Publishing Pattern
+
 ```rust
 fn publish_event<T>(env: &Env, event_name: &str, event: T)
 where
@@ -76,9 +83,11 @@ where
 ```
 
 ### Multi-Ticket Support
+
 The `ticket_ids` field in `TicketPurchased` is a `Vec<u32>` to support future batch purchases, though current implementation only purchases one ticket at a time.
 
 ### Status Change Events
+
 Every state transition emits both the primary event (e.g., `prize_deposited`) and a `status_changed` event for redundancy and easier indexing.
 
 ## Acceptance Criteria Status
@@ -104,5 +113,5 @@ Every state transition emits both the primary event (e.g., `prize_deposited`) an
 ## Notes for Future Work
 
 1. Admin functions (pause/unpause, fee updates, etc.) need to be implemented to emit their corresponding events
-2. Ticket refund functionality could be added to emit `ticket_refunded` events
-3. Consider implementing batch ticket purchase to fully utilize the `ticket_ids` Vec in `TicketPurchased`
+1. Ticket refund functionality could be added to emit `ticket_refunded` events
+1. Consider implementing batch ticket purchase to fully utilize the `ticket_ids` Vec in `TicketPurchased`
