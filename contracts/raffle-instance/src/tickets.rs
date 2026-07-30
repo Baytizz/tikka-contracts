@@ -220,7 +220,7 @@ pub(crate) fn buy_tickets(env: Env, buyer: Address, quantity: u32) -> Result<u32
     let mut ticket_ids = Vec::new(&env);
     for i in 0..quantity {
         let ticket_id = snapshot_sold + i + 1;
-        let ticket = Ticket { id: ticket_id, owner: buyer.clone(), purchase_time: timestamp, ticket_number: ticket_id };
+        let ticket = Ticket::new(ticket_id, buyer.clone(), timestamp);
         env.storage().persistent().set(&DataKey::Ticket(ticket_id), &ticket);
         ticket_ids.push_back(ticket_id);
     }

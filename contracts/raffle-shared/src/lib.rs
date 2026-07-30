@@ -188,15 +188,12 @@ impl RaffleConfig {
     }
 }
 
-/// Factory leaderboard sort key (#484).
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-#[contracttype]
-pub enum LeaderboardMetric {
-    TicketsSold = 0,
-    PrizeAmount = 1,
-    TotalVolume = 2,
-}
-
+/// Ticket record stored for each purchased raffle ticket.
+///
+/// `id` is the monotonic, storage-scoped identifier used for lookups and draw
+/// indexing. `ticket_number` is the human-facing number exposed in UX and
+/// refund events. In the current contract implementation, every ticket is
+/// created with `ticket_number == id`, and that relationship is pinned by tests.
 #[derive(Clone)]
 #[contracttype]
 pub struct Ticket {
@@ -207,7 +204,16 @@ pub struct Ticket {
     /// Unix timestamp when the ticket was purchased.
     pub purchase_time: u64,
     /// Human-facing ticket number used in draw/result UX.
+    /// It is kept equal to `id` for the current contract implementation.
     pub ticket_number: u32,
+}
+
+impl Ticket {
+    /// Create a ticket with the canonical invariant that the human-facing ticket
+    /// number matches the monotonic storage id.
+    pub fn new(id: u32, owner: Address, purchase_time: u64) -> Self {
+        Self { id, owner, purchase_time, ticket_number: id }
+    }
 }
 
 /// Audit data proving how a draw outcome was derived.
