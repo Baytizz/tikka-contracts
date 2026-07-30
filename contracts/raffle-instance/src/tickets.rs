@@ -144,7 +144,7 @@ pub(crate) fn buy_tickets(env: Env, buyer: Address, quantity: u32) -> Result<u32
     if !raffle.prize_deposited {
         return Err(Error::InvalidStateTransition);
     }
-    if !raffle.no_deadline && env.ledger().timestamp() > raffle.end_time {
+    if !raffle.no_deadline && env.ledger().timestamp() >= raffle.end_time {
         return Err(Error::RaffleExpired);
     }
 

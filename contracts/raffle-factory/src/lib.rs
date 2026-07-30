@@ -437,40 +437,38 @@ impl RaffleFactory {
         Ok(op_id)
     }
 
-    /// Apply a timelocked configuration change that has passed its delay.
-    ///
-    /// Reads the [`PendingOp`] stored under `op_id`, verifies the timelock has
-    /// elapsed, applies the change to persistent storage, and removes the
-    /// pending entry.
-    ///
-    /// Supported operations:
-    /// - [`AdminOp::SetConfig`] — updates `protocol_fee_bp` and `treasury`.
-    /// - [`AdminOp::UpdateWasmHash`] — rotates the instance WASM hash used for
-    ///   future deploys.
-    ///
-    /// # Auth
-    ///
-    /// Requires authorization from the current admin address.
-    ///
-    /// # Parameters
-    ///
-    /// - `op_id` — Identifier returned by [`set_config`](Self::set_config).
-    ///
-    /// # Errors
-    ///
-    /// - [`ContractError::NotAuthorized`] — caller is not the admin.
-    /// - [`ContractError::NoPendingOp`] — no pending operation for `op_id`.
-    /// - [`ContractError::TimelockNotElapsed`] — the 48-hour delay has not
-    ///   passed yet.
-    /// - [`ContractError::InvalidParameters`] — embedded parameters are
-    ///   invalid (fee cap, address checks).
-    ///
-    /// # Events
-    ///
-    /// Emits [`events::AdminOpExecuted`] on success.
-    ///
-    /// See also: [`docs/EVENTS.md`](../../../docs/EVENTS.md) —
-    /// `AdminOpExecuted`.
+    pub fn propose_wasm_upgrade(env: Env, new_wasm_hash: BytesN<32>) -> Result<u32, ContractError> {
+        let admin = require_admin(&env)?;
+        let op_id = env
+            .storage()
+            .persistent()
+            .get::<_, u32>(&DataKey::OpCounter)
+            .unwrap_or(0)
+            .saturating_add(1);
+
+        env.storage().persistent().set(&DataKey::OpCounter, &op_id);
+
+        let effective_timestamp = env.ledger().timestamp() + TIMELOCK_DELAY_SECONDS;
+        let pending = PendingOp {
+            op: AdminOp::UpdateWasmHash(new_wasm_hash.clone()),
+            effective_timestamp,
+            proposed_by: admin.clone(),
+        };
+        env.storage()
+            .persistent()
+            .set(&DataKey::PendingOp(op_id), &pending);
+
+        events::AdminOpProposed {
+            op_id,
+            op: AdminOp::UpdateWasmHash(new_wasm_hash),
+            effective_timestamp,
+            proposed_by: admin,
+        }
+        .publish(&env);
+
+        Ok(op_id)
+    }
+
     pub fn execute_config_change(env: Env, op_id: u32) -> Result<(), ContractError> {
         let admin = require_admin(&env)?;
 
@@ -1784,6 +1782,42 @@ mod tests {
         // Without auth for the admin address, upgrade must not succeed.
         env.set_auths(&[]);
         assert!(client.try_upgrade(&new_hash).is_err());
+    }
+
+    #[test]
+    fn test_upgrade_lifecycle_preserves_state() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let admin = Address::generate(&env);
+        let treasury = Address::generate(&env);
+        let wasm_hash = BytesN::from_array(&env, &[0u8; 32]);
+        let contract_id = env.register(RaffleFactory, ());
+        let client = RaffleFactoryClient::new(&env, &contract_id);
+        client.init_factory(&admin, &wasm_hash, &0u32, &treasury);
+
+        let creator = Address::generate(&env);
+        let payment_token = env.register_stellar_asset_contract_v2(Address::generate(&env)).address();
+        let mut config = test_raffle_config(&env, &payment_token);
+        config.protocol_fee_bp = 0;
+        config.treasury_address = Some(treasury.clone());
+        let raffle_address = client.create_raffle(&creator, &config);
+
+        let new_hash = BytesN::from_array(&env, &[9u8; 32]);
+        let op_id = client.propose_wasm_upgrade(&new_hash);
+        assert_eq!(client.get_pending_op(&op_id).unwrap().op, AdminOp::UpdateWasmHash(new_hash.clone()));
+
+        let err = client.try_execute_config_change(&op_id);
+        assert_eq!(err.err(), Some(Ok(ContractError::TimelockNotElapsed)));
+
+        env.ledger().with_mut(|l| l.timestamp += TIMELOCK_DELAY_SECONDS + 1);
+        client.execute_config_change(&op_id);
+
+        let pending = client.get_pending_op(&op_id);
+        assert!(pending.is_none());
+        let raffle = raffle_instance::ContractClient::new(&env, &raffle_address);
+        let raffle_state = raffle.get_raffle();
+        assert_eq!(raffle_state.creator, creator);
+        assert_eq!(raffle_state.treasury_address, Some(treasury.clone()));
     }
 
     // -----------------------------------------------------------------------
