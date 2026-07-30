@@ -3,6 +3,8 @@
 
 pub mod constants;
 
+#[cfg(test)]
+mod nft_mint_test;
 use soroban_sdk::{contracttype, Address, BytesN, String, Vec};
 
 /// Lifecycle state of a raffle instance.
@@ -350,6 +352,19 @@ pub trait RandomnessReceiverTrait {
 /// * `ticket_id`  – the unique ticket ID within this raffle (1-indexed, u32).
 /// * `raffle_id`  – the raffle instance contract address, used as a namespace
 ///   so a single NFT contract can serve multiple raffles.
+///
+/// Failure semantics
+/// ------------------
+/// Callers are expected to invoke this hook via the generated
+/// `NftTicketClient::mint` (not `try_mint`). A panic in the NFT contract's
+/// `mint` therefore propagates and aborts the calling transaction — the
+/// ticket purchase and the NFT mint succeed or roll back atomically. This is
+/// a deliberate choice: it keeps ticket state and NFT ownership from ever
+/// diverging, at the cost of ticket sales being unavailable if the
+/// configured NFT contract is broken. A caller that instead wants purchases
+/// to survive a broken NFT contract must explicitly use `try_mint` and
+/// handle the `Result`; see the failure-path tests in `nft_mint_test` for
+/// both behaviors pinned side by side.
 #[soroban_sdk::contractclient(name = "NftTicketClient")]
 pub trait NftTicketTrait {
     fn mint(env: soroban_sdk::Env, recipient: Address, ticket_id: u32, raffle_id: Address);
