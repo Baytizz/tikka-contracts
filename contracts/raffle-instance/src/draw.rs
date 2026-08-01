@@ -1,6 +1,8 @@
 use soroban_sdk::{xdr::ToXdr, Address, Bytes, BytesN, Env, Vec};
 
-use raffle_shared::{CancelReason, FailureReason, RandomnessSource, RandomnessType};
+use raffle_shared::{
+    CancelReason, FailureReason, QuorumConfig, RandomnessSource, RandomnessType,
+};
 
 use crate::events::{
     DrawTriggered, RaffleCancelled, RaffleFailed, RandomnessFallbackTriggered, RandomnessReceived,
@@ -60,7 +62,7 @@ pub(crate) fn finalize_raffle(env: Env) -> Result<(), Error> {
     transition_to_drawing(&env, &mut raffle, now)?;
 
     // === Quorum fan-out ===
-    if let RandomnessSource::Quorum { k: _, oracles } = &raffle.randomness_source {
+    if let RandomnessSource::Quorum(QuorumConfig { oracles, .. }) = &raffle.randomness_source {
         match request_randomness(&env) {
             Ok(request_id) => {
                 DrawTriggered {
@@ -186,7 +188,7 @@ pub(crate) fn provide_randomness(
     let raffle = read_raffle(&env)?;
 
     // Reject Quorum-mode submissions on this path
-    if matches!(raffle.randomness_source, RandomnessSource::Quorum { .. }) {
+    if matches!(raffle.randomness_source, RandomnessSource::Quorum(_)) {
         return Err(Error::InvalidParameters);
     }
 

@@ -22,8 +22,6 @@ mod views;
 
 pub(crate) use helpers::do_finalize_with_seed;
 
-mod views;
-
 use raffle_shared::{
     constants::{
         DEFAULT_CLAIM_LOCKUP_SECONDS, DEFAULT_SWAP_DEADLINE_SECONDS, EMERGENCY_WITHDRAW_DELAY_SECONDS,
@@ -31,10 +29,9 @@ use raffle_shared::{
         MAX_PROTOCOL_FEE_BP, MAX_SWAP_DEADLINE_SECONDS, MAX_TICKETS_LIMIT, MIN_TICKET_PRICE,
         ORACLE_TIMEOUT_LEDGERS,
     },
-    CancelReason, FailureReason, FairnessData, RaffleConfig, RaffleStatus, RandomnessSource,
-    RandomnessType, Ticket, Winner,
+    CancelReason, FailureReason, FairnessData, QuorumConfig, RaffleConfig, RaffleStatus,
+    RandomnessSource, RandomnessType, Ticket, Winner,
 };
-use raffle_shared::events::{ContractPaused, ContractUnpaused};
 
 use self::randomness::{
     build_vrf_proof_message, OracleSeedWinnerSelection, WinnerSelectionStrategy,
@@ -63,7 +60,6 @@ pub struct Raffle {
     pub no_deadline: bool,
     pub max_tickets: u32,
     pub max_tickets_per_tx: u32,
-    pub max_tickets_per_address: u32,
     pub max_tickets_per_address: u32,
     pub min_tickets: u32,
     pub allow_multiple: bool,
@@ -520,7 +516,7 @@ if config.randomness_source == RandomnessSource::External {
 
         // Quorum validation: k must be > 0, oracles must be non-empty, and
         // oracle_address must not be set (oracles are embedded in the enum).
-        if let RandomnessSource::Quorum { k, oracles } = &config.randomness_source {
+        if let RandomnessSource::Quorum(QuorumConfig { k, oracles }) = &config.randomness_source {
             if *k == 0 || *k > oracles.len() as u32 {
                 return Err(Error::InvalidParameters);
             }
@@ -542,7 +538,11 @@ if config.randomness_source == RandomnessSource::External {
         }
 
         if config.randomness_source != RandomnessSource::External
-            && config.randomness_source != RandomnessSource::Quorum { k: 1, oracles: Vec::new(&env) }
+            && config.randomness_source
+                != RandomnessSource::Quorum(QuorumConfig {
+                    k: 1,
+                    oracles: Vec::new(&env),
+                })
             && config.oracle_address.is_some()
         {
             return Err(Error::InvalidParameters);
@@ -1082,7 +1082,7 @@ if config.randomness_source == RandomnessSource::External {
     /// Accept a seed from a single oracle in a k-of-n Quorum configuration.
     ///
     /// The caller must be one of the registered oracles in the raffle's
-    /// `RandomnessSource::Quorum { oracles }` list.  Each oracle may submit at
+    /// `RandomnessSource::Quorum` list.  Each oracle may submit at
     /// most once.  Once the k-th valid submission is received, the seeds are
     /// aggregated via `aggregate_quorum_seeds` and the raffle is finalized.
     pub fn provide_quorum_randomness(
@@ -1118,7 +1118,7 @@ if config.randomness_source == RandomnessSource::External {
 
         // Extract the oracle list from the Quorum config.
         let (k, oracles) = match &raffle.randomness_source {
-            RandomnessSource::Quorum { k, oracles } => (*k, oracles.clone()),
+            RandomnessSource::Quorum(QuorumConfig { k, oracles }) => (*k, oracles.clone()),
             _ => return Err(Error::InvalidParameters),
         };
 
