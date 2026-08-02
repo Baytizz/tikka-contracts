@@ -58,19 +58,29 @@ pub enum FailureReason {
     MinTicketsNotMet = 1,
 }
 
+/// Configuration for the [`RandomnessSource::Quorum`] randomness mode.
+#[derive(Clone, PartialEq, Eq, Debug)]
+#[contracttype]
+pub struct QuorumConfig {
+    /// Number of oracle submissions required to reach quorum.
+    pub k: u32,
+    /// Ordered list of registered oracle addresses.
+    pub oracles: Vec<soroban_sdk::Address>,
+}
+
 /// Source used to generate randomness for winner selection.
 #[derive(Clone, PartialEq, Eq, Debug)]
 #[contracttype]
 pub enum RandomnessSource {
     /// Internal pseudo-randomness generated on-chain.
-    Internal = 0,
+    Internal,
     /// External oracle-provided randomness (single oracle).
-    External = 1,
+    External,
     /// Commit-reveal based randomness source.
-    CommitReveal = 2,
+    CommitReveal,
     /// K-of-N quorum of oracles: aggregate seeds from at least `k` of `n`
     /// registered oracles before finalizing.  Eliminates single-oracle trust.
-    Quorum { k: u32, oracles: Vec<soroban_sdk::Address> },
+    Quorum(QuorumConfig),
 }
 
 /// Type/classification of randomness mechanism requested or received.
@@ -178,7 +188,7 @@ pub struct RaffleConfig {
     pub nft_contract: Option<Address>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 #[contracttype]
 pub struct TicketBundle {
     pub quantity: u32,
@@ -203,7 +213,7 @@ impl RaffleConfig {
 /// indexing. `ticket_number` is the human-facing number exposed in UX and
 /// refund events. In the current contract implementation, every ticket is
 /// created with `ticket_number == id`, and that relationship is pinned by tests.
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 #[contracttype]
 pub struct Ticket {
     /// Monotonic ticket identifier scoped to a raffle.
@@ -281,7 +291,7 @@ pub struct PageResultTickets {
     pub has_more: bool,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 #[contracttype]
 pub enum ConfigKey {
     Treasury,

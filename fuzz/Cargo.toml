@@ -31,11 +31,18 @@ name = "fuzz_refund_cancel"
 path = "fuzz_targets/fuzz_refund_cancel.rs"
 test = false
 
+[[bin]]
+name = "fuzz_commit_reveal"
+path = "fuzz_targets/fuzz_commit_reveal.rs"
+test = false
+
 [dependencies]
 # libfuzzer-sys wires rust code to LLVM libFuzzer
 libfuzzer-sys = "0.4"
 # Derives arbitrary byte→type conversion for fuzzer inputs
 arbitrary     = { version = "1", features = ["derive"] }
+# Pure-Rust sha256 for the commit-reveal preimage/seed model
+sha2          = "0.10"
 # Local contracts
 tikka-raffle-instance = { package = "raffle-instance", path = "../contracts/raffle-instance", features = ["std"] }
 

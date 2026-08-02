@@ -95,9 +95,8 @@ pub(crate) fn refund_prize(env: Env) -> Result<(), Error> {
     raffle.prize_deposited = false;
     write_raffle(&env, &raffle);
 
-    let tc = token::Client::new(&env, &raffle.payment_token);
-    let _ = tc.try_transfer(&env.current_contract_address(), &raffle.creator, &raffle.prize_amount).map_err(|_| Error::TokenTransferFailed)?;
-
+    let token_client = token::Client::new(&env, &raffle.payment_token);
+    token_client.try_transfer(&env.current_contract_address(), &raffle.creator, &raffle.prize_amount).map_err(|_| Error::TokenTransferFailed)?;
     PrizeRefunded { creator: raffle.creator.clone(), amount: raffle.prize_amount, token: raffle.payment_token.clone(), timestamp: env.ledger().timestamp() }.publish(&env);
     Ok(())
 }
@@ -113,9 +112,8 @@ pub(crate) fn refund_ticket(env: Env, ticket_id: u32) -> Result<i128, Error> {
     if env.storage().persistent().has(&DataKey::TicketRefunded(ticket_id)) { return Err(Error::PrizeAlreadyClaimed); }
     env.storage().persistent().set(&DataKey::TicketRefunded(ticket_id), &true);
 
-    let tc = token::Client::new(&env, &raffle.payment_token);
-    let _ = tc.try_transfer(&env.current_contract_address(), &ticket.payer, &raffle.ticket_price).map_err(|_| Error::TokenTransferFailed)?;
-
-    TicketRefunded { buyer: ticket.payer, ticket_number: ticket.ticket_number, amount: raffle.ticket_price, timestamp: env.ledger().timestamp() }.publish(&env);
+    let token_client = token::Client::new(&env, &raffle.payment_token);
+    token_client.try_transfer(&env.current_contract_address(), &ticket.owner, &raffle.ticket_price).map_err(|_| Error::TokenTransferFailed)?;
+    TicketRefunded { buyer: ticket.owner, ticket_number: ticket.ticket_number, amount: raffle.ticket_price, timestamp: env.ledger().timestamp() }.publish(&env);
     Ok(raffle.ticket_price)
 }
