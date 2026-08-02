@@ -11,7 +11,7 @@
     "format:check": "prettier --check \"src/**/*.{ts,md}\" \"*.md\""
   },
   "dependencies": {
-    "@stellar/stellar-sdk": "^12.1.0",
+    "@stellar/stellar-sdk": "^14.6.1",
     "dotenv": "^16.4.5"
   },
   "devDependencies": {

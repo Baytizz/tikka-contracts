@@ -64,10 +64,26 @@ Register a new oracle public key on-chain via the raffle admin/oracle update flo
 - **`TxSubmitterService` (`src/tx/tx-submitter.service.ts`)**: submits `provide_randomness` transactions to Soroban RPC.
 - **`EventListenerService` (`src/listener/event-listener.service.ts`)**: polls `RandomnessRequested` contract events and enqueues work for this oracle.
 
+## Dependency Policy
+
+### `@stellar/stellar-sdk` ↔ Soroban Protocol Version Alignment
+
+The `@stellar/stellar-sdk` major version must match the Soroban protocol version used by the contracts:
+
+| Soroban Protocol | `@stellar/stellar-sdk` | Stellar CLI |
+|------------------|------------------------|-------------|
+| 23               | 14.x                   | 23.x        |
+
+When the protocol upgrades (e.g., Protocol 24), the SDK major must be bumped to the corresponding major (15.x) before deployment. Dependabot PRs that bump the SDK major version must be reviewed against this policy to confirm alignment with the target protocol version.
+
+The workspace `Cargo.toml` pins `soroban-sdk = "23"` and the README mandates Stellar CLI v23.x; the JS SDK major must stay in sync.
+
 ## Testing
 
 ```sh
 cd oracle
+nvm use
+npm ci
 npm test
 ```
 

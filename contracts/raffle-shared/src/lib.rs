@@ -2,7 +2,10 @@
 #![cfg_attr(not(test), deny(clippy::unwrap_used))]
 
 pub mod constants;
+pub mod events;
 
+#[cfg(test)]
+mod nft_mint_test;
 use soroban_sdk::{contracttype, Address, BytesN, String, Vec};
 
 /// Lifecycle state of a raffle instance.
@@ -55,16 +58,29 @@ pub enum FailureReason {
     MinTicketsNotMet = 1,
 }
 
+/// Configuration for the [`RandomnessSource::Quorum`] randomness mode.
+#[derive(Clone, PartialEq, Eq, Debug)]
+#[contracttype]
+pub struct QuorumConfig {
+    /// Number of oracle submissions required to reach quorum.
+    pub k: u32,
+    /// Ordered list of registered oracle addresses.
+    pub oracles: Vec<soroban_sdk::Address>,
+}
+
 /// Source used to generate randomness for winner selection.
 #[derive(Clone, PartialEq, Eq, Debug)]
 #[contracttype]
 pub enum RandomnessSource {
     /// Internal pseudo-randomness generated on-chain.
-    Internal = 0,
-    /// External oracle-provided randomness.
-    External = 1,
+    Internal,
+    /// External oracle-provided randomness (single oracle).
+    External,
     /// Commit-reveal based randomness source.
-    CommitReveal = 2,
+    CommitReveal,
+    /// K-of-N quorum of oracles: aggregate seeds from at least `k` of `n`
+    /// registered oracles before finalizing.  Eliminates single-oracle trust.
+    Quorum(QuorumConfig),
 }
 
 /// Type/classification of randomness mechanism requested or received.
@@ -101,7 +117,7 @@ pub struct RecurringRaffleConfig {
 ///
 /// Values are validated by contract initialization before the raffle becomes
 /// active and represent the complete raffle policy surface.
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 #[contracttype]
 pub struct RaffleConfig {
     /// Human-readable raffle description.
@@ -115,6 +131,9 @@ pub struct RaffleConfig {
     /// Maximum tickets a single address may purchase per transaction.
     /// Zero is invalid and rejected during initialization with `Error::InvalidParameters` (must be in 1..=max_tickets).
     pub max_tickets_per_tx: u32,
+    /// Maximum total tickets a single address may own (0 = unlimited).
+    /// When set, must be <= max_tickets. Supersedes allow_multiple.
+    pub max_tickets_per_address: u32,
     /// Minimum number of tickets required for a successful draw.
     pub min_tickets: u32,
     /// Whether one address may own multiple tickets.
@@ -144,11 +163,11 @@ pub struct RaffleConfig {
     /// SHA-256 hash of immutable off-chain metadata content.
     pub metadata_hash: BytesN<32>,
     /// Seconds after finalization before winners may claim.
-    /// Must be in [0, 604800] (0 to 7 days). Defaults to 3600 if zero.
-    pub claim_lockup_seconds: u64,
+    /// Must be in [0, 604800] (0 to 7 days). Defaults to 3600 (1 hour) if not provided (None).
+    pub claim_lockup_seconds: Option<u64>,
     /// Swap deadline window in seconds (added to current timestamp for token swaps).
-    /// Defaults to 300 (5 minutes) if zero. Configurable to handle network congestion.
-    pub swap_deadline_seconds: u64,
+    /// Defaults to 300 (5 minutes) if not provided (None). Configurable to handle network congestion.
+    pub swap_deadline_seconds: Option<u64>,
     /// The percentage of max_tickets covered by the early bird discount (0 to disable).
     pub early_bird_ticket_percentage: u32,
     /// The discount amount specified in basis points.
@@ -169,7 +188,7 @@ pub struct RaffleConfig {
     pub nft_contract: Option<Address>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 #[contracttype]
 pub struct TicketBundle {
     pub quantity: u32,
@@ -178,11 +197,11 @@ pub struct TicketBundle {
 
 impl RaffleConfig {
     pub fn resolve_defaults(mut self) -> Self {
-        if self.claim_lockup_seconds == 0 {
-            self.claim_lockup_seconds = DEFAULT_CLAIM_LOCKUP_SECONDS;
+        if self.claim_lockup_seconds.is_none() {
+            self.claim_lockup_seconds = Some(DEFAULT_CLAIM_LOCKUP_SECONDS);
         }
-        if self.swap_deadline_seconds == 0 {
-            self.swap_deadline_seconds = DEFAULT_SWAP_DEADLINE_SECONDS;
+        if self.swap_deadline_seconds.is_none() {
+            self.swap_deadline_seconds = Some(DEFAULT_SWAP_DEADLINE_SECONDS);
         }
         self
     }
@@ -194,7 +213,7 @@ impl RaffleConfig {
 /// indexing. `ticket_number` is the human-facing number exposed in UX and
 /// refund events. In the current contract implementation, every ticket is
 /// created with `ticket_number == id`, and that relationship is pinned by tests.
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 #[contracttype]
 pub struct Ticket {
     /// Monotonic ticket identifier scoped to a raffle.
@@ -206,6 +225,8 @@ pub struct Ticket {
     /// Human-facing ticket number used in draw/result UX.
     /// It is kept equal to `id` for the current contract implementation.
     pub ticket_number: u32,
+    /// The address that paid for this ticket.
+    pub payer: Address,
 }
 
 impl Ticket {
@@ -217,7 +238,7 @@ impl Ticket {
 }
 
 /// Audit data proving how a draw outcome was derived.
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 #[contracttype]
 pub struct FairnessData {
     /// Seed value used to derive final winner indices.
@@ -237,7 +258,7 @@ pub struct FairnessData {
 }
 
 /// Generic pagination request for list queries.
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 #[contracttype]
 pub struct PaginationParams {
     /// Maximum number of items requested by caller.
@@ -247,7 +268,7 @@ pub struct PaginationParams {
 }
 
 /// Paginated raffle address query result.
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 #[contracttype]
 pub struct PageResultRaffles {
     /// Returned raffle addresses for the current page.
@@ -259,7 +280,7 @@ pub struct PageResultRaffles {
 }
 
 /// Paginated ticket query result.
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 #[contracttype]
 pub struct PageResultTickets {
     /// Returned tickets for the current page.
@@ -270,7 +291,7 @@ pub struct PageResultTickets {
     pub has_more: bool,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 #[contracttype]
 pub enum ConfigKey {
     Treasury,
@@ -279,7 +300,7 @@ pub enum ConfigKey {
 }
 
 /// Administrative operations that can be timelocked or proposed.
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 #[contracttype]
 pub enum AdminOp {
     /// Update a protocol configuration address.
@@ -288,14 +309,17 @@ pub enum AdminOp {
     SetProtocolFeeBP(u32),
     /// Rotate target contract WASM hash for upgrades.
     UpdateWasmHash(BytesN<32>),
+    /// Add an oracle address to the factory's approved-oracle allowlist.
+    ApproveOracle(Address),
+    /// Remove an oracle address from the factory's approved-oracle allowlist.
+    RemoveOracle(Address),
 }
 
-/// Default page size when callers request zero items.
-pub const DEFAULT_PAGE_LIMIT: u32 = 100;
-/// Hard maximum page size accepted by query helpers.
-pub const MAX_PAGE_LIMIT: u32 = 200;
-pub const DEFAULT_CLAIM_LOCKUP_SECONDS: u64 = 3_600;
-pub const DEFAULT_SWAP_DEADLINE_SECONDS: u64 = 300;
+// Re-export constants from the single source of truth
+pub use constants::{
+    DEFAULT_CLAIM_LOCKUP_SECONDS, DEFAULT_PAGE_LIMIT, DEFAULT_SWAP_DEADLINE_SECONDS,
+    MAX_PAGE_LIMIT,
+};
 
 /// Returns a safe pagination limit clamped to supported bounds.
 pub fn effective_limit(requested: u32) -> u32 {
@@ -309,7 +333,7 @@ pub fn effective_limit(requested: u32) -> u32 {
 }
 
 /// Oracle randomness request payload sent to an oracle contract.
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 #[contracttype]
 pub struct RandomnessRequest {
     /// Target raffle contract identifier.
@@ -348,6 +372,19 @@ pub trait RandomnessReceiverTrait {
 /// * `ticket_id`  – the unique ticket ID within this raffle (1-indexed, u32).
 /// * `raffle_id`  – the raffle instance contract address, used as a namespace
 ///   so a single NFT contract can serve multiple raffles.
+///
+/// Failure semantics
+/// ------------------
+/// Callers are expected to invoke this hook via the generated
+/// `NftTicketClient::mint` (not `try_mint`). A panic in the NFT contract's
+/// `mint` therefore propagates and aborts the calling transaction — the
+/// ticket purchase and the NFT mint succeed or roll back atomically. This is
+/// a deliberate choice: it keeps ticket state and NFT ownership from ever
+/// diverging, at the cost of ticket sales being unavailable if the
+/// configured NFT contract is broken. A caller that instead wants purchases
+/// to survive a broken NFT contract must explicitly use `try_mint` and
+/// handle the `Result`; see the failure-path tests in `nft_mint_test` for
+/// both behaviors pinned side by side.
 #[soroban_sdk::contractclient(name = "NftTicketClient")]
 pub trait NftTicketTrait {
     fn mint(env: soroban_sdk::Env, recipient: Address, ticket_id: u32, raffle_id: Address);
@@ -389,6 +426,93 @@ macro_rules! impl_require_not_paused {
 }
 
 #[cfg(test)]
+mod test {
+    use super::*;
+    use soroban_sdk::{Env, String, Address, BytesN, Vec};
+    fn default_config(env: &Env) -> RaffleConfig {
+        let payment_token = Address::from_string(&String::from_str(env, "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4"));
+        RaffleConfig {
+            description: String::from_str(env, "Test"),
+            end_time: 0,
+            no_deadline: true,
+            max_tickets: 10,
+            max_tickets_per_tx: 10,
+            min_tickets: 1,
+            allow_multiple: true,
+            ticket_price: 10_000,
+            payment_token,
+            prize_amount: 10_000,
+            prizes: Vec::new(env),
+            randomness_source: RandomnessSource::Internal,
+            oracle_address: None,
+            protocol_fee_bp: 0,
+            treasury_address: None,
+            swap_router: None,
+            tikka_token: None,
+            metadata_hash: BytesN::from_array(env, &[0; 32]),
+            claim_lockup_seconds: None,
+            swap_deadline_seconds: None,
+            early_bird_ticket_percentage: 0,
+            early_bird_discount_bp: 0,
+            category: None,
+        }
+    }
+
+    #[test]
+    fn test_resolve_defaults_none_inputs() {
+        let env = Env::default();
+        let mut config = default_config(&env);
+        config.claim_lockup_seconds = None;
+        config.swap_deadline_seconds = None;
+
+        let resolved = config.resolve_defaults();
+        assert_eq!(resolved.claim_lockup_seconds, Some(DEFAULT_CLAIM_LOCKUP_SECONDS));
+        assert_eq!(resolved.swap_deadline_seconds, Some(DEFAULT_SWAP_DEADLINE_SECONDS));
+    }
+
+    #[test]
+    fn test_resolve_defaults_zero_inputs() {
+        let env = Env::default();
+        let mut config = default_config(&env);
+        config.claim_lockup_seconds = Some(0);
+        config.swap_deadline_seconds = Some(0);
+
+        let resolved = config.resolve_defaults();
+        assert_eq!(resolved.claim_lockup_seconds, Some(0));
+        assert_eq!(resolved.swap_deadline_seconds, Some(0));
+    }
+
+    #[test]
+    fn test_resolve_defaults_nonzero_inputs() {
+        let env = Env::default();
+        let mut config = default_config(&env);
+        config.claim_lockup_seconds = Some(42);
+        config.swap_deadline_seconds = Some(99);
+
+        let resolved = config.resolve_defaults();
+        assert_eq!(resolved.claim_lockup_seconds, Some(42));
+        assert_eq!(resolved.swap_deadline_seconds, Some(99));
+    }
+
+    #[test]
+    fn test_resolve_defaults_independent_fields() {
+        let env = Env::default();
+
+        // Lockup is Some(0), swap is None
+        let mut config1 = default_config(&env);
+        config1.claim_lockup_seconds = Some(0);
+        config1.swap_deadline_seconds = None;
+        let resolved1 = config1.resolve_defaults();
+        assert_eq!(resolved1.claim_lockup_seconds, Some(0));
+        assert_eq!(resolved1.swap_deadline_seconds, Some(DEFAULT_SWAP_DEADLINE_SECONDS));
+
+        // Lockup is None, swap is Some(0)
+        let mut config2 = default_config(&env);
+        config2.claim_lockup_seconds = None;
+        config2.swap_deadline_seconds = Some(0);
+        let resolved2 = config2.resolve_defaults();
+        assert_eq!(resolved2.claim_lockup_seconds, Some(DEFAULT_CLAIM_LOCKUP_SECONDS));
+        assert_eq!(resolved2.swap_deadline_seconds, Some(0));
 mod effective_limit_tests {
     use super::{effective_limit, DEFAULT_PAGE_LIMIT, MAX_PAGE_LIMIT};
 

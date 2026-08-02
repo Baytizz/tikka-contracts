@@ -2,6 +2,8 @@
 
 ![Tikka Logo](docs/assets/tikka-logo.svg)
 
+[![codecov](https://codecov.io/gh/OWNER/tikka-contracts/branch/master/graph/badge.svg)](https://codecov.io/gh/OWNER/tikka-contracts)
+
 ## 🎯 What is Tikka?
 
 Tikka is a decentralized raffle platform built on Stellar using Soroban smart contracts. Users can create raffles, sell tickets priced in Stellar assets, and distribute prizes securely on-chain.
@@ -14,6 +16,13 @@ Tikka is a decentralized raffle platform built on Stellar using Soroban smart co
     `timestamp + sequence + raffle_id + tickets_sold`
 - Deterministic replay for identical raffle and ledger inputs
 - Intended for low-stakes raffles; high-stakes draws should use oracle randomness
+
+### **👤 Creator Profiles**
+
+- **Display Names**: Creators can set on-chain display names for brand identity
+- **Verified Badges**: Admin-granted verified status for trusted organizers
+- **Track Record**: Automatic counting of raffles created per organizer
+- **Trust Signals**: Frontends can display creator reputation without off-chain databases
 
 ### **💰 Token-Based Tickets and Prizes**
 
@@ -184,6 +193,32 @@ pub struct RaffleConfig {
 
 ```rust
 pub struct Raffle {
+    pub creator: Address,
+    pub payment_token: Address,
+    pub treasury_address: Option<Address>,
+    pub description: String,
+    pub end_time: u64,
+    pub max_tickets: u32,
+    pub min_tickets: u32,
+    pub allow_multiple: bool,
+    pub ticket_price: i128,
+    pub prize_amount: i128,
+    pub prizes: Vec<u32>,
+    pub tickets_sold: u32,
+    pub status: RaffleStatus,
+    pub prize_deposited: bool,
+    pub winners: Vec<Address>,
+    pub claimed_winners: Vec<bool>,
+    pub randomness_source: RandomnessSource,
+    pub oracle_address: Option<Address>,
+    pub protocol_fee_bp: u32,
+    pub treasury_address: Option<Address>,
+    pub swap_router: Option<Address>,
+    pub tikka_token: Option<Address>,
+    pub finalized_at: Option<u64>,
+    pub winner_ticket_id: Option<u32>,
+    pub claim_lockup_seconds: Option<u64>,
+    pub swap_deadline_seconds: Option<u64>,
     // ...all RaffleConfig fields (resolved via `resolve_defaults`), plus:
     pub creator: Address,               // Address that created and configured the raffle.
     pub prize_token: Address,           // Token used for prize deposit and claims; defaults to `payment_token`.
@@ -321,22 +356,28 @@ Then add the `S...` secret as a repository secret named `TESTNET_SECRET_KEY` in 
 ### **Run Tests**
 
 ```bash
-cargo test -p raffle-factory
-cargo test -p raffle-instance
-cargo test -p raffle-shared
+make test
 ```
 
 ### **Build the Contract**
 
 ```bash
-cargo build -p raffle-factory
-cargo build -p raffle-instance
-cargo build -p raffle-shared
+make build
 ```
 
 ## 🛠️ Development
 
-For local setup, build, and test workflows, see `DEVELOPMENT.md`.
+The repo provides a top-level `Makefile` for local development. Common targets:
+
+```bash
+make build       # Build all contracts
+make test        # Run all tests
+make lint        # Format + clippy
+make fuzz        # Run fuzz targets
+make all         # lint + test + build (CI-like)
+```
+
+For additional setup details and build prerequisites, see `DEVELOPMENT.md`.
 
 ## 🤝 Contributing
 
@@ -365,9 +406,12 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ## 🆘 Support
 
-- **Documentation**: Check our guides
-- **Issues**: Report bugs and feature requests
-- **Community**: Join our Discord for discussions
+For questions, bug reports, and feature requests, see [`SUPPORT.md`](SUPPORT.md).
+
+- **Questions & How-Tos**: [GitHub Discussions](https://github.com/stellar/tikka-contracts/discussions)
+- **Report Bugs**: [GitHub Issues](https://github.com/stellar/tikka-contracts/issues)
+- **Request Features**: [GitHub Issues](https://github.com/stellar/tikka-contracts/issues)
+- **Documentation**: Check [`docs/README.md`](docs/README.md) and [`docs/FAQ.md`](docs/FAQ.md)
 
 ---
 

@@ -53,6 +53,11 @@ jobs:
         done
         exit $FAILED
 
+    - name: Check Error Docs Sync
+      run: |
+        python3 scripts/generate_error_docs.py
+        git diff --exit-code docs/ERRORS.md || (echo "ERROR: docs/ERRORS.md is out of sync with Error enum in contracts/raffle-instance/src/lib.rs. Run 'python scripts/generate_error_docs.py' to update." && exit 1)
+
     - name: Run Linter (Clippy)
       run: cargo clippy --all-targets --all-features -- -D warnings
 
@@ -77,8 +82,8 @@ jobs:
       run:
         working-directory: oracle
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: '20'
           cache: 'npm'
