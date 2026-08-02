@@ -1740,10 +1740,12 @@ if config.randomness_source == RandomnessSource::External {
 
             let refund_key = (DataKey::Ticket(ticket_id), Symbol::new(&env, "refunded"));
             if env.storage().persistent().has(&refund_key) {
+            if env.storage().persistent().has(&DataKey::TicketRefunded(ticket_id)) {
                 continue;
             }
 
             env.storage().persistent().set(&refund_key, &true);
+            env.storage().persistent().set(&DataKey::TicketRefunded(ticket_id), &true);
             total_refund += raffle.ticket_price;
 
             crate::events::TicketRefunded {
