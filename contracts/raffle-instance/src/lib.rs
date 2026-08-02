@@ -616,6 +616,10 @@ if config.randomness_source == RandomnessSource::External {
         write_raffle(&env, &raffle);
         env.storage().instance().set(&DataKey::Factory, &factory);
         env.storage().instance().set(&DataKey::Admin, &admin);
+        // Store metadata hash for attestation verification
+        env.storage()
+            .persistent()
+            .set(&DataKey::MetadataHash, &config.metadata_hash);
 
         RaffleCreated {
             raffle_id: env.current_contract_address(),
@@ -1761,6 +1765,23 @@ if config.randomness_source == RandomnessSource::External {
 
     pub fn get_fairness_data(env: Env) -> Result<FairnessData, Error> {
         self::views::get_fairness_data(env)
+    }
+
+    /// Return a complete attestation package for third-party draw verification.
+    ///
+    /// Combines fairness data, metadata hash, winner addresses, winning ticket IDs,
+    /// randomness source, and a hash of the effective raffle configuration into a
+    /// single response. A verifier needs only this one call to obtain everything
+    /// required to independently re-derive the winners.
+    ///
+    /// Only available in `Finalized` or `Claimed` states; returns `InvalidStatus`
+    /// otherwise.
+    ///
+    /// See [`docs/RANDOMNESS.md`] for the verification procedure.
+    pub fn get_draw_attestation(
+        env: Env,
+    ) -> Result<attestation::DrawAttestation, Error> {
+        attestation::get_draw_attestation(&env)
     }
 
     /// Return all ticket IDs owned by `owner`.

@@ -218,3 +218,255 @@ Also consider:
 - [STORAGE.md](STORAGE.md) — randomness-related keys and tiers  
 - [ARCHITECTURE.md](ARCHITECTURE.md) — factory → instance → oracle flow  
 - [EVENTS.md](EVENTS.md) — `RandomnessRequested`, `RandomnessReceived`, fallback events  
+
+---
+
+## Independent Draw Verification
+
+Third parties can verify that a finalized raffle draw was performed correctly without trusting off-chain indexers or making multiple contract queries. The contract provides a single-call attestation interface designed for independent auditors.
+
+### Quick Start: Verify a Draw
+
+```rust
+// 1. Query the complete attestation package
+let attestation = contract.get_draw_attestation(&env)?;
+
+// 2. Verify configuration integrity
+let recomputed_config_hash = hash_config(&attestation);
+assert_eq!(recomputed_config_hash, attestation.config_hash);
+
+// 3. Reproduce winner selection
+let reproduced_winners = select_winners(
+    attestation.fairness_data.seed,
+    attestation.fairness_data.ticket_ids,
+    attestation.prize_distribution_bp.len()
+);
+
+// 4. Compare with recorded winners
+assert_eq!(reproduced_winners, attestation.winning_ticket_ids);
+assert_eq!(resolve_owners(reproduced_winners), attestation.winner_addresses);
+```
+
+### What `get_draw_attestation()` Returns
+
+The `DrawAttestation` struct combines everything needed for verification:
+
+```rust
+pub struct DrawAttestation {
+    /// Seed, ticket IDs, winning indices, timestamp, sequence
+    pub fairness_data: FairnessData,
+    
+    /// SHA-256 hash of off-chain metadata
+    pub metadata_hash: BytesN<32>,
+    
+    /// Winner addresses in prize-tier order
+    pub winner_addresses: Vec<Address>,
+    
+    /// Winning ticket IDs (1-indexed) in tier order
+    pub winning_ticket_ids: Vec<u32>,
+    
+    /// Randomness source (Internal, External, CommitReveal)
+    pub randomness_source: RandomnessSource,
+    
+    /// SHA-256 hash of effective config at draw time
+    pub config_hash: BytesN<32>,
+    
+    /// Total tickets sold
+    pub total_tickets_sold: u32,
+    
+    /// Prize distribution basis points
+    pub prize_distribution_bp: Vec<u32>,
+    
+    /// Total prize amount
+    pub prize_amount: i128,
+    
+    /// Individual ticket price
+    pub ticket_price: i128,
+}
+```
+
+### Availability
+
+- **Status requirement**: Only callable when raffle is `Finalized` or `Claimed`
+- **Error on early call**: Returns `Error::InvalidStatus` (23) if draw not complete
+- **Storage location**: Fairness metadata stored in persistent storage (`DataKey::RandomnessSeed`) so it survives ledger-entry expiry
+
+### Verification Procedure
+
+A complete verification involves four checks:
+
+#### 1. Configuration Hash Integrity
+
+Verify the raffle parameters haven't been tampered with:
+
+```rust
+// Recompute configuration hash
+let config_xdr = (
+    attestation.max_tickets,
+    attestation.ticket_price,
+    attestation.prize_amount,
+    attestation.prize_distribution_bp.to_xdr(env),
+    attestation.randomness_source.to_xdr(env),
+    // ... other config fields
+).to_xdr(env);
+
+let computed_hash = env.crypto().sha256(&config_xdr);
+assert_eq!(computed_hash, attestation.config_hash);
+```
+
+#### 2. Metadata Hash Check
+
+Verify off-chain metadata hasn't changed:
+
+```rust
+// Fetch claimed metadata from IPFS/Arweave/etc
+let metadata_content = fetch_metadata(raffle_id);
+let computed_metadata_hash = sha256(metadata_content);
+assert_eq!(computed_metadata_hash, attestation.metadata_hash);
+```
+
+#### 3. Winner Selection Reproduction
+
+Independently reproduce the winner selection using the recorded seed:
+
+```rust
+use rejection_sampling::*;
+
+let seed = attestation.fairness_data.seed;
+let ticket_ids = attestation.fairness_data.ticket_ids;
+let num_winners = attestation.prize_distribution_bp.len();
+
+// Rejection sampling (same algorithm as OracleSeedWinnerSelection)
+let mut rng = initialize_rng(seed);
+let mut winners = Vec::new();
+let mut used = HashSet::new();
+
+while winners.len() < num_winners {
+    let candidate = uniform_u64_in_range(&mut rng, 0, ticket_ids.len());
+    if !used.contains(&candidate) {
+        winners.push(ticket_ids[candidate]);
+        used.insert(candidate);
+    }
+}
+
+assert_eq!(winners, attestation.winning_ticket_ids);
+```
+
+The key algorithm is rejection sampling without modulo bias:
+
+- Generate uniform random `u64` in range `[0, n)`
+- Track used indices in a set
+- Retry on collision until `num_winners` distinct indices selected
+
+This matches `OracleSeedWinnerSelection::select_winner_indices` in `randomness.rs`.
+
+#### 4. Winner-to-Owner Resolution
+
+Verify that winning ticket IDs resolve to the claimed winner addresses:
+
+```rust
+for (i, ticket_id) in attestation.winning_ticket_ids.iter().enumerate() {
+    let owner = contract.get_ticket(ticket_id)?.owner;
+    assert_eq!(owner, attestation.winner_addresses[i]);
+}
+```
+
+This requires either:
+- Access to on-chain ticket records (if still in storage before wipe)
+- Trusted off-chain ticket ownership index
+- Reconstruction from `TicketPurchased` events
+
+### Randomness Source Considerations
+
+Verification strength depends on the randomness source:
+
+| Source | Verification confirms | External trust needed |
+|---|---|---|
+| **External (VRF)** | Ed25519 signature over `(contract, request_id, seed)` binds oracle to unpredictable commitment | Oracle didn't collude with finalize timing |
+| **CommitReveal** | Seed derived from ticket-holder commits; verify commits via `CommitEntry(ticket_id)` storage | Enough participants committed unpredictable secrets |
+| **Internal** | Deterministic from ledger state; any validator could predict at finalize time | Finalizer timing wasn't adversarially chosen |
+| **Fallback** | Same as Internal (used when External oracle timed out) | Same trust model as Internal |
+
+For External/VRF draws, verify the Ed25519 signature:
+
+```rust
+// Message format: XDR(contract_address, request_id, random_seed)
+let message = build_vrf_proof_message(
+    raffle_contract,
+    attestation.fairness_data.seed, // request_id stored in FairnessMetadata
+    attestation.fairness_data.seed
+);
+
+env.crypto().ed25519_verify(
+    &oracle_public_key,
+    &message,
+    &stored_proof // from provide_randomness callback
+);
+```
+
+### Example: Complete Audit Script
+
+```rust
+fn audit_raffle_draw(env: &Env, raffle_contract: &Address) -> Result<AuditReport, Error> {
+    // 1. Fetch attestation
+    let attestation = contract_client.get_draw_attestation(env)?;
+    
+    // 2. Verify config hash
+    let config_valid = verify_config_hash(&attestation);
+    
+    // 3. Verify metadata hash
+    let metadata_valid = verify_metadata_hash(&attestation)?;
+    
+    // 4. Reproduce winner selection
+    let reproduced = reproduce_winners(
+        attestation.fairness_data.seed,
+        attestation.fairness_data.ticket_ids,
+        attestation.prize_distribution_bp.len()
+    );
+    
+    let winners_match = reproduced == attestation.winning_ticket_ids;
+    
+    // 5. Check winner ownership (if tickets still in storage)
+    let owners_match = verify_winner_ownership(env, raffle_contract, &attestation)?;
+    
+    // 6. Verify VRF proof if External source
+    let vrf_valid = if attestation.randomness_source == RandomnessSource::External {
+        verify_vrf_proof(env, &attestation)?
+    } else {
+        true // N/A for Internal/CommitReveal
+    };
+    
+    Ok(AuditReport {
+        config_hash_valid: config_valid,
+        metadata_hash_valid,
+        winner_selection_valid: winners_match,
+        ownership_valid: owners_match,
+        vrf_signature_valid: vrf_valid,
+        overall_valid: config_valid && metadata_valid && winners_match && owners_match && vrf_valid,
+    })
+}
+```
+
+### When to Verify
+
+- **Before prize claims**: Confirm fairness before winners withdraw
+- **Post-mortem audits**: Historical verification after raffle completion
+- **Continuous monitoring**: Automated verification by watchdog services
+- **Dispute resolution**: Third-party arbitration when fairness is challenged
+
+### Limitations
+
+- **Ticket ownership resolution**: If `wipe_storage` has been called, ticket records are deleted. Verifiers must use off-chain ticket indexes or event logs.
+- **CommitReveal entropy**: Verification confirms the seed was derived from commits, but not that commits were unpredictable (requires off-chain commit/reveal tracking).
+- **Internal/Fallback bias**: Verification confirms correct execution but cannot prevent validator/finalizer timing bias.
+
+### Code References
+
+| Component | Location |
+|---|---|
+| Attestation struct | `contracts/raffle-instance/src/attestation.rs` |
+| Public function | `contracts/raffle-instance/src/lib.rs` → `get_draw_attestation` |
+| Winner selection algorithm | `contracts/raffle-instance/src/randomness.rs` → `OracleSeedWinnerSelection` |
+| Fairness metadata storage | `contracts/raffle-instance/src/helpers.rs` → `do_finalize_with_seed` |
+| VRF proof verification | `contracts/raffle-instance/src/draw.rs` → `provide_randomness` |
+
