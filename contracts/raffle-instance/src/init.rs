@@ -149,7 +149,7 @@ pub(crate) fn init(
         return Err(Error::InvalidParameters);
     }
     if config.protocol_fee_bp > 0 && config.treasury_address.is_none() {
-        return Err(Error::TreasuryNotSet);
+        return Err(Error::InvalidParameters);
     }
     if config.randomness_source == RandomnessSource::External {
         match &config.oracle_address {

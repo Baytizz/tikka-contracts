@@ -41,7 +41,7 @@ describe('EventListenerService', () => {
     const service = new EventListenerService(
       new RequestQueue(),
       oracleAddress,
-      new MemoryLedgerCheckpointStore(),
+      new MemoryLedgerCheckpointStore()
     );
 
     const parsed = service.parseRandomnessRequestedEvent(buildRandomnessRequestedEvent());
@@ -91,17 +91,19 @@ describe('EventListenerService', () => {
         sleep: async () => {
           service.stopListening();
         },
-      },
+      }
     );
 
     const otherOracle = Keypair.random().publicKey();
     const event = buildRandomnessRequestedEvent({ oracle: otherOracle });
-    (service as unknown as {
-      server: {
-        getLatestLedger: jest.Mock;
-        getEvents: jest.Mock;
-      };
-    }).server = {
+    (
+      service as unknown as {
+        server: {
+          getLatestLedger: jest.Mock;
+          getEvents: jest.Mock;
+        };
+      }
+    ).server = {
       getLatestLedger: jest.fn().mockResolvedValue({ sequence: 10 }),
       getEvents: jest.fn().mockResolvedValue({
         latestLedger: 11,
