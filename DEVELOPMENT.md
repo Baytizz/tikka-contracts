@@ -17,6 +17,113 @@ Welcome to the `tikka-contracts` development guide! This document covers setting
     cargo install --locked stellar-cli --features opt
     ```
 
+1. **Node.js 20+**: Required for the `oracle/` service and markdown linting.
+
+## 📋 Local Check Sequence
+
+Before opening a pull request, run the complete local check sequence to ensure your code matches CI enforcement.
+
+### Contracts (Rust)
+
+```bash
+# 1. Format all Rust code
+cargo fmt --all
+
+# 2. Lint code
+cargo clippy --all-targets --all-features
+
+# 3. Run all unit tests
+cargo test
+
+# 4. Build release artifacts
+cargo build --target wasm32-unknown-unknown --release
+```
+
+### Oracle Service (TypeScript/Node.js)
+
+```bash
+# 1. Format code
+cd oracle
+npm run format  # or prettier --write . (check package.json for actual script)
+
+# 2. Run linter
+npm run lint
+
+# 3. Run tests
+npm run test:run  # Use --run flag to avoid watch mode
+```
+
+### Documentation
+
+```bash
+# Format and lint all Markdown files
+npx markdownlint-cli2 "**/*.md"
+
+# Auto-fix fixable issues
+npx markdownlint-cli2 --fix "**/*.md"
+```
+
+**Expected result**: All commands complete without errors or warnings. If linting or tests fail locally, they will fail in CI.
+
+## 🌿 Branch Naming & PR Title Conventions
+
+Follow these conventions to keep the repository organized and CI workflows consistent.
+
+### Branch Naming
+
+Create feature branches with a clear prefix and descriptive name:
+
+```
+<type>/<short-description>
+```
+
+**Types:**
+- `feat/` — New feature or capability
+- `fix/` — Bug fix
+- `docs/` — Documentation only (no code changes)
+- `refactor/` — Code refactoring (no behavior change)
+- `test/` — Test improvements or new tests
+- `chore/` — Tooling, CI, dependencies (no code/docs changes)
+
+**Examples:**
+- `feat/multi-winner-raffles`
+- `fix/oracle-timeout-handling`
+- `docs/glossary-and-onboarding`
+- `test/fuzz-ticket-purchase`
+- `chore/upgrade-soroban-sdk`
+
+### PR Title Format
+
+Keep PR titles concise (under 70 characters) and descriptive:
+
+```
+<type>: <short summary>
+```
+
+**Examples:**
+- `feat: Add multi-winner raffle support`
+- `fix: Correct oracle randomness seed validation`
+- `docs: Add glossary and update onboarding guides`
+- `test: Improve fuzz test coverage for ticket purchase`
+
+### Editor Configuration
+
+To ensure consistent code formatting, your editor should automatically apply the project's conventions. The workspace provides:
+
+- **`.editorconfig`**: Universal editor settings (indentation, line endings, charset)
+  - Most editors auto-load this file; if yours doesn't, install an EditorConfig plugin
+- **`rustfmt.toml`**: Rust formatting configuration (run via `cargo fmt`)
+- **`Cargo.fmt`**: Implicit formatter that enforces rules defined in `rustfmt.toml`
+- **`.markdownlint.jsonc`**: Markdown linting rules (run via `npx markdownlint-cli2`)
+
+**Configure your editor to:**
+
+1. Load `.editorconfig` settings automatically
+2. Format on save (Rust via `cargo fmt`, Markdown via `markdownlint-cli2`, TypeScript via prettier)
+3. Show linting warnings inline
+
+This ensures your local formatting always matches CI expectations.
+
 ## 🏗 Build & Test
 
 ### Build the Contract
