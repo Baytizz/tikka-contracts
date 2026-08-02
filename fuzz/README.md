@@ -1,7 +1,8 @@
 # Raffle Fuzz Testing Suite
 
-Cargo-fuzz harness for issues #86 and #466 — fuzz targets covering `buy_ticket`,
-`finalize_raffle`, winner selection, and the refund/cancellation surface.
+Cargo-fuzz harness for issues #86, #466, and #632 — fuzz targets covering
+`buy_ticket`, `finalize_raffle`, winner selection, the refund/cancellation
+surface, and commit-reveal randomness sequencing.
 
 ---
 
@@ -23,6 +24,7 @@ Cargo-fuzz harness for issues #86 and #466 — fuzz targets covering `buy_ticket
 | `fuzz_finalize_raffle` | `finalize_raffle` + `provide_randomness` | Winner-index in-bounds invariant (internal & external randomness paths) |
 | `fuzz_winner_selection` | `OracleSeedWinnerSelection` | Index bounds, uniqueness, and termination of the rejection-sampling loop |
 | `fuzz_refund_cancel` | `refund_ticket` + `cancel_raffle` | Arbitrary interleavings of buys, cancels (creator/admin/unauthorized), and refunds; see invariant list below |
+| `fuzz_commit_reveal` | `submit_commit` + `finalize_raffle` (CommitReveal) | Adversarial sequencing of commits, honest & wrong-preimage reveals, replays, and out-of-window submissions; see invariant list below |
 
 ### `fuzz_refund_cancel` invariants
 
@@ -36,6 +38,24 @@ Cargo-fuzz harness for issues #86 and #466 — fuzz targets covering `buy_ticket
 | 6 | **Cancel is idempotent w.r.t. status** — re-cancelling returns `AlreadyCancelled`, state unchanged |
 | 7 | **Only authorised roles may cancel** — `Unauthorized` returns `NotAuthorized`, state unchanged |
 | 8 | **tickets_sold ≤ max_tickets** — buy cap is never breached |
+
+### `fuzz_commit_reveal` invariants
+
+The target models the CommitReveal path end-to-end: accepted commits are stored
+per ticket (`DataKey::CommitEntry(ticket_id)`), the draw seed is
+`u64::from_be_bytes(sha256(commit_1 ‖ … ‖ commit_n)[..8])` over the accepted
+commits in ticket order, and a zero-commit finalize falls back to a
+deterministic internal PRNG seed.
+
+| # | Invariant |
+|---|-----------|
+| 1 | **Only valid entropy influences the seed** — a rejected commit (out-of-window status, non-owner caller, or nonexistent ticket) never enters commit storage and never changes the draw seed |
+| 2 | **Determinism** — finalizing the same commit state (and ledger snapshot) always yields the same seed; recomputing from storage reproduces the recorded seed |
+| 3 | **No sequence panics** — every operation returns a `Result`; no input sequence triggers an index out-of-bounds, unwrap on `None`, or other panic |
+| 4 | **Out-of-window submissions are rejected** — commits after finalization/failure return `InvalidStatus` and leave commit state and seed untouched |
+| 5 | **Replays overwrite** — re-committing a ticket atomically replaces its hash; only the last accepted value counts, and a fresh commit invalidates any prior reveal |
+| 6 | **Wrong-preimage reveals are flagged invalid** — a reveal whose preimage does not hash to the committed value is recorded as `Invalid` |
+| 7 | **Seed reproducible from valid reveals** — once every committed ticket is honestly revealed, the seed recomputed from the revealed preimages matches the finalized seed |
 
 ---
 
@@ -58,6 +78,9 @@ cargo fuzz run fuzz_winner_selection -- -max_total_time=1800
 
 # Refund/cancel target — 30-minute run (issue #466)
 cargo fuzz run fuzz_refund_cancel -- -max_total_time=1800
+
+# Commit-reveal target — 30-minute run (issue #632)
+cargo fuzz run fuzz_commit_reveal -- -max_total_time=1800
 ```
 
 `-max_total_time=1800` instructs libFuzzer to stop after 1 800 s (30 min).
@@ -110,4 +133,5 @@ Commit this directory to seed future runs and prevent regression.
 - [x] Fuzz target for `finalize_raffle` (issue #86)
 - [x] Fuzz target for `winner_selection` (issue #86)
 - [x] Fuzz target for `refund_cancel` (issue #466)
+- [x] Fuzz target for `commit_reveal` (issue #632)
 - [ ] Fuzzer runs for at least 30 minutes without discovery of panics *(run in CI or locally)*
