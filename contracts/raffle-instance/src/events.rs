@@ -225,6 +225,16 @@ pub struct TokensRescued {
 
 #[derive(Clone)]
 #[contractevent]
+pub struct DustSwept {
+    pub swept_by: Address,
+    pub token: Address,
+    pub treasury: Address,
+    pub amount: i128,
+    pub timestamp: u64,
+}
+
+#[derive(Clone)]
+#[contractevent]
 pub struct OracleAddressUpdated {
     pub old_oracle: Option<Address>,
     pub new_oracle: Address,
