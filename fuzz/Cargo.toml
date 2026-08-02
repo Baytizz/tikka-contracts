@@ -26,6 +26,11 @@ name = "fuzz_winner_selection"
 path = "fuzz_targets/fuzz_winner_selection.rs"
 test = false
 
+[[bin]]
+name = "fuzz_refund_cancel"
+path = "fuzz_targets/fuzz_refund_cancel.rs"
+test = false
+
 [dependencies]
 # libfuzzer-sys wires rust code to LLVM libFuzzer
 libfuzzer-sys = "0.4"

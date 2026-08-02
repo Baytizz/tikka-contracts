@@ -4,31 +4,146 @@ Welcome to the `tikka-contracts` development guide! This document covers setting
 
 ## 🛠 Prerequisites
 
-1.  **Rust Toolchain**: Install via [rustup](https://rustup.rs/).
-2.  **WebAssembly Target**: Add the `wasm32-unknown-unknown` target:
+1. **Rust Toolchain**: Install via [rustup](https://rustup.rs/).
+1. **WebAssembly Target**: Add the `wasm32-unknown-unknown` target:
+
     ```bash
     rustup target add wasm32-unknown-unknown
     ```
-3.  **Stellar CLI**: Install the official Stellar CLI:
+
+1. **Stellar CLI**: Install the official Stellar CLI:
+
     ```bash
     cargo install --locked stellar-cli --features opt
     ```
 
+1. **Node.js 20+**: Required for the `oracle/` service and markdown linting.
+
+## 📋 Local Check Sequence
+
+Before opening a pull request, run the complete local check sequence to ensure your code matches CI enforcement.
+
+### Contracts (Rust)
+
+```bash
+# 1. Format all Rust code
+cargo fmt --all
+
+# 2. Lint code
+cargo clippy --all-targets --all-features
+
+# 3. Run all unit tests
+cargo test
+
+# 4. Build release artifacts
+cargo build --target wasm32-unknown-unknown --release
+```
+
+### Oracle Service (TypeScript/Node.js)
+
+```bash
+# 1. Format code
+cd oracle
+npm run format  # or prettier --write . (check package.json for actual script)
+
+# 2. Run linter
+npm run lint
+
+# 3. Run tests
+npm run test:run  # Use --run flag to avoid watch mode
+```
+
+### Documentation
+
+```bash
+# Format and lint all Markdown files
+npx markdownlint-cli2 "**/*.md"
+
+# Auto-fix fixable issues
+npx markdownlint-cli2 --fix "**/*.md"
+```
+
+**Expected result**: All commands complete without errors or warnings. If linting or tests fail locally, they will fail in CI.
+
+## 🌿 Branch Naming & PR Title Conventions
+
+Follow these conventions to keep the repository organized and CI workflows consistent.
+
+### Branch Naming
+
+Create feature branches with a clear prefix and descriptive name:
+
+```
+<type>/<short-description>
+```
+
+**Types:**
+- `feat/` — New feature or capability
+- `fix/` — Bug fix
+- `docs/` — Documentation only (no code changes)
+- `refactor/` — Code refactoring (no behavior change)
+- `test/` — Test improvements or new tests
+- `chore/` — Tooling, CI, dependencies (no code/docs changes)
+
+**Examples:**
+- `feat/multi-winner-raffles`
+- `fix/oracle-timeout-handling`
+- `docs/glossary-and-onboarding`
+- `test/fuzz-ticket-purchase`
+- `chore/upgrade-soroban-sdk`
+
+### PR Title Format
+
+Keep PR titles concise (under 70 characters) and descriptive:
+
+```
+<type>: <short summary>
+```
+
+**Examples:**
+- `feat: Add multi-winner raffle support`
+- `fix: Correct oracle randomness seed validation`
+- `docs: Add glossary and update onboarding guides`
+- `test: Improve fuzz test coverage for ticket purchase`
+
+### Editor Configuration
+
+To ensure consistent code formatting, your editor should automatically apply the project's conventions. The workspace provides:
+
+- **`.editorconfig`**: Universal editor settings (indentation, line endings, charset)
+  - Most editors auto-load this file; if yours doesn't, install an EditorConfig plugin
+- **`rustfmt.toml`**: Rust formatting configuration (run via `cargo fmt`)
+- **`Cargo.fmt`**: Implicit formatter that enforces rules defined in `rustfmt.toml`
+- **`.markdownlint.jsonc`**: Markdown linting rules (run via `npx markdownlint-cli2`)
+
+**Configure your editor to:**
+
+1. Load `.editorconfig` settings automatically
+2. Format on save (Rust via `cargo fmt`, Markdown via `markdownlint-cli2`, TypeScript via prettier)
+3. Show linting warnings inline
+
+This ensures your local formatting always matches CI expectations.
+
 ## 🏗 Build & Test
 
-
 ### Build the Contract
+
 To compile the Soroban contracts into WebAssembly (`.wasm`):
+
 ```bash
 cargo build --target wasm32-unknown-unknown --release -p raffle-factory
 cargo build --target wasm32-unknown-unknown --release -p raffle-instance
 ```
+
 The compiled WASM binaries will be located at:
+
 - `target/wasm32-unknown-unknown/release/raffle-factory.wasm`
 - `target/wasm32-unknown-unknown/release/raffle-instance.wasm`
 
 ### Run Unit Tests
+
 To execute the contract's standard Rust unit tests:
+
 ```bash
 cargo test
 ```
@@ -38,23 +153,31 @@ cargo test
 The project provides automated shell scripts in the `scripts/` directory to facilitate deployment and interactions.
 
 ### 1. Environment Configuration
+
 Copy the `.env.example` file to create your own local `.env`:
+
 ```bash
 cp .env.example .env
 ```
+
 Fill out the required variables including `DEPLOYER_SECRET_KEY` and `RAFFLE_CONTRACT_ADDRESS`.
 
 ### 2. Fund Your Testnet Account
+
 Ensure your deployer account has Testnet Lumens (XLM):
+
 ```bash
 ./scripts/fund-testnet.sh <YOUR_PUBLIC_KEY>
 ```
 
 ### 3. Deploy to Testnet
+
 Deploy the compiled WASM binary directly to the Stellar testnet:
+
 ```bash
 ./scripts/deploy-testnet.sh
 ```
+
 This script automatically compiles the contract (if needed), deploys it using the `DEPLOYER_SECRET_KEY` from your `.env`, and outputs the resulting `C...` contract address.
 
 ## 🔎 Verifying Deployed Contracts
@@ -64,11 +187,13 @@ It is essential to verify that the deployed contract logic matches your local bu
 ```bash
 ./scripts/verify.sh
 ```
+
 This script downloads the remote WASM bytecode associated with `RAFFLE_CONTRACT_ADDRESS` on the active `STELLAR_NETWORK` and compares its SHA256 checksum to your locally compiled binary. It outputs `Match: YES` to guarantee parity.
 
 ## 🕹 Invoking Contract Functions
 
 Use the `invoke.sh` script to interact with your deployed contract smoothly:
+
 ```bash
 ./scripts/invoke.sh <function_name> [args...]
 # Example:
@@ -175,11 +300,12 @@ stellar contract extend \
 **Recommended interval**: Extend by **~1 year (6,220,800 ledgers)** and re-run every **6 months** to maintain a comfortable buffer.
 
 **Priority keys to extend** (Factory persistent):
+
 1. `Admin` — loss = permanent lockout
-2. `InstanceWasmHash` — loss = cannot deploy new raffles
-3. `Treasury` — loss = fee collection breaks
-4. `RaffleInstances` — loss = registry of all raffles gone
-5. `ProtocolFeeBP` — loss = fee defaults to 0
+1. `InstanceWasmHash` — loss = cannot deploy new raffles
+1. `Treasury` — loss = fee collection breaks
+1. `RaffleInstances` — loss = registry of all raffles gone
+1. `ProtocolFeeBP` — loss = fee defaults to 0
 
 #### Raffle Instance Contracts (many instances, variable lifetimes)
 
@@ -202,11 +328,12 @@ stellar contract extend \
 Operators should set up a **cron job or scheduled script** that:
 
 1. Queries all active raffle instances from the factory's `RaffleInstances` list
-2. Checks the current TTL of each instance and its persistent keys
-3. Extends any TTL that is below a threshold (e.g., < 30 days remaining)
-4. Logs all extensions for auditability
+1. Checks the current TTL of each instance and its persistent keys
+1. Extends any TTL that is below a threshold (e.g., < 30 days remaining)
+1. Logs all extensions for auditability
 
 Example pseudocode:
+
 ```bash
 #!/bin/bash
 # Run weekly via cron: 0 0 * * 0 /path/to/extend_ttls.sh
