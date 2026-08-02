@@ -188,6 +188,11 @@ pub enum DataKey {
     NextRecurringId,
     /// ID → list of raffle addresses created across all rounds so far.
     RecurringRaffleInstances(u32),
+    /// Whether creation of new raffles is currently paused (#611). Distinct
+    /// from `DataKey::Paused`, which halts the entire factory; this flag only
+    /// blocks `create_raffle`, leaving all other admin operations, reads, and
+    /// any raffles already in flight unaffected.
+    CreationPaused,
 }
 
 /// A read-only snapshot of key factory metrics returned by
@@ -277,6 +282,10 @@ pub enum ContractError {
     IntervalNotElapsed = 21,
     MaxRoundsReached = 22,
     RecurringInactive = 23,
+    /// `create_raffle` was called while creation is paused via
+    /// `set_creation_paused` (#611). Distinct from `ContractPaused`, which
+    /// blocks the whole factory. Code 24.
+    CreationPaused = 24,
 }
 
 pub const LEADERBOARD_CAP: u32 = 10;
@@ -891,6 +900,15 @@ impl RaffleFactory {
         creator.require_auth();
         require_factory_not_paused(&env)?;
 
+        let creation_paused: bool = env
+            .storage()
+            .instance()
+            .get(&DataKey::CreationPaused)
+            .unwrap_or(false);
+        if creation_paused {
+            return Err(ContractError::CreationPaused);
+        }
+
         let is_whitelisted = env
             .storage()
             .persistent()
@@ -1471,6 +1489,13 @@ impl RaffleFactory {
             .unwrap_or(false)
     }
 
+    pub fn is_creation_paused(env: Env) -> bool {
+        env.storage()
+            .instance()
+            .get(&DataKey::CreationPaused)
+            .unwrap_or(false)
+    }
+
     pub fn transfer_factory_admin(env: Env, new_admin: Address) -> Result<(), ContractError> {
         let admin = require_admin(&env)?;
 
@@ -1609,6 +1634,48 @@ impl RaffleFactory {
         env.storage()
             .persistent()
             .set(&DataKey::MinCreationDelay, &delay_seconds);
+        Ok(())
+    }
+
+    /// Pause or resume creation of new raffles only (#611).
+    ///
+    /// Unlike [`pause_factory`](Self::pause_factory), which halts the entire
+    /// factory, this only blocks [`create_raffle`](Self::create_raffle) —
+    /// admin operations, views, and any raffles already in flight are
+    /// unaffected.
+    ///
+    /// # Auth
+    ///
+    /// Requires authorization from the current admin address.
+    ///
+    /// # Errors
+    ///
+    /// - [`ContractError::NotAuthorized`] — caller is not the admin.
+    ///
+    /// # Events
+    ///
+    /// Emits [`events::CreationPaused`] or [`events::CreationUnpaused`].
+    pub fn set_creation_paused(env: Env, paused: bool) -> Result<(), ContractError> {
+        let admin = require_admin(&env)?;
+        env.storage()
+            .instance()
+            .set(&DataKey::CreationPaused, &paused);
+
+        let timestamp = env.ledger().timestamp();
+        if paused {
+            events::CreationPaused {
+                paused_by: admin,
+                timestamp,
+            }
+            .publish(&env);
+        } else {
+            events::CreationUnpaused {
+                unpaused_by: admin,
+                timestamp,
+            }
+            .publish(&env);
+        }
+
         Ok(())
     }
 
@@ -3701,6 +3768,78 @@ mod tests {
         let (client, _admin, _treasury) = setup_factory(&env);
 
         assert!(client.get_recurring_raffle(&999u32).is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // Creation-only pause tests (#611)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_set_creation_paused_blocks_create_raffle() {
+        let env = Env::default();
+        env.mock_all_auths();
+        env.ledger().set_timestamp(1_000);
+        let (client, _admin, _treasury) = setup_factory(&env);
+        let creator = Address::generate(&env);
+        let token = make_token(&env);
+
+        assert!(!client.is_creation_paused());
+
+        client.set_creation_paused(&true);
+        assert!(client.is_creation_paused());
+
+        assert_eq!(
+            client.try_create_raffle(&creator, &rate_limit_config(&env, &token, "cp1")),
+            Err(Ok(ContractError::CreationPaused))
+        );
+    }
+
+    #[test]
+    fn test_set_creation_paused_unpause_allows_create_raffle() {
+        let env = Env::default();
+        env.mock_all_auths();
+        env.ledger().set_timestamp(1_000);
+        let (client, _admin, _treasury) = setup_factory(&env);
+        let creator = Address::generate(&env);
+        let token = make_token(&env);
+
+        client.set_creation_paused(&true);
+        client.set_creation_paused(&false);
+        assert!(!client.is_creation_paused());
+
+        client.create_raffle(&creator, &rate_limit_config(&env, &token, "cp2"));
+    }
+
+    #[test]
+    fn test_creation_paused_does_not_affect_full_pause() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, _admin, _treasury) = setup_factory(&env);
+
+        client.set_creation_paused(&true);
+        // The factory-wide pause flag is independent and remains false.
+        assert!(!client.is_factory_paused());
+    }
+
+    #[test]
+    fn test_only_admin_can_set_creation_paused() {
+        let env = Env::default();
+        let (client, _admin, _treasury) = setup_factory(&env);
+        let stranger = Address::generate(&env);
+
+        env.mock_auths(&[MockAuth {
+            address: &stranger,
+            invoke: &MockAuthInvoke {
+                contract: &client.address,
+                fn_name: "set_creation_paused",
+                args: (true,).into_val(&env),
+                sub_invokes: &[],
+            },
+        }]);
+        assert_eq!(
+            client.try_set_creation_paused(&true),
+            Err(Ok(ContractError::NotAuthorized))
+        );
     }
 }
 
