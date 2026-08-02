@@ -64,6 +64,20 @@ pub struct TicketPurchased {
     pub timestamp: u64,
 }
 
+#[derive(Clone)]
+#[contractevent]
+pub struct TicketGifted {
+    pub buyer: Address,
+    pub recipient: Address,
+    pub ticket_ids: Vec<u32>,
+    pub quantity: u32,
+    pub ticket_price: i128,
+    pub effective_ticket_price: i128,
+    pub total_paid: i128,
+    pub protocol_fee: i128,
+    pub timestamp: u64,
+}
+
 #[allow(dead_code)]
 #[derive(Clone)]
 #[contractevent]
@@ -262,7 +276,16 @@ pub struct TokensRescued {
 
 #[derive(Clone)]
 #[contractevent]
-#[soroban_sdk::contracttype]
+pub struct DustSwept {
+    pub swept_by: Address,
+    pub token: Address,
+    pub treasury: Address,
+    pub amount: i128,
+    pub timestamp: u64,
+}
+
+#[derive(Clone)]
+#[contractevent]
 pub struct OracleAddressUpdated {
     pub old_oracle: Option<Address>,
     pub new_oracle: Address,

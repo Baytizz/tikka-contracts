@@ -83,7 +83,20 @@ pub struct ContractUnpaused {
 
 #[derive(Clone)]
 #[contractevent]
-#[soroban_sdk::contracttype]
+pub struct CreationPaused {
+    pub paused_by: Address,
+    pub timestamp: u64,
+}
+
+#[derive(Clone)]
+#[contractevent]
+pub struct CreationUnpaused {
+    pub unpaused_by: Address,
+    pub timestamp: u64,
+}
+
+#[derive(Clone)]
+#[contractevent]
 pub struct GlobalEmergencyPaused {
     pub paused_by: Address,
     pub reason: soroban_sdk::String,

@@ -2,6 +2,8 @@
 
 ![Tikka Logo](docs/assets/tikka-logo.svg)
 
+[![codecov](https://codecov.io/gh/OWNER/tikka-contracts/branch/master/graph/badge.svg)](https://codecov.io/gh/OWNER/tikka-contracts)
+
 ## 🎯 What is Tikka?
 
 Tikka is a decentralized raffle platform built on Stellar using Soroban smart contracts. Users can create raffles, sell tickets priced in Stellar assets, and distribute prizes securely on-chain.
