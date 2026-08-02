@@ -2157,6 +2157,22 @@ impl RaffleFactory {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use raffle_shared::{RandomnessSource, DEFAULT_PAGE_LIMIT, MAX_PAGE_LIMIT};
+    use soroban_sdk::{String, Vec as SdkVec, Val, IntoVal, Symbol};
+
+    pub fn assert_event<T: IntoVal<Env, Val>>(
+        env: &Env,
+        expected_contract: &Address,
+        expected_topic: &str,
+        expected_payload: T,
+    ) {
+        let events = env.events().all();
+        let last = events.last().unwrap();
+        assert_eq!(&last.0, expected_contract);
+        assert_eq!(last.1.get(0).unwrap(), Symbol::new(env, "tikka").into_val(env));
+        assert_eq!(last.1.get(1).unwrap(), Symbol::new(env, expected_topic).into_val(env));
+        assert_eq!(last.2, expected_payload.into_val(env));
+    }
     use raffle_shared::{LeaderboardMetric, RandomnessSource, DEFAULT_PAGE_LIMIT, MAX_PAGE_LIMIT};
     use soroban_sdk::{String, Vec as SdkVec};
     use soroban_sdk::testutils::{Ledger, MockAuth, MockAuthInvoke};
@@ -2272,7 +2288,30 @@ mod tests {
     fn test_init_factory() {
         let env = Env::default();
         env.mock_all_auths();
-        let (client, admin, _treasury) = setup_factory(&env);
+        
+        let admin = Address::generate(&env);
+        let treasury = Address::generate(&env);
+        let wasm_hash = BytesN::from_array(&env, &[0u8; 32]);
+
+        let contract_id = env.register(RaffleFactory, ());
+        let client = RaffleFactoryClient::new(&env, &contract_id);
+        
+        let start_events = env.events().all().len();
+        client.init_factory(&admin, &wasm_hash, &0u32, &treasury);
+        assert_eq!(env.events().all().len(), start_events + 1);
+
+        assert_event(
+            &env,
+            &client.address,
+            "factory_initialized",
+            events::FactoryInitialized {
+                admin: admin.clone(),
+                protocol_fee_bp: 0,
+                treasury: treasury.clone(),
+                timestamp: env.ledger().timestamp(),
+            },
+        );
+
         assert_eq!(client.get_admin(), admin);
     }
 
@@ -2285,7 +2324,9 @@ mod tests {
 
         client.record_volume(&asset, &(i128::MAX - 1));
         assert_eq!(client.get_total_volume(&asset), i128::MAX - 1);
+        let start_events = env.events().all().len();
         assert!(client.try_record_volume(&asset, &2).is_err());
+        assert_eq!(env.events().all().len(), start_events);
         assert_eq!(client.get_total_volume(&asset), i128::MAX - 1);
     }
 
@@ -2296,10 +2337,12 @@ mod tests {
         let (client, _admin, _treasury) = setup_factory(&env);
         let excessive_fee = MAX_PROTOCOL_FEE_BP + 1;
 
+        let start_events = env.events().all().len();
         assert_eq!(
             client.try_propose_fee_change(&excessive_fee),
             Err(Ok(ContractError::InvalidParameters))
         );
+        assert_eq!(env.events().all().len(), start_events);
     }
 
     #[test]
@@ -2313,10 +2356,12 @@ mod tests {
         let client = RaffleFactoryClient::new(&env, &contract_id);
 
         client.init_factory(&admin, &wasm_hash, &0u32, &treasury);
+        let start_events = env.events().all().len();
         assert_eq!(
             client.try_init_factory(&admin, &wasm_hash, &0u32, &treasury),
             Err(Ok(ContractError::AlreadyInitialized))
         );
+        assert_eq!(env.events().all().len(), start_events);
     }
 
     /// Strkey of the all-zero contract id (the "zero address").
@@ -2335,10 +2380,12 @@ mod tests {
         let contract_id = env.register(RaffleFactory, ());
         let client = RaffleFactoryClient::new(&env, &contract_id);
 
+        let start_events = env.events().all().len();
         assert_eq!(
             client.try_init_factory(&zero_address(&env), &wasm_hash, &0u32, &treasury),
             Err(Ok(ContractError::InvalidParameters))
         );
+        assert_eq!(env.events().all().len(), start_events);
     }
 
     #[test]
@@ -2350,10 +2397,12 @@ mod tests {
         let contract_id = env.register(RaffleFactory, ());
         let client = RaffleFactoryClient::new(&env, &contract_id);
 
+        let start_events = env.events().all().len();
         assert_eq!(
             client.try_init_factory(&admin, &wasm_hash, &0u32, &zero_address(&env)),
             Err(Ok(ContractError::InvalidParameters))
         );
+        assert_eq!(env.events().all().len(), start_events);
     }
 
     #[test]
@@ -2365,10 +2414,12 @@ mod tests {
         let contract_id = env.register(RaffleFactory, ());
         let client = RaffleFactoryClient::new(&env, &contract_id);
 
+        let start_events = env.events().all().len();
         assert_eq!(
             client.try_init_factory(&contract_id, &wasm_hash, &0u32, &treasury),
             Err(Ok(ContractError::InvalidParameters))
         );
+        assert_eq!(env.events().all().len(), start_events);
     }
 
     #[test]
@@ -2380,10 +2431,12 @@ mod tests {
         let contract_id = env.register(RaffleFactory, ());
         let client = RaffleFactoryClient::new(&env, &contract_id);
 
+        let start_events = env.events().all().len();
         assert_eq!(
             client.try_init_factory(&admin, &wasm_hash, &0u32, &contract_id),
             Err(Ok(ContractError::InvalidParameters))
         );
+        assert_eq!(env.events().all().len(), start_events);
     }
 
     #[test]
@@ -2392,10 +2445,12 @@ mod tests {
         env.mock_all_auths();
         let (client, _admin, _treasury) = setup_factory(&env);
 
+        let start_events = env.events().all().len();
         assert_eq!(
             client.try_transfer_factory_admin(&zero_address(&env)),
             Err(Ok(ContractError::InvalidParameters))
         );
+        assert_eq!(env.events().all().len(), start_events);
     }
 
     #[test]
@@ -2405,10 +2460,12 @@ mod tests {
         let (client, _admin, _treasury) = setup_factory(&env);
         let self_address = client.address.clone();
 
+        let start_events = env.events().all().len();
         assert_eq!(
             client.try_transfer_factory_admin(&self_address),
             Err(Ok(ContractError::InvalidParameters))
         );
+        assert_eq!(env.events().all().len(), start_events);
     }
 
     #[test]
@@ -2417,10 +2474,12 @@ mod tests {
         env.mock_all_auths();
         let (client, _admin, _treasury) = setup_factory(&env);
 
+        let start_events = env.events().all().len();
         assert_eq!(
             client.try_propose_config_change(&ConfigKey::Treasury, &zero_address(&env)),
             Err(Ok(ContractError::InvalidParameters))
         );
+        assert_eq!(env.events().all().len(), start_events);
     }
 
     #[test]
@@ -2430,10 +2489,12 @@ mod tests {
         let (client, _admin, _treasury) = setup_factory(&env);
         let self_address = client.address.clone();
 
+        let start_events = env.events().all().len();
         assert_eq!(
             client.try_propose_config_change(&ConfigKey::Treasury, &self_address),
             Err(Ok(ContractError::InvalidParameters))
         );
+        assert_eq!(env.events().all().len(), start_events);
     }
 
     #[test]
@@ -2450,7 +2511,9 @@ mod tests {
         let new_hash = BytesN::from_array(&env, &[9u8; 32]);
         // Without auth for the admin address, upgrade must not succeed.
         env.set_auths(&[]);
+        let start_events = env.events().all().len();
         assert!(client.try_upgrade(&new_hash).is_err());
+        assert_eq!(env.events().all().len(), start_events);
     }
 
     #[test]
@@ -2722,10 +2785,12 @@ mod tests {
         let (client, _admin, _treasury) = setup_factory(&env);
 
         // No raffles → any ID is invalid.
+        let start_events = env.events().all().len();
         assert_eq!(
             client.try_clean_old_raffle(&0u32),
             Err(Ok(ContractError::InvalidRaffleId))
         );
+        assert_eq!(env.events().all().len(), start_events);
     }
 
     #[test]
@@ -2743,10 +2808,12 @@ mod tests {
         });
 
         // Trying to clean it again must return InvalidRaffleId.
+        let start_events = env.events().all().len();
         assert_eq!(
             client.try_clean_old_raffle(&1u32),
             Err(Ok(ContractError::InvalidRaffleId))
         );
+        assert_eq!(env.events().all().len(), start_events);
     }
 
     // -----------------------------------------------------------------------
@@ -2957,8 +3024,33 @@ mod tests {
         let (client, _admin, _treasury) = setup_factory(&env);
         let new_admin = Address::generate(&env);
 
+        let start_events = env.events().all().len();
         client.transfer_factory_admin(&new_admin);
+        
+        assert_event(
+            &env,
+            &client.address,
+            "admin_transfer_proposed",
+            events::AdminTransferProposed {
+                current_admin: _admin.clone(),
+                proposed_admin: new_admin.clone(),
+                timestamp: env.ledger().timestamp(),
+            },
+        );
+
         client.accept_factory_admin();
+        
+        assert_event(
+            &env,
+            &client.address,
+            "admin_transfer_accepted",
+            events::AdminTransferAccepted {
+                old_admin: _admin.clone(),
+                new_admin: new_admin.clone(),
+                timestamp: env.ledger().timestamp(),
+            },
+        );
+        assert_eq!(env.events().all().len(), start_events + 2);
 
         let actual: Address = env.as_contract(&client.address, || {
             env.storage().persistent().get(&DataKey::Admin).unwrap()
@@ -2981,10 +3073,12 @@ mod tests {
 
         client.transfer_factory_admin(&admin_b);
 
+        let start_events = env.events().all().len();
         assert_eq!(
             client.try_transfer_factory_admin(&admin_c),
             Err(Ok(ContractError::AdminTransferPending))
         );
+        assert_eq!(env.events().all().len(), start_events);
     }
 
     #[test]
@@ -3024,6 +3118,7 @@ mod tests {
         assert!(pending_before);
 
         // Proposing the current admin clears the pending entry
+        let start_events = env.events().all().len();
         env.mock_auths(&[MockAuth {
             address: &admin,
             invoke: &MockAuthInvoke {
@@ -3034,6 +3129,7 @@ mod tests {
             },
         }]);
         client.transfer_factory_admin(&admin);
+        assert_eq!(env.events().all().len(), start_events);
 
         let pending_after: bool = env.as_contract(&client.address, || {
             env.storage().persistent().has(&DataKey::PendingAdmin)
@@ -3099,8 +3195,8 @@ mod tests {
             swap_router: None,
             tikka_token: None,
             metadata_hash: BytesN::from_array(env, &[1u8; 32]),
-            claim_lockup_seconds: 0,
-            swap_deadline_seconds: 0,
+            claim_lockup_seconds: None,
+            swap_deadline_seconds: None,
             early_bird_ticket_percentage: 0,
             early_bird_discount_bp: 0,
             category: None,
@@ -3132,10 +3228,14 @@ mod tests {
         client.create_raffle(&creator, &rate_limit_config(&env, &token, "r1"));
 
         // 2. Immediate second creation is rate-limited.
+        let start_events = env.events().all().len();
+        // Since create_raffle emits CreationRateLimited *before* returning the error,
+        // we check that length increases by 1.
         assert_eq!(
             client.try_create_raffle(&creator, &rate_limit_config(&env, &token, "r2")),
             Err(Ok(ContractError::RateLimitExceeded))
         );
+        assert_eq!(env.events().all().len(), start_events + 1);
 
         // 3. Advance time by exactly MinCreationDelay.
         env.ledger().set_timestamp(1_000 + delay);
@@ -3238,10 +3338,12 @@ mod tests {
 
         // 2. Advance 59 seconds — still inside the window, second creation fails.
         env.ledger().set_timestamp(1_000 + 59);
+        let start_events = env.events().all().len();
         assert_eq!(
             client.try_create_raffle(&creator, &rate_limit_config(&env, &token, "d2")),
             Err(Ok(ContractError::RateLimitExceeded))
         );
+        assert_eq!(env.events().all().len(), start_events + 1);
 
         // 3. Advance 1 more second (60 total) — the window has elapsed, succeeds.
         env.ledger().set_timestamp(1_000 + 60);

@@ -193,6 +193,32 @@ pub struct RaffleConfig {
 
 ```rust
 pub struct Raffle {
+    pub creator: Address,
+    pub payment_token: Address,
+    pub treasury_address: Option<Address>,
+    pub description: String,
+    pub end_time: u64,
+    pub max_tickets: u32,
+    pub min_tickets: u32,
+    pub allow_multiple: bool,
+    pub ticket_price: i128,
+    pub prize_amount: i128,
+    pub prizes: Vec<u32>,
+    pub tickets_sold: u32,
+    pub status: RaffleStatus,
+    pub prize_deposited: bool,
+    pub winners: Vec<Address>,
+    pub claimed_winners: Vec<bool>,
+    pub randomness_source: RandomnessSource,
+    pub oracle_address: Option<Address>,
+    pub protocol_fee_bp: u32,
+    pub treasury_address: Option<Address>,
+    pub swap_router: Option<Address>,
+    pub tikka_token: Option<Address>,
+    pub finalized_at: Option<u64>,
+    pub winner_ticket_id: Option<u32>,
+    pub claim_lockup_seconds: Option<u64>,
+    pub swap_deadline_seconds: Option<u64>,
     // ...all RaffleConfig fields (resolved via `resolve_defaults`), plus:
     pub creator: Address,               // Address that created and configured the raffle.
     pub prize_token: Address,           // Token used for prize deposit and claims; defaults to `payment_token`.

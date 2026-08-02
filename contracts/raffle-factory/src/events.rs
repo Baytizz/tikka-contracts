@@ -5,6 +5,7 @@ use soroban_sdk::{contractevent, Address, BytesN};
 #[allow(dead_code)]
 #[derive(Clone)]
 #[contractevent]
+#[soroban_sdk::contracttype]
 pub struct RaffleInstanceDeployed {
     pub instance: Address,
     pub wasm_hash: BytesN<32>,
@@ -14,6 +15,8 @@ pub struct RaffleInstanceDeployed {
 
 #[derive(Clone)]
 #[contractevent]
+#[soroban_sdk::contracttype]
+#[soroban_sdk::contracttype]
 pub struct FactoryInitialized {
     pub admin: Address,
     pub protocol_fee_bp: u32,
@@ -23,6 +26,7 @@ pub struct FactoryInitialized {
 
 #[derive(Clone)]
 #[contractevent]
+#[soroban_sdk::contracttype]
 pub struct AdminOpProposed {
     pub op_id: u32,
     pub op: AdminOp,
@@ -32,6 +36,7 @@ pub struct AdminOpProposed {
 
 #[derive(Clone)]
 #[contractevent]
+#[soroban_sdk::contracttype]
 pub struct AdminOpExecuted {
     pub op_id: u32,
     pub op: AdminOp,
@@ -42,6 +47,7 @@ pub struct AdminOpExecuted {
 #[allow(dead_code)]
 #[derive(Clone)]
 #[contractevent]
+#[soroban_sdk::contracttype]
 pub struct TreasuryChanged {
     pub old_treasury: Address,
     pub new_treasury: Address,
@@ -52,6 +58,7 @@ pub struct TreasuryChanged {
 
 #[derive(Clone)]
 #[contractevent]
+#[soroban_sdk::contracttype]
 pub struct AdminOpCancelled {
     pub op_id: u32,
     pub cancelled_by: Address,
@@ -60,6 +67,7 @@ pub struct AdminOpCancelled {
 
 #[derive(Clone)]
 #[contractevent]
+#[soroban_sdk::contracttype]
 pub struct ContractPaused {
     pub paused_by: Address,
     pub timestamp: u64,
@@ -67,6 +75,7 @@ pub struct ContractPaused {
 
 #[derive(Clone)]
 #[contractevent]
+#[soroban_sdk::contracttype]
 pub struct ContractUnpaused {
     pub unpaused_by: Address,
     pub timestamp: u64,
@@ -111,6 +120,7 @@ pub struct AdminTransferProposed {
 
 #[derive(Clone)]
 #[contractevent]
+#[soroban_sdk::contracttype]
 pub struct AdminTransferAccepted {
     pub old_admin: Address,
     pub new_admin: Address,
@@ -120,6 +130,7 @@ pub struct AdminTransferAccepted {
 #[allow(dead_code)]
 #[derive(Clone)]
 #[contractevent]
+#[soroban_sdk::contracttype]
 pub struct AdminTransferFailed {
     pub current_admin: Address,
     pub proposed_admin: Address,
@@ -129,6 +140,7 @@ pub struct AdminTransferFailed {
 
 #[derive(Clone)]
 #[contractevent]
+#[soroban_sdk::contracttype]
 pub struct CheckpointCreated {
     pub index: u32,
     pub raffle_count: u32,
@@ -139,6 +151,7 @@ pub struct CheckpointCreated {
 #[allow(dead_code)]
 #[derive(Clone)]
 #[contractevent]
+#[soroban_sdk::contracttype]
 pub struct SupportedSacUpdated {
     pub token: Address,
     pub supported: bool,
@@ -148,6 +161,7 @@ pub struct SupportedSacUpdated {
 
 #[derive(Clone)]
 #[contractevent]
+#[soroban_sdk::contracttype]
 pub struct RaffleCleanedUp {
     pub raffle_address: Address,
     pub cleaned_by: Address,
@@ -157,6 +171,7 @@ pub struct RaffleCleanedUp {
 
 #[derive(Clone)]
 #[contractevent]
+#[soroban_sdk::contracttype]
 pub struct CreationRateLimited {
     pub creator: Address,
     pub unlock_timestamp: u64,
@@ -165,6 +180,7 @@ pub struct CreationRateLimited {
 
 #[derive(Clone)]
 #[contractevent]
+#[soroban_sdk::contracttype]
 pub struct FactoryTokensRescued {
     pub rescued_by: Address,
     pub token: Address,
@@ -175,6 +191,7 @@ pub struct FactoryTokensRescued {
 
 #[derive(Clone)]
 #[contractevent]
+#[soroban_sdk::contracttype]
 pub struct FactoryUpgraded {
     pub admin: Address,
     pub new_wasm_hash: BytesN<32>,

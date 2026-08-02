@@ -163,11 +163,11 @@ pub struct RaffleConfig {
     /// SHA-256 hash of immutable off-chain metadata content.
     pub metadata_hash: BytesN<32>,
     /// Seconds after finalization before winners may claim.
-    /// Must be in [0, 604800] (0 to 7 days). Defaults to 3600 if zero.
-    pub claim_lockup_seconds: u64,
+    /// Must be in [0, 604800] (0 to 7 days). Defaults to 3600 (1 hour) if not provided (None).
+    pub claim_lockup_seconds: Option<u64>,
     /// Swap deadline window in seconds (added to current timestamp for token swaps).
-    /// Defaults to 300 (5 minutes) if zero. Configurable to handle network congestion.
-    pub swap_deadline_seconds: u64,
+    /// Defaults to 300 (5 minutes) if not provided (None). Configurable to handle network congestion.
+    pub swap_deadline_seconds: Option<u64>,
     /// The percentage of max_tickets covered by the early bird discount (0 to disable).
     pub early_bird_ticket_percentage: u32,
     /// The discount amount specified in basis points.
@@ -197,11 +197,11 @@ pub struct TicketBundle {
 
 impl RaffleConfig {
     pub fn resolve_defaults(mut self) -> Self {
-        if self.claim_lockup_seconds == 0 {
-            self.claim_lockup_seconds = DEFAULT_CLAIM_LOCKUP_SECONDS;
+        if self.claim_lockup_seconds.is_none() {
+            self.claim_lockup_seconds = Some(DEFAULT_CLAIM_LOCKUP_SECONDS);
         }
-        if self.swap_deadline_seconds == 0 {
-            self.swap_deadline_seconds = DEFAULT_SWAP_DEADLINE_SECONDS;
+        if self.swap_deadline_seconds.is_none() {
+            self.swap_deadline_seconds = Some(DEFAULT_SWAP_DEADLINE_SECONDS);
         }
         self
     }
@@ -426,6 +426,93 @@ macro_rules! impl_require_not_paused {
 }
 
 #[cfg(test)]
+mod test {
+    use super::*;
+    use soroban_sdk::{Env, String, Address, BytesN, Vec};
+    fn default_config(env: &Env) -> RaffleConfig {
+        let payment_token = Address::from_string(&String::from_str(env, "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4"));
+        RaffleConfig {
+            description: String::from_str(env, "Test"),
+            end_time: 0,
+            no_deadline: true,
+            max_tickets: 10,
+            max_tickets_per_tx: 10,
+            min_tickets: 1,
+            allow_multiple: true,
+            ticket_price: 10_000,
+            payment_token,
+            prize_amount: 10_000,
+            prizes: Vec::new(env),
+            randomness_source: RandomnessSource::Internal,
+            oracle_address: None,
+            protocol_fee_bp: 0,
+            treasury_address: None,
+            swap_router: None,
+            tikka_token: None,
+            metadata_hash: BytesN::from_array(env, &[0; 32]),
+            claim_lockup_seconds: None,
+            swap_deadline_seconds: None,
+            early_bird_ticket_percentage: 0,
+            early_bird_discount_bp: 0,
+            category: None,
+        }
+    }
+
+    #[test]
+    fn test_resolve_defaults_none_inputs() {
+        let env = Env::default();
+        let mut config = default_config(&env);
+        config.claim_lockup_seconds = None;
+        config.swap_deadline_seconds = None;
+
+        let resolved = config.resolve_defaults();
+        assert_eq!(resolved.claim_lockup_seconds, Some(DEFAULT_CLAIM_LOCKUP_SECONDS));
+        assert_eq!(resolved.swap_deadline_seconds, Some(DEFAULT_SWAP_DEADLINE_SECONDS));
+    }
+
+    #[test]
+    fn test_resolve_defaults_zero_inputs() {
+        let env = Env::default();
+        let mut config = default_config(&env);
+        config.claim_lockup_seconds = Some(0);
+        config.swap_deadline_seconds = Some(0);
+
+        let resolved = config.resolve_defaults();
+        assert_eq!(resolved.claim_lockup_seconds, Some(0));
+        assert_eq!(resolved.swap_deadline_seconds, Some(0));
+    }
+
+    #[test]
+    fn test_resolve_defaults_nonzero_inputs() {
+        let env = Env::default();
+        let mut config = default_config(&env);
+        config.claim_lockup_seconds = Some(42);
+        config.swap_deadline_seconds = Some(99);
+
+        let resolved = config.resolve_defaults();
+        assert_eq!(resolved.claim_lockup_seconds, Some(42));
+        assert_eq!(resolved.swap_deadline_seconds, Some(99));
+    }
+
+    #[test]
+    fn test_resolve_defaults_independent_fields() {
+        let env = Env::default();
+
+        // Lockup is Some(0), swap is None
+        let mut config1 = default_config(&env);
+        config1.claim_lockup_seconds = Some(0);
+        config1.swap_deadline_seconds = None;
+        let resolved1 = config1.resolve_defaults();
+        assert_eq!(resolved1.claim_lockup_seconds, Some(0));
+        assert_eq!(resolved1.swap_deadline_seconds, Some(DEFAULT_SWAP_DEADLINE_SECONDS));
+
+        // Lockup is None, swap is Some(0)
+        let mut config2 = default_config(&env);
+        config2.claim_lockup_seconds = None;
+        config2.swap_deadline_seconds = Some(0);
+        let resolved2 = config2.resolve_defaults();
+        assert_eq!(resolved2.claim_lockup_seconds, Some(DEFAULT_CLAIM_LOCKUP_SECONDS));
+        assert_eq!(resolved2.swap_deadline_seconds, Some(0));
 mod effective_limit_tests {
     use super::{effective_limit, DEFAULT_PAGE_LIMIT, MAX_PAGE_LIMIT};
 
