@@ -189,7 +189,6 @@ pub trait WinnerSelectionStrategy {
 /// **For low-stakes raffles only** — see [`build_internal_seed`] and the
 /// module documentation for the full security caveat.
 pub struct PrngWinnerSelection {
-    /// The raffle contract address used as a per-raffle entropy source.
     pub raffle_id: Address,
     /// Number of tickets sold at draw time, mixed into the seed so that
     /// identical raffle setups with different participation produce different
@@ -200,10 +199,7 @@ pub struct PrngWinnerSelection {
 impl PrngWinnerSelection {
     /// Create a new `PrngWinnerSelection` for the given raffle and ticket count.
     pub fn new(raffle_id: Address, tickets_sold: u32) -> Self {
-        Self {
-            raffle_id,
-            tickets_sold,
-        }
+        Self { raffle_id, tickets_sold }
     }
 
     /// Return a compact `u64` fingerprint of the draw seed.
@@ -345,7 +341,11 @@ impl OracleSeedWinnerSelection {
     /// Pure (no-`Env`) version of [`select_winner_indices`] used in tests and
     /// off-chain tooling.  Available only when `std` is in scope.
     #[cfg(any(test, feature = "std"))]
-    pub fn select_winner_indices_pure(&self, total_tickets: u32, winner_count: u32) -> std::vec::Vec<u32> {
+    pub fn select_winner_indices_pure(
+        &self,
+        total_tickets: u32,
+        winner_count: u32,
+    ) -> std::vec::Vec<u32> {
         let mut indices = std::vec::Vec::new();
         if total_tickets == 0 || winner_count == 0 {
             return indices;
@@ -424,6 +424,34 @@ impl WinnerSelectionStrategy for OracleSeedWinnerSelection {
 
         indices
     }
+}
+
+/// Aggregate multiple oracle seeds into a single deterministic seed.
+///
+/// Uses SHA-256 over the concatenation of all delivered seeds
+/// in submission order.  The first 8 bytes of the hash become the `u64` seed.
+///
+/// # Security
+///
+/// As long as at least one of the seeds was provided by an honest oracle,
+/// the SHA-256 output is cryptographically uniform and cannot be biased.
+pub fn aggregate_quorum_seeds(env: &Env, seeds: &Vec<(Address, u64)>) -> u64 {
+    if seeds.is_empty() {
+        return 0u64;
+    }
+
+    let mut combined = Bytes::new(env);
+    for i in 0..seeds.len() {
+        if let Some((_, seed)) = seeds.get(i) {
+            combined.extend_from_array(&seed.to_be_bytes());
+        }
+    }
+
+    let hash: BytesN<32> = env.crypto().sha256(&combined).into();
+    let arr = hash.to_array();
+    let mut seed_bytes = [0u8; 8];
+    seed_bytes.copy_from_slice(&arr[..8]);
+    u64::from_be_bytes(seed_bytes)
 }
 
 #[cfg(test)]
@@ -534,12 +562,10 @@ mod tests {
             .register_stellar_asset_contract_v2(Address::generate(&env))
             .address();
         let first = env.as_contract(&contract_id, || {
-            PrngWinnerSelection::new(raffle_id.clone(), 17)
-                .select_winner_indices(&env, 17, 8)
+            PrngWinnerSelection::new(raffle_id.clone(), 17).select_winner_indices(&env, 17, 8)
         });
         let second = env.as_contract(&contract_id, || {
-            PrngWinnerSelection::new(raffle_id, 17)
-                .select_winner_indices(&env, 17, 8)
+            PrngWinnerSelection::new(raffle_id, 17).select_winner_indices(&env, 17, 8)
         });
 
         assert_eq!(
@@ -589,5 +615,97 @@ mod tests {
             fp_a, fp_b,
             "fingerprints must differ for different ticket counts"
         );
+    }
+
+    /// Deliberately biased winner selector used to verify that the Chi-squared test
+    /// correctly detects modulo / index distribution bias (#633).
+    struct BiasedWinnerSelection {
+        seed: u64,
+    }
+
+    impl BiasedWinnerSelection {
+        fn select_winner_indices_biased(&self, total_tickets: u32) -> u32 {
+            let n = total_tickets as u64;
+            // Intentionally introduces modulo bias by wrapping around an asymmetric range
+            ((self.seed % (n + 1)) % n) as u32
+        }
+    }
+
+    /// Computes the Chi-squared statistic for a frequency histogram against a uniform distribution.
+    fn compute_chi_squared(histogram: &[u32], total_samples: u32) -> f64 {
+        let k = histogram.len() as f64;
+        let expected = total_samples as f64 / k;
+        let mut chi2 = 0.0;
+        for &count in histogram {
+            let diff = count as f64 - expected;
+            chi2 += (diff * diff) / expected;
+        }
+        chi2
+    }
+
+    /// Critical values for Chi-squared distribution at alpha = 0.001 (significance level 99.9%).
+    fn critical_value_999(degrees_of_freedom: usize) -> f64 {
+        match degrees_of_freedom {
+            4 => 18.47,  // 5 tickets - 1
+            8 => 26.12,  // 9 tickets - 1
+            32 => 62.49, // 33 tickets - 1
+            df => (df as f64) + 3.0 * (2.0 * df as f64).sqrt(),
+        }
+    }
+
+    /// Helper running the Chi-squared goodness-of-fit test for OracleSeedWinnerSelection.
+    fn run_uniformity_simulation(ticket_counts: &[u32], total_draws: u32) {
+        for &n in ticket_counts {
+            let mut histogram = std::vec![0u32; n as usize];
+            for seed in 1..=(total_draws as u64) {
+                let strategy = OracleSeedWinnerSelection::new(seed);
+                let winners = strategy.select_winner_indices_pure(n, 1);
+                assert_eq!(winners.len(), 1);
+                histogram[winners[0] as usize] += 1;
+            }
+            let df = (n - 1) as usize;
+            let chi2 = compute_chi_squared(&histogram, total_draws);
+            let crit = critical_value_999(df);
+            assert!(
+                chi2 < crit,
+                "Real winner selector failed Chi-squared uniformity test for ticket_count={n}: chi2={chi2} >= critical={crit}"
+            );
+        }
+    }
+
+    /// Statistical uniformity test (CI variant: 5,000 samples per ticket count).
+    /// Tests ticket counts chosen to stress modulo bias (just above powers of two: 5, 9, 33).
+    #[test]
+    fn test_statistical_uniformity_ci() {
+        run_uniformity_simulation(&[5, 9, 33], 5_000);
+    }
+
+    /// Statistical uniformity test (Full simulation variant: 100,000 samples per ticket count).
+    /// Marked as #[ignore] by default to keep CI fast.
+    #[test]
+    #[ignore]
+    fn test_statistical_uniformity_full() {
+        run_uniformity_simulation(&[5, 9, 33], 100_000);
+    }
+
+    /// Acceptance criterion test: verifies that the Chi-squared test REJECTS a biased selector.
+    #[test]
+    fn test_statistical_uniformity_rejects_biased_selector() {
+        let total_draws = 5_000u32;
+        for &n in &[5u32, 9u32, 33u32] {
+            let mut histogram = std::vec![0u32; n as usize];
+            for seed in 1..=(total_draws as u64) {
+                let biased = BiasedWinnerSelection { seed };
+                let winner = biased.select_winner_indices_biased(n);
+                histogram[winner as usize] += 1;
+            }
+            let df = (n - 1) as usize;
+            let chi2 = compute_chi_squared(&histogram, total_draws);
+            let crit = critical_value_999(df);
+            assert!(
+                chi2 >= crit,
+                "Chi-squared test must REJECT biased selector for ticket_count={n}: chi2={chi2} expected >= critical={crit}"
+            );
+        }
     }
 }

@@ -27,11 +27,13 @@ export class EventListenerService {
     private readonly queue: RequestQueue,
     private readonly oracleAddress: string,
     private readonly checkpointStore: LedgerCheckpointStore,
-    options: EventListenerOptions = {},
+    options: EventListenerOptions = {}
   ) {
-    const rpcUrl = options.rpcUrl ?? process.env.STELLAR_RPC_URL ?? 'https://soroban-testnet.stellar.org';
+    const rpcUrl =
+      options.rpcUrl ?? process.env.STELLAR_RPC_URL ?? 'https://soroban-testnet.stellar.org';
     this.server = new SorobanRpc.Server(rpcUrl, { allowHttp: rpcUrl.startsWith('http://') });
-    this.pollIntervalMs = options.pollIntervalMs ?? Number(process.env.ORACLE_POLL_INTERVAL_MS ?? 5000);
+    this.pollIntervalMs =
+      options.pollIntervalMs ?? Number(process.env.ORACLE_POLL_INTERVAL_MS ?? 5000);
     this.sleep = options.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
     this.startLedger = 1;
   }
@@ -91,7 +93,7 @@ export class EventListenerService {
   }
 
   parseRandomnessRequestedEvent(
-    event: SorobanRpc.Api.EventResponse,
+    event: SorobanRpc.Api.EventResponse
   ): ParsedRandomnessRequest | null {
     const topicName = event.topic[0]?.sym?.().toString();
     if (topicName !== 'RandomnessRequested') {
