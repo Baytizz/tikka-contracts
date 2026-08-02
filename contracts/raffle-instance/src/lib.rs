@@ -18,6 +18,8 @@ mod randomness;
 mod tickets;
 mod views;
 
+pub(crate) use helpers::do_finalize_with_seed;
+
 use raffle_shared::{
     constants::{
         DEFAULT_CLAIM_LOCKUP_SECONDS, DEFAULT_SWAP_DEADLINE_SECONDS, EMERGENCY_WITHDRAW_DELAY_SECONDS,
@@ -25,8 +27,21 @@ use raffle_shared::{
         MAX_PROTOCOL_FEE_BP, MAX_SWAP_DEADLINE_SECONDS, MAX_TICKETS_LIMIT, MIN_TICKET_PRICE,
         ORACLE_TIMEOUT_LEDGERS,
     },
-    CancelReason, FailureReason, FairnessData, RaffleConfig, RaffleStatus, RandomnessSource,
-    RandomnessType, Ticket, Winner, BuyQuote,
+    CancelReason, FailureReason, FairnessData, QuorumConfig, RaffleConfig, RaffleStatus,
+    RandomnessSource, RandomnessType, Ticket, Winner,
+};
+
+use self::randomness::{
+    build_vrf_proof_message, OracleSeedWinnerSelection, WinnerSelectionStrategy,
+};
+
+use crate::events::{
+    CancelScheduled, ContractPaused, ContractUnpaused, DrawTriggered, EmergencyWithdrawn,
+    FeesWithdrawn, MetadataHashUpdated, OracleAddressUpdated, PrizeClaimed, PrizeDeposited,
+    PrizeRefunded, ProtocolFeeUpdated, RaffleCancelled, RaffleCreated, RaffleFailed,
+    RaffleFinalized, RaffleStatusChanged, RandomnessFallbackTriggered, RandomnessReceived,
+    RandomnessRequested, SwapDeadlineUpdated, TicketNftMinted, TicketPurchased, TicketRefunded,
+    TicketSalesPaused, TicketSalesResumed, TokensRescued, WinnerDrawn,
 };
 
 const RANDOMNESS_MIN_DELAY_LEDGERS: u32 = 10;
@@ -193,7 +208,199 @@ impl Contract {
         creator: Address,
         config: RaffleConfig,
     ) -> Result<(), Error> {
-        init::init(env, factory, admin, creator, config)
+        if env.storage().instance().has(&DataKey::Raffle) {
+            return Err(Error::AlreadyInitialized);
+        }
+
+        if config.description.len() > MAX_DESCRIPTION_LENGTH {
+            return Err(Error::InvalidParameters);
+        }
+
+        let now = env.ledger().timestamp();
+        if config.no_deadline && config.end_time != 0 {
+            return Err(Error::InvalidParameters);
+        }
+        if !config.no_deadline && config.end_time <= now {
+            return Err(Error::InvalidParameters);
+        }
+        // Explicit check: end_time must be either 0 (no deadline) or in the future
+        if config.end_time != 0 && config.end_time <= now {
+            return Err(Error::InvalidEndTime);
+        }
+        if config.max_tickets == 0 || config.max_tickets > MAX_TICKETS_LIMIT {
+            return Err(Error::InvalidParameters);
+        }
+        if config.max_tickets < config.min_tickets {
+            return Err(Error::InvalidTicketRange);
+        }
+        if config.max_tickets_per_tx == 0 || config.max_tickets_per_tx > config.max_tickets {
+            return Err(Error::InvalidParameters);
+        }
+
+        if config.ticket_price < MIN_TICKET_PRICE {
+            return Err(Error::InvalidParameters);
+        }
+        if config.prize_amount < config.ticket_price {
+            return Err(Error::InvalidParameters);
+        }
+        if config.prize_amount > MAX_PRIZE_AMOUNT {
+            return Err(Error::InvalidParameters);
+        }
+        if config.prizes.is_empty() {
+            return Err(Error::InvalidParameters);
+        }
+        if config.prizes.len() > MAX_PRIZES {
+            return Err(Error::TooManyPrizes);
+        }
+        let mut total_prizes_bp = 0u32;
+        for prize_bp in config.prizes.iter() {
+            total_prizes_bp += prize_bp;
+        }
+        if total_prizes_bp != 10000 {
+            return Err(Error::InvalidParameters);
+        }
+
+        if config.protocol_fee_bp > 10000 {
+            return Err(Error::InvalidParameters);
+        }
+        if config.protocol_fee_bp > 0 && config.treasury_address.is_none() {
+            return Err(Error::InvalidParameters);
+        }
+
+if config.randomness_source == RandomnessSource::External {
+            match config.oracle_address {
+                None => return Err(Error::InvalidParameters),
+                Some(ref addr) if *addr == env.current_contract_address() => {
+                    return Err(Error::InvalidParameters);
+                }
+                Some(_) => {}
+            }
+        }
+
+        // Quorum validation: k must be > 0, oracles must be non-empty, and
+        // oracle_address must not be set (oracles are embedded in the enum).
+        if let RandomnessSource::Quorum(QuorumConfig { k, oracles }) = &config.randomness_source {
+            if *k == 0 || *k > oracles.len() as u32 {
+                return Err(Error::InvalidParameters);
+            }
+            if oracles.len() > 10 {
+                return Err(Error::InvalidParameters);
+            }
+            // Self-check: none of the oracles may be the raffle contract itself.
+            for i in 0..oracles.len() {
+                if let Some(addr) = oracles.get(i) {
+                    if addr == env.current_contract_address() {
+                        return Err(Error::InvalidParameters);
+                    }
+                }
+            }
+            // Quorum mode must not also set a single oracle_address.
+            if config.oracle_address.is_some() {
+                return Err(Error::InvalidParameters);
+            }
+        }
+
+        if config.randomness_source != RandomnessSource::External
+            && config.randomness_source
+                != RandomnessSource::Quorum(QuorumConfig {
+                    k: 1,
+                    oracles: Vec::new(&env),
+                })
+            && config.oracle_address.is_some()
+        {
+            return Err(Error::InvalidParameters);
+        }
+
+        if config.metadata_hash == BytesN::from_array(&env, &[0u8; 32]) {
+            return Err(Error::InvalidParameters);
+        }
+
+        // Validate that the payment_token is a valid token contract
+        validate_token_address(&env, &config.payment_token)?;
+
+        // Prize token matches payment token (no separate prize_token on RaffleConfig).
+        let prize_token = config.payment_token.clone();
+
+        // Resolve default values for fields that use 0 as "use default"
+        let config = config.resolve_defaults();
+
+        // #259: claim_lockup_seconds must be within [0, MAX_CLAIM_LOCKUP_SECONDS].
+        if config.claim_lockup_seconds > MAX_CLAIM_LOCKUP_SECONDS {
+            return Err(Error::InvalidParameters);
+        }
+
+        // Swap deadline must be within [0, MAX_SWAP_DEADLINE_SECONDS].
+        if config.swap_deadline_seconds > MAX_SWAP_DEADLINE_SECONDS {
+            return Err(Error::InvalidParameters);
+        }
+
+        // Validate early bird parameters
+        if config.early_bird_ticket_percentage > 100 {
+            return Err(Error::InvalidParameters);
+        }
+        if config.early_bird_ticket_percentage > 0 && config.early_bird_discount_bp > 10000 {
+            return Err(Error::InvalidParameters);
+        }
+
+        let raffle = Raffle {
+            creator: creator.clone(),
+            description: config.description.clone(),
+            end_time: config.end_time,
+            no_deadline: config.no_deadline,
+            max_tickets: config.max_tickets,
+            max_tickets_per_tx: config.max_tickets_per_tx,
+            min_tickets: config.min_tickets,
+            allow_multiple: config.allow_multiple,
+            ticket_price: config.ticket_price,
+            payment_token: config.payment_token.clone(),
+            prize_token: prize_token.clone(),
+            prize_amount: config.prize_amount,
+            prizes: config.prizes.clone(),
+            tickets_sold: 0,
+            status: RaffleStatus::PendingPrize,
+            prize_deposited: false,
+            winners: Vec::new(&env),
+            randomness_source: config.randomness_source.clone(),
+            oracle_address: config.oracle_address,
+            protocol_fee_bp: config.protocol_fee_bp,
+            treasury_address: config.treasury_address,
+            swap_router: config.swap_router,
+            tikka_token: config.tikka_token,
+            finalized_at: None,
+            claim_lockup_seconds: config.claim_lockup_seconds,
+            swap_deadline_seconds: config.swap_deadline_seconds,
+            ticket_sales_paused: false,
+            early_bird_ticket_percentage: config.early_bird_ticket_percentage,
+            early_bird_discount_bp: config.early_bird_discount_bp,
+            metadata_hash: config.metadata_hash.clone(),
+            unique_winners: config.unique_winners,
+            nft_contract: config.nft_contract,
+        };
+        write_raffle(&env, &raffle);
+        env.storage().instance().set(&DataKey::Factory, &factory);
+        env.storage().instance().set(&DataKey::Admin, &admin);
+        // Store metadata hash for attestation verification
+        env.storage()
+            .persistent()
+            .set(&DataKey::MetadataHash, &config.metadata_hash);
+
+        RaffleCreated {
+            raffle_id: env.current_contract_address(),
+            creator,
+            end_time: config.end_time,
+            max_tickets: config.max_tickets,
+            ticket_price: config.ticket_price,
+            payment_token: config.payment_token,
+            prize_amount: config.prize_amount,
+            prizes: config.prizes,
+            description: config.description,
+            randomness_source: config.randomness_source,
+            metadata_hash: config.metadata_hash,
+            unique_winners: config.unique_winners,
+        }
+        .publish(&env);
+
+        Ok(())
     }
 
     pub fn deposit_prize(env: Env) -> Result<(), Error> {
@@ -225,7 +432,7 @@ impl Contract {
     /// Accept a seed from a single oracle in a k-of-n Quorum configuration.
     ///
     /// The caller must be one of the registered oracles in the raffle's
-    /// `RandomnessSource::Quorum { oracles }` list.  Each oracle may submit at
+    /// `RandomnessSource::Quorum` list.  Each oracle may submit at
     /// most once.  Once the k-th valid submission is received, the seeds are
     /// aggregated via `aggregate_quorum_seeds` and the raffle is finalized.
     pub fn provide_quorum_randomness(
@@ -233,10 +440,107 @@ impl Contract {
         random_seed: u64,
         request_id: u64,
     ) -> Result<(), Error> {
-        // This function was not implemented in the modules, keeping it inline for now.
-        // To complete the refactor, this logic should be moved to `draw.rs`.
-        // For now, we return an error to indicate it's not implemented.
-        Err(Error::InvalidParameters)
+        let drawing_lock: bool = env
+            .storage()
+            .instance()
+            .get(&DataKey::DrawingLock)
+            .unwrap_or(false);
+        if !drawing_lock {
+            return Err(Error::DrawingAlreadyComplete);
+        }
+
+        let caller = env
+            .invoker()
+            .expect("provide_quorum_randomness: invoker required");
+        caller.require_auth();
+
+        let raffle = read_raffle(&env)?;
+
+        // Verify random seed context: request_id
+        let stored: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::RandomnessRequestId)
+            .ok_or(Error::NoRandomnessRequest)?;
+        if stored != request_id {
+            return Err(Error::InvalidParameters);
+        }
+
+        // Extract the oracle list from the Quorum config.
+        let (k, oracles) = match &raffle.randomness_source {
+            RandomnessSource::Quorum(QuorumConfig { k, oracles }) => (*k, oracles.clone()),
+            _ => return Err(Error::InvalidParameters),
+        };
+
+        // Verify caller is a registered oracle.
+        let mut is_registered = false;
+        for i in 0..oracles.len() {
+            if let Some(addr) = oracles.get(i) {
+                if addr == caller {
+                    is_registered = true;
+                    break;
+                }
+            }
+        }
+        if !is_registered {
+            return Err(Error::OracleNotRegistered);
+        }
+
+        // Dedup: reject if this oracle already submitted.
+        if env.storage().persistent().has(&DataKey::QuorumSeed(caller.clone())) {
+            return Err(Error::DuplicateOracleSubmission);
+        }
+
+        // Store the seed.
+        env.storage()
+            .persistent()
+            .set(&DataKey::QuorumSeed(caller.clone()), &random_seed);
+
+        // Track submission order.
+        let mut submitted: Vec<Address> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::QuorumSubmittedOracles)
+            .unwrap_or_else(|| Vec::new(&env));
+        submitted.push_back(caller.clone());
+        env.storage()
+            .persistent()
+            .set(&DataKey::QuorumSubmittedOracles, &submitted);
+
+        let count = submitted.len() as u32;
+
+        // Emit delivery event.
+        OracleSeedDelivered {
+            oracle: caller.clone(),
+            seed: random_seed,
+            request_id,
+            current_count: count,
+            threshold: k,
+            timestamp: env.ledger().timestamp(),
+        }
+        .publish(&env);
+
+        // Check if quorum reached.
+        if count >= k {
+            // Build the seed list from storage.
+            let mut seeds = Vec::new(&env);
+            for i in 0..submitted.len() {
+                if let Some(addr) = submitted.get(i) {
+                    if let Some(s) = env
+                        .storage()
+                        .persistent()
+                        .get::<_, u64>(&DataKey::QuorumSeed(addr.clone()))
+                    {
+                        seeds.push_back((addr.clone(), s));
+                    }
+                }
+            }
+
+            let aggregate = randomness::aggregate_quorum_seeds(&env, &seeds);
+            helpers::do_finalize_with_seed(&env, raffle, aggregate, RandomnessType::Vrf)?;
+        }
+
+        Ok(())
     }
 
     pub fn trigger_randomness_fallback(
@@ -325,6 +629,23 @@ impl Contract {
         views::get_fairness_data(env)
     }
 
+    /// Return a complete attestation package for third-party draw verification.
+    ///
+    /// Combines fairness data, metadata hash, winner addresses, winning ticket IDs,
+    /// randomness source, and a hash of the effective raffle configuration into a
+    /// single response. A verifier needs only this one call to obtain everything
+    /// required to independently re-derive the winners.
+    ///
+    /// Only available in `Finalized` or `Claimed` states; returns `InvalidStatus`
+    /// otherwise.
+    ///
+    /// See [`docs/RANDOMNESS.md`] for the verification procedure.
+    pub fn get_draw_attestation(
+        env: Env,
+    ) -> Result<attestation::DrawAttestation, Error> {
+        attestation::get_draw_attestation(&env)
+    }
+
     /// Return all ticket IDs owned by `owner`.
     ///
     /// Uses the `OwnerTickets` index maintained during `buy_tickets` for an
@@ -386,6 +707,15 @@ impl Contract {
         amount: i128,
     ) -> Result<(), Error> {
         admin::rescue_tokens(env, token, recipient, amount)
+    }
+
+    /// Sweep residual payment-token balance to the treasury after the raffle is
+    /// fully settled (`Claimed` or `Cancelled` with no outstanding prize or
+    /// ticket-refund entitlements).
+    ///
+    /// See also: [`docs/EVENTS.md`](../../../docs/EVENTS.md) — `DustSwept`.
+    pub fn sweep_dust(env: Env) -> Result<(), Error> {
+        self::admin::sweep_dust(env)
     }
 
     pub fn update_oracle_address(env: Env, new_oracle: Address) -> Result<(), Error> {

@@ -4,10 +4,15 @@ import * as path from 'path';
 export class DeduplicationStore {
   private seen: Set<string> = new Set();
   private filePath: string;
+  private inMemoryMode: boolean;
 
   constructor(storePath: string = path.join(__dirname, '../../data/seen-requests.json')) {
     this.filePath = storePath;
-    this.loadFromDisk();
+    this.inMemoryMode = storePath === ':memory:';
+
+    if (!this.inMemoryMode) {
+      this.loadFromDisk();
+    }
   }
 
   private loadFromDisk() {
@@ -27,6 +32,10 @@ export class DeduplicationStore {
   }
 
   private saveToDisk() {
+    if (this.inMemoryMode) {
+      return; // Skip disk I/O in memory mode
+    }
+
     try {
       const dir = path.dirname(this.filePath);
       if (!fs.existsSync(dir)) {
