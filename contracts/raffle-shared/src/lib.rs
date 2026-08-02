@@ -225,6 +225,8 @@ pub struct Ticket {
     /// Human-facing ticket number used in draw/result UX.
     /// It is kept equal to `id` for the current contract implementation.
     pub ticket_number: u32,
+    /// The address that paid for this ticket.
+    pub payer: Address,
 }
 
 impl Ticket {
