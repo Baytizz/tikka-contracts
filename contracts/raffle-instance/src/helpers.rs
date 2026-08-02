@@ -158,6 +158,25 @@ pub(crate) fn require_not_paused(env: &Env) -> Result<(), Error> {
     {
         return Err(Error::ContractPaused);
     }
+    Ok(())
+}
+
+pub(crate) fn require_global_not_paused(env: &Env) -> Result<(), Error> {
+    let factory: Address = env
+        .storage()
+        .instance()
+        .get(&DataKey::Factory)
+        .ok_or(Error::NotInitialized)?;
+    let paused: bool = env.invoke_contract(
+        &factory,
+        &Symbol::new(env, "is_global_paused"),
+        ().into_val(env),
+    );
+    if paused {
+        return Err(Error::ContractPaused);
+    }
+    Ok(())
+}
 
 pub(crate) fn validate_token_address(env: &Env, token_address: &Address) -> Result<(), Error> {
     let token_client = token::Client::new(env, token_address);
