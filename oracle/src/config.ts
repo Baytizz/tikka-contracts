@@ -72,7 +72,8 @@ export function loadAndValidateConfig(): OracleConfig {
     errors.push('FACTORY_CONTRACT_ID is required');
   }
 
-  const rawPollInterval = process.env.POLL_INTERVAL_MS ?? process.env.ORACLE_POLL_INTERVAL_MS ?? '5000';
+  const rawPollInterval =
+    process.env.POLL_INTERVAL_MS ?? process.env.ORACLE_POLL_INTERVAL_MS ?? '5000';
   const pollIntervalMs = Number(rawPollInterval);
   if (!Number.isFinite(pollIntervalMs) || pollIntervalMs <= 0) {
     errors.push('POLL_INTERVAL_MS must be a positive number');
