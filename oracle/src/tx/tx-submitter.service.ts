@@ -6,6 +6,7 @@ import {
   TransactionBuilder,
   nativeToScVal,
 } from '@stellar/stellar-sdk';
+import { Alerter } from '../alert/alerter';
 import { KeyService } from '../keys/key.service';
 
 const MAX_RETRIES = 5;
@@ -19,17 +20,35 @@ export interface ProvideRandomnessParams {
   requestId: bigint;
 }
 
+export interface TxSubmitterOptions {
+  rpcUrl?: string;
+  networkPassphrase?: string;
+  alerter?: Alerter;
+  failureThreshold?: number;
+  sleep?: (ms: number) => Promise<void>;
+}
+
 export class TxSubmitterService {
   private readonly server: SorobanRpc.Server;
+  private readonly networkPassphrase: string;
+  private readonly alerter?: Alerter;
+  private readonly failureThreshold: number;
+  private readonly sleepImpl: (ms: number) => Promise<void>;
   private sequenceCache?: string;
+  private consecutiveFailures = 0;
 
   constructor(
     private readonly keyService: KeyService,
-    rpcUrl: string = process.env.STELLAR_RPC_URL ?? 'https://soroban-testnet.stellar.org',
-    private readonly networkPassphrase: string = process.env.STELLAR_NETWORK_PASSPHRASE ??
-      Networks.TESTNET,
+    options: TxSubmitterOptions = {},
   ) {
+    const rpcUrl = options.rpcUrl ?? process.env.STELLAR_RPC_URL ?? 'https://soroban-testnet.stellar.org';
     this.server = new SorobanRpc.Server(rpcUrl, { allowHttp: rpcUrl.startsWith('http://') });
+    this.networkPassphrase =
+      options.networkPassphrase ?? process.env.STELLAR_NETWORK_PASSPHRASE ?? Networks.TESTNET;
+    this.alerter = options.alerter;
+    this.failureThreshold =
+      options.failureThreshold ?? Number(process.env.ALERT_FAILURE_THRESHOLD ?? 3);
+    this.sleepImpl = options.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
   }
 
   async submitProvideRandomness(params: ProvideRandomnessParams): Promise<string> {
@@ -38,10 +57,13 @@ export class TxSubmitterService {
     for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
       try {
         const hash = await this.submitOnce(params);
+        this.consecutiveFailures = 0;
         return hash;
       } catch (err) {
         lastError = err instanceof Error ? err : new Error(String(err));
         const message = lastError.message;
+
+        this.recordFailure(message);
 
         if (!this.isRetryable(message)) {
           throw new Error(`Permanent failure submitting provide_randomness: ${message}`);
@@ -53,7 +75,7 @@ export class TxSubmitterService {
 
         if (attempt < MAX_RETRIES - 1) {
           const delay = BASE_BACKOFF_MS * 2 ** attempt;
-          await this.sleep(delay);
+          await this.sleepImpl(delay);
         }
       }
     }
@@ -127,7 +149,7 @@ export class TxSubmitterService {
       if (result.status !== SorobanRpc.Api.GetTransactionStatus.NOT_FOUND) {
         return result;
       }
-      await this.sleep(intervalMs);
+      await this.sleepImpl(intervalMs);
     }
     throw new Error(`TxTooLate: transaction ${hash} not confirmed within timeout`);
   }
@@ -147,7 +169,21 @@ export class TxSubmitterService {
     return retryable.some((token) => message.includes(token));
   }
 
-  private sleep(ms: number): Promise<void> {
-    return new Promise((resolve) => setTimeout(resolve, ms));
+  private recordFailure(message: string): void {
+    this.consecutiveFailures += 1;
+    if (!this.alerter || this.consecutiveFailures < this.failureThreshold) {
+      return;
+    }
+
+    void this.alerter.notify({
+      type: 'submission_failure',
+      severity: 'critical',
+      message: `provide_randomness submission failed (${this.consecutiveFailures} consecutive): ${message}`,
+      details: {
+        consecutiveFailures: this.consecutiveFailures,
+        threshold: this.failureThreshold,
+        message,
+      },
+    });
   }
 }
