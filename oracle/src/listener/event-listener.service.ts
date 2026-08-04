@@ -1,4 +1,5 @@
 import { Address, rpc as SorobanRpc, xdr } from '@stellar/stellar-sdk';
+import { Alerter } from '../alert/alerter';
 import { RequestQueue } from '../queue/request-queue';
 import { LedgerCheckpointStore } from './ledger-checkpoint';
 
@@ -7,6 +8,8 @@ export interface EventListenerOptions {
   rpcUrl?: string;
   checkpointStore?: LedgerCheckpointStore;
   sleep?: (ms: number) => Promise<void>;
+  alerter?: Alerter;
+  rpcUnreachableThreshold?: number;
 }
 
 export interface ParsedRandomnessRequest {
@@ -20,8 +23,11 @@ export class EventListenerService {
   private readonly server: SorobanRpc.Server;
   private readonly pollIntervalMs: number;
   private readonly sleep: (ms: number) => Promise<void>;
+  private readonly alerter?: Alerter;
+  private readonly rpcUnreachableThreshold: number;
   private startLedger: number;
   private listening = false;
+  private consecutiveRpcFailures = 0;
 
   constructor(
     private readonly queue: RequestQueue,
@@ -35,6 +41,9 @@ export class EventListenerService {
     this.pollIntervalMs =
       options.pollIntervalMs ?? Number(process.env.ORACLE_POLL_INTERVAL_MS ?? 5000);
     this.sleep = options.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
+    this.alerter = options.alerter;
+    this.rpcUnreachableThreshold =
+      options.rpcUnreachableThreshold ?? Number(process.env.ALERT_RPC_UNREACHABLE_THRESHOLD ?? 3);
     this.startLedger = 1;
   }
 
@@ -56,16 +65,29 @@ export class EventListenerService {
     this.listening = true;
 
     while (this.listening) {
-      const events = await this.server.getEvents({
-        startLedger: this.startLedger,
-        filters: [
-          {
-            type: 'contract',
-            contractIds,
-            topics: [[xdr.ScVal.scvSymbol('RandomnessRequested').toXDR('base64')]],
-          },
-        ],
-      });
+      let events: SorobanRpc.Api.GetEventsResponse;
+
+      try {
+        events = await this.server.getEvents({
+          startLedger: this.startLedger,
+          filters: [
+            {
+              type: 'contract',
+              contractIds,
+              topics: [[xdr.ScVal.scvSymbol('RandomnessRequested').toXDR('base64')]],
+            },
+          ],
+        });
+      } catch (error) {
+        this.consecutiveRpcFailures += 1;
+        if (this.consecutiveRpcFailures >= this.rpcUnreachableThreshold) {
+          this.alertRpcUnreachable(error);
+        }
+        await this.sleep(this.pollIntervalMs);
+        continue;
+      }
+
+      this.consecutiveRpcFailures = 0;
 
       for (const event of events.events) {
         const parsed = this.parseRandomnessRequestedEvent(event);
@@ -86,6 +108,23 @@ export class EventListenerService {
       await this.checkpointStore.save(events.latestLedger);
       await this.sleep(this.pollIntervalMs);
     }
+  }
+
+  private alertRpcUnreachable(error: unknown): void {
+    if (!this.alerter) {
+      return;
+    }
+
+    void this.alerter.notify({
+      type: 'rpc_unreachable',
+      severity: 'critical',
+      message: `RPC unreachable after ${this.consecutiveRpcFailures} consecutive polling failures`,
+      details: {
+        consecutiveFailures: this.consecutiveRpcFailures,
+        threshold: this.rpcUnreachableThreshold,
+        error: error instanceof Error ? error.message : String(error),
+      },
+    });
   }
 
   stopListening(): void {
