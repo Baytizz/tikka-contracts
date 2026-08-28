@@ -167,8 +167,19 @@ pub(crate) fn buy_tickets(env: Env, buyer: Address, quantity: u32) -> Result<u32
     {
         return Err(Error::TicketsSoldOut);
     }
-    if !raffle.allow_multiple && (current_count > 0 || quantity > 1) {
+    if raffle.max_tickets_per_address == 0
+        && !raffle.allow_multiple
+        && (current_count > 0 || quantity > 1)
+    {
         return Err(Error::MultipleTicketsNotAllowed);
+    }
+    if raffle.max_tickets_per_address > 0
+        && current_count
+            .checked_add(quantity)
+            .ok_or(Error::ArithmeticOverflow)?
+            > raffle.max_tickets_per_address
+    {
+        return Err(Error::ExceedsMaxTicketsPerAddress);
     }
 
     let timestamp = env.ledger().timestamp();
@@ -359,8 +370,19 @@ pub(crate) fn buy_tickets_for(env: Env, buyer: Address, recipient: Address, quan
     if snapshot_sold + quantity > raffle.max_tickets {
         return Err(Error::TicketsSoldOut);
     }
-    if !raffle.allow_multiple && (current_count > 0 || quantity > 1) {
+    if raffle.max_tickets_per_address == 0
+        && !raffle.allow_multiple
+        && (current_count > 0 || quantity > 1)
+    {
         return Err(Error::MultipleTicketsNotAllowed);
+    }
+    if raffle.max_tickets_per_address > 0
+        && current_count
+            .checked_add(quantity)
+            .ok_or(Error::ArithmeticOverflow)?
+            > raffle.max_tickets_per_address
+    {
+        return Err(Error::ExceedsMaxTicketsPerAddress);
     }
 
     let timestamp = env.ledger().timestamp();

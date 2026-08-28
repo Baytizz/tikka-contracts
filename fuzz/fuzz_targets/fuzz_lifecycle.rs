@@ -4,5 +4,5 @@ mod real_harness;
 use libfuzzer_sys::fuzz_target;
 
 fuzz_target!(|input: Vec<u8>| {
-    real_harness::commit_reveal(&input);
+    real_harness::lifecycle(&input);
 });

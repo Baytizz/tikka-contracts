@@ -50,6 +50,7 @@ Unfamiliar with a term in the issue? Check [`docs/GLOSSARY.md`](docs/GLOSSARY.md
 
 - Keep changes scoped and easy to review.
 - Write tests for new behavior when possible.
+- Every new privileged entrypoint must have both a positive authorization test for the configured admin and a negative test proving a non-admin is rejected. Keep these checks table-driven where the entrypoints share setup so missing coverage is visible in review.
 - Update documentation if behavior or APIs change.
 
 ## Tests

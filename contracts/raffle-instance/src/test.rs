@@ -1,5 +1,12 @@
 #![cfg(test)]
 
+#[path = "tests/admin.rs"]
+mod admin;
+#[path = "tests/invariants.rs"]
+mod invariants;
+#[path = "tests/tickets.rs"]
+mod tickets;
+
 use super::*;
 use ed25519_dalek::{Signer, SigningKey};
 use raffle_shared::{DEFAULT_CLAIM_LOCKUP_SECONDS, DEFAULT_SWAP_DEADLINE_SECONDS};
