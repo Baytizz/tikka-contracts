@@ -14,6 +14,12 @@ Fees are transferred to the treasury address at collection time. The
 `AccumulatedFees` ledger tracks the same amounts for admin `withdraw_fees`
 accounting — the total protocol take must equal the documented rate, not more.
 
+## Tier Prize Allocation
+
+- **Formula:** `prize_amount × tier_basis_points / 10_000` for every tier except the final tier.
+- **Final tier:** Receives `prize_amount` minus the amounts allocated to all earlier tiers.
+- **Rounding rule:** Integer-division dust is assigned to the final tier, so all tier prizes sum exactly to `prize_amount` and no prize funds remain undistributed.
+
 ## Worked Example (mirrored by `fee_model_worked_example_matches_lifecycle`)
 
 Parameters:

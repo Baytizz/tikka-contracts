@@ -35,6 +35,9 @@ jobs:
     - name: Check Formatting
       run: cargo fmt --all -- --check
 
+    - name: Check for Orphaned Modules
+      run: python3 scripts/check_orphan_modules.py
+
     - name: Build Contracts
       run: cargo build --target wasm32-unknown-unknown --release
 
@@ -65,6 +68,9 @@ jobs:
     - name: Run Tests
       run: cargo test --workspace
 
+    - name: Run Documentation Tests
+      run: cargo test --workspace --doc
+
   shellcheck:
     name: Shell Script Checks
     runs-on: ubuntu-latest
@@ -92,8 +98,9 @@ jobs:
         run: npm ci
       - name: Check formatting (Prettier)
         run: npm run format:check
+      - name: Lint (ESLint)
+        run: npm run lint
       - name: TypeScript compile check
         run: npm run typecheck
       - name: Run tests
-        run: npm test
-        continue-on-error: true
+        run: npm run test:ci

@@ -5,9 +5,10 @@
 //! counting via AccumulatedFees, no rounding surprises, and no over-withdrawal.
 
 use crate::{
-    DataKey, Error, RaffleConfig, RaffleInstance, RaffleInstanceClient, RaffleStatus,
-    MAX_PROTOCOL_FEE_BP, MIN_TICKET_PRICE,
+    calculate_tier_prize, DataKey, Error, Raffle, RaffleConfig, RaffleInstance,
+    RaffleInstanceClient, RaffleStatus, MAX_PRIZE_AMOUNT, MAX_PROTOCOL_FEE_BP, MIN_TICKET_PRICE,
 };
+use proptest::prelude::*;
 use raffle_shared::RandomnessSource;
 use soroban_sdk::{
     testutils::Address as _,
@@ -72,7 +73,7 @@ fn expected_fees(
     }
 }
 
-fn setup_raffle(
+fn setup_fee_raffle(
     env: &Env,
     fee_bp: u32,
     ticket_price: i128,
@@ -166,7 +167,7 @@ fn run_fee_lifecycle(
     env.ledger().set_timestamp(1_000);
 
     let (client, payment_token, creator, treasury, contract_id, admin, token) =
-        setup_raffle(env, fee_bp, ticket_price, max_tickets, prize_amount, tier_bps);
+        setup_fee_raffle(env, fee_bp, ticket_price, max_tickets, prize_amount, tier_bps);
 
     let expectations = expected_fees(ticket_price, max_tickets, prize_amount, tier_bps, fee_bp);
     let total_expected_fees = expectations.ticket_fees + expectations.claim_fees;
@@ -174,7 +175,6 @@ fn run_fee_lifecycle(
     let treasury_start = token.balance(&treasury);
     let contract_start = token.balance(&contract_id);
 
-    // Deposit prize and sell out tickets (one buyer per ticket for simplicity).
     client.deposit_prize();
     for ticket_idx in 0..max_tickets {
         let buyer = Address::generate(env);
@@ -184,7 +184,6 @@ fn run_fee_lifecycle(
     }
 
     client.finalize_raffle();
-
     env.ledger().set_timestamp(2_000);
 
     let raffle = client.get_raffle();
@@ -201,7 +200,6 @@ fn run_fee_lifecycle(
         assert_eq!(token.balance(&winner), balance_before + net);
     }
 
-    // Withdraw accumulated fees to exhaustion.
     let mut withdrawn = 0i128;
     loop {
         let remaining = client.get_accumulated_fees();
@@ -227,14 +225,11 @@ fn run_fee_lifecycle(
         assert_eq!(treasury_delta, 0, "zero fee rate must move no fees");
         assert_eq!(client.get_accumulated_fees(), 0);
     } else {
-        // Treasury must receive exactly the documented rate — not double via
-        // direct transfer plus withdraw_fees replay.
         assert_eq!(
             treasury_delta, total_expected_fees,
             "treasury must receive exactly ticket + claim fees (fee_bp={fee_bp})"
         );
 
-        // Winners received prize minus claim-time fees.
         let total_gross: i128 = tier_bps
             .iter()
             .enumerate()
@@ -245,13 +240,11 @@ fn run_fee_lifecycle(
             .sum();
         assert_eq!(winners_paid, total_gross - expectations.claim_fees);
 
-        // Repeated withdraw cannot exceed fees actually collected.
         assert!(withdrawn <= total_expected_fees);
         let _ = admin;
         let second = client.try_withdraw_fees(&treasury, &1);
         assert_eq!(second, Err(Ok(Error::InsufficientAccumulatedFees)));
 
-        // Contract residual: ticket revenue minus prize payouts minus any dust.
         let ticket_revenue = ticket_price * max_tickets as i128;
         let expected_contract = contract_start
             + ticket_revenue
@@ -271,11 +264,11 @@ fn run_fee_lifecycle(
 fn fee_model_worked_example_matches_lifecycle() {
     let env = Env::default();
     let per_ticket = ticket_fee_per_unit(EXAMPLE_TICKET_PRICE, EXAMPLE_FEE_BP);
-    assert_eq!(per_ticket, 2_500_000); // 2.5 XLM
+    assert_eq!(per_ticket, 2_500_000);
     assert_eq!(per_ticket * EXAMPLE_TICKET_COUNT as i128, 25_000_000);
 
     let claim = claim_fee(EXAMPLE_PRIZE_AMOUNT, EXAMPLE_FEE_BP);
-    assert_eq!(claim, 20_000_000); // 20 XLM
+    assert_eq!(claim, 20_000_000);
 
     run_fee_lifecycle(
         &env,
@@ -303,4 +296,101 @@ fn fee_accounting_full_lifecycle_at_all_fee_settings() {
             &tier_bps,
         );
     }
+}
+
+fn valid_prize_weights() -> impl Strategy<Value = std::vec::Vec<u32>> {
+    prop::collection::vec(0u32..=10_000, 0..=99)
+        .prop_filter("basis points must leave room for the final tier", |weights| {
+            weights.iter().copied().sum::<u32>() <= 10_000
+        })
+        .prop_map(|mut weights| {
+            let allocated = weights.iter().copied().sum::<u32>();
+            weights.push(10_000 - allocated);
+            weights
+        })
+}
+
+fn test_raffle(env: &Env, weights: &[u32], prize_amount: i128) -> Raffle {
+    let mut prizes = Vec::new(env);
+    for weight in weights {
+        prizes.push_back(*weight);
+    }
+
+    Raffle {
+        creator: Address::generate(env),
+        description: String::from_str(env, "tier invariant"),
+        end_time: 0,
+        no_deadline: true,
+        max_tickets: 1,
+        max_tickets_per_tx: 1,
+        max_tickets_per_address: 1,
+        min_tickets: 1,
+        allow_multiple: true,
+        ticket_price: MIN_TICKET_PRICE,
+        payment_token: Address::generate(env),
+        prize_token: Address::generate(env),
+        prize_amount,
+        prizes,
+        tickets_sold: 0,
+        status: RaffleStatus::PendingPrize,
+        prize_deposited: false,
+        winners: Vec::new(env),
+        randomness_source: RandomnessSource::Internal,
+        oracle_address: None,
+        protocol_fee_bp: 0,
+        treasury_address: None,
+        swap_router: None,
+        tikka_token: None,
+        finalized_at: None,
+        claim_lockup_seconds: 0,
+        swap_deadline_seconds: 0,
+        ticket_sales_paused: false,
+        early_bird_ticket_percentage: 0,
+        early_bird_discount_bp: 0,
+        metadata_hash: BytesN::from_array(env, &[1; 32]),
+        unique_winners: false,
+        nft_contract: None,
+    }
+}
+
+fn assert_tier_sum(weights: &[u32], prize_amount: i128) {
+    let env = Env::default();
+    let raffle = test_raffle(&env, weights, prize_amount);
+    let mut total = 0i128;
+
+    for index in 0..raffle.prizes.len() {
+        let amount = calculate_tier_prize(&raffle, index).unwrap();
+        assert!(amount >= 0, "tier {index} computed a negative prize");
+        total += amount;
+    }
+
+    assert_eq!(total, prize_amount);
+}
+
+proptest! {
+    #[test]
+    fn tier_prizes_sum_to_prize_amount(
+        weights in valid_prize_weights(),
+        prize_amount in MIN_TICKET_PRICE..=MAX_PRIZE_AMOUNT,
+    ) {
+        assert_tier_sum(&weights, prize_amount);
+    }
+}
+
+#[test]
+fn one_hundred_equal_tiers_sum_exactly() {
+    assert_tier_sum(&[100; 100], 1_000_003);
+}
+
+#[test]
+fn one_tier_receives_the_entire_prize() {
+    assert_tier_sum(&[10_000], MAX_PRIZE_AMOUNT);
+}
+
+#[test]
+fn final_tier_absorbs_maximum_rounding_dust() {
+    assert_tier_sum(
+        &[101; 99].iter().copied().chain([1]).collect::<std::vec::Vec<_>>(),
+        10_000,
+    );
 }

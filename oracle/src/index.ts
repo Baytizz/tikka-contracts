@@ -1,11 +1,11 @@
 import { Alerter } from './alert/alerter';
 import { loadAndValidateConfig } from './config';
 import { startHealthServer } from './health/health.server';
+import { OraclePipeline } from './pipeline';
 
 /**
- * Bootstrap entry point. Wires operational alerting and exposes /health and
- * /metrics for observability. Service wiring (KeyService, EventListenerService,
- * TxSubmitterService) plugs in here.
+ * Bootstrap entry point. Wires the full oracle pipeline and exposes /health and
+ * /metrics for observability.
  */
 async function main(): Promise<void> {
   const config = loadAndValidateConfig();
@@ -28,23 +28,12 @@ async function main(): Promise<void> {
     });
   }
 
-  let shuttingDown = false;
-  const shutdown = (signal: string) => {
-    if (shuttingDown) {
-      return;
-    }
-    shuttingDown = true;
-    void alerter
-      .notify({
-        type: 'process_stop',
-        severity: 'info',
-        message: `Oracle service stopped (${signal})`,
-      })
-      .finally(() => process.exit(0));
-  };
+  const pipeline = new OraclePipeline({
+    config,
+    alerter,
+  });
 
-  process.on('SIGINT', () => shutdown('SIGINT'));
-  process.on('SIGTERM', () => shutdown('SIGTERM'));
+  await pipeline.start([config.factoryContractId]);
 }
 
 main().catch((error) => {

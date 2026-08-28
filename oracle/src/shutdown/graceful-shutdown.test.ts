@@ -94,9 +94,9 @@ describe('GracefulShutdown – drains in-flight jobs', () => {
     const { sd, checkpoint, stopListening, exitFn } = makeShutdown({
       jobs: [makeJob(10n), makeJob(20n)],
       checkpointLedger: 200,
-      processJob: async (job) => {
-        if (job.requestId === 10n) {
-          completed.push(job.requestId);
+      processJob: async (_job) => {
+        if (_job.requestId === 10n) {
+          completed.push(_job.requestId);
           return true; // completed
         }
         // job 20 was already processed (dedup)
@@ -119,11 +119,11 @@ describe('GracefulShutdown – drains in-flight jobs', () => {
     const { sd, stopListening, exitFn } = makeShutdown({
       jobs: [makeJob(1n), makeJob(2n), makeJob(3n)],
       checkpointLedger: 50,
-      processJob: async (job) => {
-        if (job.requestId === 2n) {
+      processJob: async (_job) => {
+        if (_job.requestId === 2n) {
           throw new Error('simulated RPC failure');
         }
-        completed.push(job.requestId);
+        completed.push(_job.requestId);
         return true;
       },
     });
@@ -155,16 +155,16 @@ describe('GracefulShutdown – force-exits on drain timeout', () => {
     // Manually controllable timer — avoids polluting the global setTimeout
     // with jest.useFakeTimers() and leaking into subsequent describe blocks.
     let timerCallback: (() => void) | undefined;
-    const fakeSetTimeout = (fn: () => void, _ms: number) => {
+    const fakeSetTimeout = (fn: () => void) => {
       timerCallback = fn;
       return 0 as unknown as ReturnType<typeof setTimeout>;
     };
-    const fakeClearTimeout = (_h: ReturnType<typeof setTimeout>) => {
+    const fakeClearTimeout = () => {
       timerCallback = undefined;
     };
 
     // processJob never resolves — simulates a hung in-flight submission.
-    const neverResolves = (_job: RandomnessJob) => new Promise<boolean>(() => {});
+    const neverResolves = () => new Promise<boolean>(() => {});
 
     const queue = new RequestQueue();
     queue.enqueue(makeJob(99n));

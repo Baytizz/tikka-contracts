@@ -49,8 +49,11 @@ export class TxSubmitterService {
 
   constructor(
     private readonly keyService: KeyService,
-    options: TxSubmitterOptions = {},
+    options: TxSubmitterOptions | string = {},
   ) {
+    if (typeof options === 'string') {
+      options = { rpcUrl: options };
+    }
     const rpcUrl =
       options.rpcUrl ?? process.env['STELLAR_RPC_URL'] ?? 'https://soroban-testnet.stellar.org';
     this.server = new SorobanRpc.Server(rpcUrl, { allowHttp: rpcUrl.startsWith('http://') });
@@ -135,7 +138,7 @@ export class TxSubmitterService {
       nativeToScVal(params.requestId, { type: 'u64' })
     );
 
-    let tx = new TransactionBuilder(sourceAccount, {
+    const tx = new TransactionBuilder(sourceAccount, {
       fee: String(SUBMISSION_FEE_STROOPS),
       networkPassphrase: this.networkPassphrase,
     })
@@ -218,6 +221,10 @@ export class TxSubmitterService {
       'network',
       'not confirmed within timeout',
       'Send failed',
+      // HTTP 5xx transient errors from getAccount / simulate / send
+      'status code 5',
+      'status code 429',
+      'Request failed',
     ];
     return retryable.some((token) => message.includes(token));
   }
