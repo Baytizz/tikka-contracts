@@ -16,6 +16,11 @@
 - **Rounding Rule:** Always round up in the protocol's favor. Any dust is absorbed by the winner.
 - **Example:** 2.5% fee on 1000 XLM prize tier = 25 XLM to treasury, 975 XLM to winner
 
+### Tier Prize Allocation
+- **Formula:** `prize_amount × tier_basis_points / 10000` for every tier except the final tier.
+- **Final tier:** Receives `prize_amount` minus the amounts allocated to all earlier tiers.
+- **Rounding Rule:** Integer-division dust is assigned to the final tier, so all tier prizes sum exactly to `prize_amount` and no prize funds remain undistributed.
+
 ## Effective Total Fee
 
 For a raffle with protocol_fee_bp = 250 (2.5%), ticket_price = 100 XLM, 10 tickets, prize = 800 XLM:

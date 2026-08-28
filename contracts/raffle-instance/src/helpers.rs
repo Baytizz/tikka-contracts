@@ -18,7 +18,7 @@ pub(crate) fn write_raffle(env: &Env, raffle: &Raffle) {
 pub(crate) fn require_admin(env: &Env) -> Result<Address, Error> {
     let admin: Address = env
         .storage()
-        .persistent()
+        .instance()
         .get(&DataKey::Admin)
         .ok_or(Error::NotAuthorized)?;
     admin.require_auth();

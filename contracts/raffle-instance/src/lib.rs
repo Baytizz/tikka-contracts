@@ -188,7 +188,8 @@ pub enum Error {
     InvalidTicketRange = 55,
     InsufficientAccumulatedFees = 56,
     PrizeConfigurationLocked = 57,
-    ExceedsMaxTicketsPerTx = 58,`n    ExceedsMaxTicketsPerAddress = 65,
+    ExceedsMaxTicketsPerTx = 58,
+    ExceedsMaxTicketsPerAddress = 65,
     DrawingAlreadyInProgress = 59,
     InvalidStatusForDrawingTransition = 60, // Note: This seems to be a copy-paste error in the original code.
     DrawingAlreadyComplete = 61,
@@ -234,6 +235,9 @@ impl Contract {
             return Err(Error::InvalidTicketRange);
         }
         if config.max_tickets_per_tx == 0 || config.max_tickets_per_tx > config.max_tickets {
+            return Err(Error::InvalidParameters);
+        }
+        if config.max_tickets_per_address > config.max_tickets {
             return Err(Error::InvalidParameters);
         }
 
@@ -349,6 +353,7 @@ if config.randomness_source == RandomnessSource::External {
             no_deadline: config.no_deadline,
             max_tickets: config.max_tickets,
             max_tickets_per_tx: config.max_tickets_per_tx,
+            max_tickets_per_address: config.max_tickets_per_address,
             min_tickets: config.min_tickets,
             allow_multiple: config.allow_multiple,
             ticket_price: config.ticket_price,
@@ -409,6 +414,15 @@ if config.randomness_source == RandomnessSource::External {
 
     pub fn buy_tickets(env: Env, buyer: Address, quantity: u32) -> Result<u32, Error> {
         tickets::buy_tickets(env, buyer, quantity)
+    }
+
+    pub fn buy_tickets_for(
+        env: Env,
+        buyer: Address,
+        recipient: Address,
+        quantity: u32,
+    ) -> Result<u32, Error> {
+        tickets::buy_tickets_for(env, buyer, recipient, quantity)
     }
 
     pub fn submit_commit(env: Env, ticket_id: u32, hash: BytesN<32>) -> Result<(), Error> {
@@ -683,6 +697,13 @@ if config.randomness_source == RandomnessSource::External {
 
     pub fn is_ticket_sales_paused(env: Env) -> bool {
         views::is_ticket_sales_paused(env)
+    }
+
+    pub fn get_remaining_ticket_allowance(
+        env: Env,
+        owner: Address,
+    ) -> Result<u32, Error> {
+        views::get_remaining_ticket_allowance(env, owner)
     }
 
     /// Quote the exact cost of buying `quantity` tickets including early-bird
