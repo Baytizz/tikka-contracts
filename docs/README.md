@@ -24,6 +24,13 @@ Complete guide to deploying Tikka contracts to testnet and mainnet. Covers the `
 **Audience:** Contributors, Integrators, Auditors  
 Detailed explanation of the three randomness modes: Internal PRNG, External oracle, and CommitReveal. Includes a decision table for choosing the appropriate mode based on trust assumptions, cost, and prize scale. Critical for understanding winner selection security properties.
 
+The independent draw-attestation material is consolidated at the end of this document. It describes the current source status as unverified where the implementation is not wired into the module tree.
+
+### [DEVELOPMENT.md](DEVELOPMENT.md)
+
+**Audience:** Contributors
+Development setup, local checks, repository conventions, and links to the focused testing and deployment guides. Build claims are subject to the current repository build status.
+
 ### [COMMIT_REVEAL.md](COMMIT_REVEAL.md)
 
 **Audience:** Contributors, Integrators  
@@ -52,7 +59,8 @@ Complete documentation of all error codes used in Tikka contracts. Includes erro
 ### [FEE_MODEL.md](FEE_MODEL.md)
 
 **Audience:** Contributors, Integrators  
-Explains the Tikka protocol fee model, including fee collection points at ticket purchase and prize claim. Provides formulas, examples, and effective total fee calculations. Useful for understanding protocol economics and revenue distribution.
+Explains the implemented Tikka protocol fee model. Fees are currently
+collected at ticket purchase only; prize-claim fees are not implemented.
 
 ### [FAQ.md](FAQ.md)
 
@@ -82,6 +90,13 @@ For auditors, add [COMMIT_REVEAL.md](COMMIT_REVEAL.md) and [FEE_MODEL.md](FEE_MO
 
 ## Related Documentation
 
-- **Development guide:** See [`../DEVELOPMENT.md`](../DEVELOPMENT.md) for local build workflows and TTL bump examples
-- **Contributing guidelines:** See [`../CONTRIBUTING.md`](../CONTRIBUTING.md) for contribution expectations and PR process
-- **Project overview:** See [`../README.md`](../README.md) for feature descriptions and getting started
+- [Project overview](../README.md)
+- [Contributing guidelines](../CONTRIBUTING.md)
+- [Security policy](../SECURITY.md)
+- [Support policy](../SUPPORT.md)
+- [Code of conduct](../CODE_OF_CONDUCT.md)
+- [Changelog](../CHANGELOG.md)
+- [License](../LICENSE)
+- [Oracle service README](../oracle/README.md)
+- [Oracle runbook](../oracle/RUNBOOK.md)
+- [Fuzzing README](../fuzz/README.md)

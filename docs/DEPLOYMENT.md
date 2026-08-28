@@ -294,7 +294,7 @@ The scripts currently record the **factory** contract ID only. Instance addresse
 
 ## Related docs
 
-- [DEVELOPMENT.md](../DEVELOPMENT.md) — local build and TTL bump examples
+- [DEVELOPMENT.md](DEVELOPMENT.md) — local build and repository workflow
 - [ARCHITECTURE.md](ARCHITECTURE.md) — factory → instance → oracle flow
 - [RANDOMNESS.md](RANDOMNESS.md) — choose Internal / External / CommitReveal before create
 - [FAQ.md](FAQ.md) — CLI naming, WASM targets, Node 20 for `oracle/`

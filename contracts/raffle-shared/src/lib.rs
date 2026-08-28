@@ -131,8 +131,8 @@ pub struct RaffleConfig {
     /// Maximum tickets a single address may purchase per transaction.
     /// Zero is invalid and rejected during initialization with `Error::InvalidParameters` (must be in 1..=max_tickets).
     pub max_tickets_per_tx: u32,
-    /// Maximum total tickets a single address may own (0 = unlimited).
-    /// When set, must be <= max_tickets. Supersedes allow_multiple.
+    /// Reserved per-address ticket cap (0 = unlimited). Enforcement and
+    /// initialization validation are not implemented yet.
     pub max_tickets_per_address: u32,
     /// Minimum number of tickets required for a successful draw.
     pub min_tickets: u32,
@@ -150,9 +150,8 @@ pub struct RaffleConfig {
     pub randomness_source: RandomnessSource,
     /// Optional oracle contract address for external randomness flows.
     pub oracle_address: Option<Address>,
-    /// Protocol fee in basis points (100 = 1%).
-    /// Charged at two points: ticket purchase and prize claim.
-    /// See docs/FEE_MODEL.md for full fee model details.
+    /// Protocol fee in basis points (100 = 1%). Currently charged at ticket
+    /// purchase only. See docs/FEE_MODEL.md for the implemented fee model.
     pub protocol_fee_bp: u32,
     /// Optional treasury recipient address for protocol fees.
     pub treasury_address: Option<Address>,
@@ -182,7 +181,8 @@ pub struct RaffleConfig {
     pub unique_winners: bool,
     /// Optional tiered bundle pricing for ticket purchases.
     pub bundles: Vec<TicketBundle>,
-    /// Optional prize token override (defaults to `payment_token`).
+    /// Optional prize token override. The raffle-instance initializer does not
+    /// currently apply this field and always uses `payment_token`.
     pub prize_token: Option<Address>,
     /// Optional NFT contract for ticket receipts.
     pub nft_contract: Option<Address>,

@@ -51,6 +51,8 @@ Unfamiliar with a term in the issue? Check [`docs/GLOSSARY.md`](docs/GLOSSARY.md
 - Keep changes scoped and easy to review.
 - Write tests for new behavior when possible.
 - Update documentation if behavior or APIs change.
+- Include the corresponding documentation update in the same PR whenever
+	behavior or an API changes; mark unfinished behavior as unimplemented.
 
 ## Tests
 
