@@ -68,6 +68,9 @@ jobs:
     - name: Run Tests
       run: cargo test --workspace
 
+    - name: Run Documentation Tests
+      run: cargo test --workspace --doc
+
   shellcheck:
     name: Shell Script Checks
     runs-on: ubuntu-latest

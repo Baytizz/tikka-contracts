@@ -54,7 +54,10 @@ Audit data proving how a draw outcome was derived, including the seed value, ran
 
 ### Protocol Fee
 
-A percentage-based fee charged by the protocol at two points: when participants buy tickets and when winners claim prizes. The fee is expressed in basis points (100 basis points = 1%). The maximum allowed fee is 20% (2,000 basis points). Protocol fees are collected by the treasury address and can be used to fund development or redistributed.
+A percentage-based fee currently charged when participants buy tickets. Prize
+claims do not currently charge this fee. The fee is expressed in basis points
+(100 basis points = 1%). The maximum allowed fee is 20% (2,000 basis points).
+Protocol fees are collected by the treasury address.
 
 **Code reference**: [`contracts/raffle-shared/src/lib.rs`](../contracts/raffle-shared/src/lib.rs) — `RaffleConfig.protocol_fee_bp`
 
@@ -62,7 +65,10 @@ A percentage-based fee charged by the protocol at two points: when participants 
 
 ### Payment Token
 
-The Stellar asset contract (`Address`) used for all raffle transactions. Participants pay ticket prices in this token, and prizes are distributed in the same token. The contract enforces that tickets and prizes use the same asset to simplify accounting.
+The Stellar asset contract (`Address`) used to buy tickets. The current
+raffle-instance initializer also uses it for prize deposits and claims; the
+optional `RaffleConfig.prize_token` override exists but is not currently
+applied.
 
 **Code reference**: [`contracts/raffle-shared/src/lib.rs`](../contracts/raffle-shared/src/lib.rs) — `RaffleConfig.payment_token`
 

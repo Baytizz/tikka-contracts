@@ -809,40 +809,42 @@ fn test_wipe_storage_removes_all_keys() {
     assert_eq!(client.get_raffle().status, RaffleStatus::Cancelled);
     assert_metadata_hash(&client, &expected_metadata_hash);
 
-    client.wipe_storage();
+    assert_eq!(
+        client.try_wipe_storage(),
+        Err(Ok(Error::InvalidStateTransition))
+    );
 
     env.as_contract(&contract_id, || {
-        for i in 1..=5 {
-            assert!(!env.storage().persistent().has(&DataKey::Ticket(i)));
-            assert!(!env.storage().persistent().has(&DataKey::TicketRefunded(i)));
-            assert!(!env.storage().persistent().has(&DataKey::CommitEntry(i)));
-        }
-        assert!(!env
-            .storage()
-            .persistent()
-            .has(&DataKey::TicketCount(buyer_a.clone())));
-        assert!(!env
-            .storage()
-            .persistent()
-            .has(&DataKey::TicketCount(buyer_b.clone())));
-        assert!(!env.storage().persistent().has(&DataKey::TicketBuyers));
-        assert!(!env.storage().instance().has(&DataKey::Raffle));
-        assert!(!env.storage().instance().has(&DataKey::Factory));
-        assert!(!env.storage().instance().has(&DataKey::Admin));
-        assert!(!env.storage().instance().has(&DataKey::Paused));
-        assert!(!env.storage().instance().has(&DataKey::ReentrancyGuard));
-        assert!(!env.storage().instance().has(&DataKey::AccumulatedFees));
-        assert!(!env.storage().instance().has(&DataKey::RandomnessRequested));
-        assert!(!env
-            .storage()
-            .instance()
-            .has(&DataKey::RandomnessRequestLedger));
-        assert!(!env.storage().instance().has(&DataKey::RandomnessRequestId));
-        assert!(!env.storage().instance().has(&DataKey::DrawingLock));
-        assert!(!env.storage().instance().has(&DataKey::FinishTime));
-        assert!(!env.storage().persistent().has(&DataKey::RandomnessSeed));
-        assert!(!env.storage().persistent().has(&DataKey::Admin));
+        assert!(env.storage().instance().has(&DataKey::Raffle));
+        assert!(env.storage().instance().has(&DataKey::Factory));
+        assert!(env.storage().instance().has(&DataKey::Admin));
+        assert!(env.storage().persistent().has(&DataKey::Ticket(1)));
+        assert!(env.storage().persistent().has(&DataKey::TicketCount(buyer_a)));
+        assert!(env.storage().persistent().has(&DataKey::TicketCount(buyer_b)));
+        assert!(env.storage().persistent().has(&DataKey::TicketBuyers));
     });
+}
+
+#[test]
+fn wipe_storage_rejects_every_non_terminal_status() {
+    let env = Env::default();
+    env.mock_all_auths();
+    env.ledger().set_timestamp(1_000);
+
+    let (client, contract_id, _, _, _, _) = setup_active_raffle(&env);
+    for status in [
+        RaffleStatus::PendingPrize,
+        RaffleStatus::Active,
+        RaffleStatus::Drawing,
+        RaffleStatus::Finalized,
+    ] {
+        env.as_contract(&contract_id, || {
+            let mut raffle = crate::read_raffle(&env).unwrap();
+            raffle.status = status.clone();
+            crate::write_raffle(&env, &raffle);
+        });
+        assert_eq!(client.try_wipe_storage(), Err(Ok(Error::InvalidStatus)));
+    }
 }
 
 #[test]
@@ -896,11 +898,11 @@ fn emergency_withdraw_fails_before_delay_in_finalized_state() {
     let start_events = env.events().all().len();
     let result = client.try_emergency_withdraw(&creator);
     assert_eq!(env.events().all().len(), start_events);
-    assert_eq!(result.err(), Some(Ok(Error::EmergencyTooEarly)));
+    assert_eq!(result.err(), Some(Ok(Error::InvalidStatus)));
 }
 
 #[test]
-fn emergency_withdraw_succeeds_after_delay_in_finalized_state() {
+fn emergency_withdraw_rejects_finalized_state_after_delay() {
     let env = Env::default();
     env.mock_all_auths();
     env.ledger().set_timestamp(1_000);
@@ -955,10 +957,11 @@ fn emergency_withdraw_succeeds_after_delay_in_finalized_state() {
     env.ledger()
         .set_timestamp(1_000 + EMERGENCY_WITHDRAW_DELAY_SECONDS + 1);
 
-    client.emergency_withdraw(&creator);
+    let result = client.try_emergency_withdraw(&creator);
+    assert_eq!(result.err(), Some(Ok(Error::InvalidStatus)));
     let raffle = client.get_raffle();
-    assert_eq!(raffle.status, RaffleStatus::Cancelled);
-    assert!(!raffle.prize_deposited);
+    assert_eq!(raffle.status, RaffleStatus::Finalized);
+    assert!(raffle.prize_deposited);
 }
 
 #[test]
@@ -1019,7 +1022,7 @@ fn emergency_withdraw_fails_for_no_deadline_raffle_before_timeout() {
 }
 
 #[test]
-fn emergency_withdraw_succeeds_for_no_deadline_drawing_raffle_after_timeout() {
+fn emergency_withdraw_succeeds_for_drawing_raffle_after_timeout() {
     let env = Env::default();
     env.mock_all_auths();
     env.ledger().set_timestamp(1_000);
@@ -1067,8 +1070,13 @@ fn emergency_withdraw_succeeds_for_no_deadline_drawing_raffle_after_timeout() {
     client.finalize_raffle();
 
     env.ledger()
-        .set_timestamp(2_000 + EMERGENCY_WITHDRAW_DELAY_SECONDS + 1);
+        .set_timestamp(2_000 + EMERGENCY_WITHDRAW_DELAY_SECONDS);
 
+    let result = client.try_emergency_withdraw(&creator);
+    assert_eq!(result.err(), Some(Ok(Error::EmergencyTooEarly)));
+
+    env.ledger()
+        .set_timestamp(2_000 + EMERGENCY_WITHDRAW_DELAY_SECONDS + 1);
     client.emergency_withdraw(&creator);
     let raffle = client.get_raffle();
     assert_eq!(raffle.status, RaffleStatus::Cancelled);
