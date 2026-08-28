@@ -46,7 +46,7 @@ stateDiagram-v2
     Drawing --> Finalized: provide_randomness / finalize (internal)
     Drawing --> Cancelled: cancel_raffle / fallback(refund)
     Finalized --> Claimed: all winners claim
-    Finalized --> Cancelled: emergency_withdraw
+    Drawing --> Cancelled: emergency_withdraw (after timeout)
 ```
 
 ### State notes
@@ -57,6 +57,33 @@ stateDiagram-v2
 - `Finalized`: winners are locked and can claim.
 - `Claimed`: terminal state when all claims are complete.
 - `Cancelled` / `Failed`: terminal non-success states.
+
+### Token egress and escrow solvency
+
+The instance has four intended token-moving paths:
+
+- `claim_prize` pays each unclaimed winner and records protocol fees.
+- `sweep_unclaimed` pays unclaimed prizes to the treasury after the claim
+    expiry period and marks those prizes claimed.
+- `refund_prize` returns the deposited prize after `Cancelled` or `Failed`.
+- `refund_ticket` returns each ticket payment after `Cancelled` or `Failed`.
+- `withdraw_fees` pays only recorded accumulated fees after finalization.
+
+Administrative escape paths are constrained by the same invariant:
+
+- `emergency_withdraw` is only available for a timed-out `Drawing` raffle.
+    Its delay starts at `end_time`, or at the randomness request ledger for a
+    no-deadline raffle. It transfers only the deposited prize token and leaves
+    all remaining obligations covered.
+- `rescue_tokens` can transfer unrelated-token surplus, but for either
+    configured raffle token it must leave unpaid ticket refunds, accumulated
+    fees, and outstanding prize claims fully covered.
+- `sweep_dust` is available only after settlement and transfers payment-token
+    surplus above all remaining entitlements; accumulated fees are preserved.
+
+No token-moving path may reduce a token balance below its outstanding
+entitlement. `emergency_withdraw` cannot operate on `Finalized`, because
+unclaimed winners remain entitled to their prizes.
 
 ### Entrypoint Lifecycle Transition Matrix
 

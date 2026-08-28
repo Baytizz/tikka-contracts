@@ -61,7 +61,8 @@ use crate::helpers::bump_raffle_ttl;
 /// 5. Verifies the raffle is `Active`, prize has been deposited, and the
 ///    deadline has not passed (unless `no_deadline` is set).
 /// 6. Checks `allow_multiple` — when `false`, each address may only hold one
-///    ticket across all transactions.
+///    ticket across all transactions. The reserved
+///    `max_tickets_per_address` field is not enforced yet.
 /// 7. Performs a double-read concurrency guard (snapshot vs. persisted state).
 /// 8. Writes each [`Ticket`] to persistent storage under
 ///    [`DataKey::Ticket(id)`](crate::DataKey::Ticket).
@@ -73,8 +74,8 @@ use crate::helpers::bump_raffle_ttl;
 ///
 /// ## Protocol fee
 ///
-/// The fee is collected at purchase time only — **not** again at prize claim.
-/// Formula: `floor(total_price × protocol_fee_bp / 10 000)`.
+/// The fee is collected at purchase time only. Prize-claim fee accounting is
+/// not implemented. Formula: `floor(total_price × protocol_fee_bp / 10 000)`.
 ///
 /// # Auth
 ///
@@ -167,8 +168,19 @@ pub(crate) fn buy_tickets(env: Env, buyer: Address, quantity: u32) -> Result<u32
     {
         return Err(Error::TicketsSoldOut);
     }
-    if !raffle.allow_multiple && (current_count > 0 || quantity > 1) {
+    if raffle.max_tickets_per_address == 0
+        && !raffle.allow_multiple
+        && (current_count > 0 || quantity > 1)
+    {
         return Err(Error::MultipleTicketsNotAllowed);
+    }
+    if raffle.max_tickets_per_address > 0
+        && current_count
+            .checked_add(quantity)
+            .ok_or(Error::ArithmeticOverflow)?
+            > raffle.max_tickets_per_address
+    {
+        return Err(Error::ExceedsMaxTicketsPerAddress);
     }
 
     let timestamp = env.ledger().timestamp();
@@ -359,8 +371,19 @@ pub(crate) fn buy_tickets_for(env: Env, buyer: Address, recipient: Address, quan
     if snapshot_sold + quantity > raffle.max_tickets {
         return Err(Error::TicketsSoldOut);
     }
-    if !raffle.allow_multiple && (current_count > 0 || quantity > 1) {
+    if raffle.max_tickets_per_address == 0
+        && !raffle.allow_multiple
+        && (current_count > 0 || quantity > 1)
+    {
         return Err(Error::MultipleTicketsNotAllowed);
+    }
+    if raffle.max_tickets_per_address > 0
+        && current_count
+            .checked_add(quantity)
+            .ok_or(Error::ArithmeticOverflow)?
+            > raffle.max_tickets_per_address
+    {
+        return Err(Error::ExceedsMaxTicketsPerAddress);
     }
 
     let timestamp = env.ledger().timestamp();

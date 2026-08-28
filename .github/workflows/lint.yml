@@ -24,10 +24,5 @@ jobs:
           ACTIONLINT_VERSION: v1.7.12
           ACTIONLINT_CHECKSUM: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
         run: |
-          curl -sSL "https://github.com/rhysd/actionlint/releases/download/${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION#v}_linux_amd64.tar.gz" \
-            -o actionlint.tar.gz
-          echo "${ACTIONLINT_CHECKSUM}  actionlint.tar.gz" | sha256sum -c -
-          tar xzf actionlint.tar.gz
-          sudo mv actionlint /usr/local/bin/
-      - name: Run actionlint
-        run: actionlint -color .github/workflows/*.yml
+          bash <(curl -s https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash) latest
+          ./actionlint -color .github/workflows/*.yml
