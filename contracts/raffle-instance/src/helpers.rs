@@ -51,7 +51,7 @@ pub(crate) fn revert_status(env: &Env, raffle: &mut Raffle, target: RaffleStatus
 pub(crate) fn require_admin(env: &Env) -> Result<Address, Error> {
     let admin: Address = env
         .storage()
-        .persistent()
+        .instance()
         .get(&DataKey::Admin)
         .ok_or(Error::NotAuthorized)?;
     admin.require_auth();

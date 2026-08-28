@@ -53,11 +53,12 @@ use crate::{
 /// | `end_time` | Must be in the future unless `no_deadline = true`; `no_deadline` requires `end_time == 0` |
 /// | `max_tickets` | `1 ≤ max_tickets ≤ MAX_TICKETS_LIMIT` (100 000) |
 /// | `max_tickets_per_tx` | `1 ≤ max_tickets_per_tx ≤ max_tickets` |
+/// | `max_tickets_per_address` | Not currently validated or enforced |
 /// | `min_tickets` | `min_tickets ≤ max_tickets` |
 /// | `ticket_price` | `≥ MIN_TICKET_PRICE` (10 000 stroops) |
 /// | `prize_amount` | `ticket_price ≤ prize_amount ≤ MAX_PRIZE_AMOUNT` |
 /// | `prizes` | Non-empty, `len ≤ MAX_PRIZES` (100), basis-points sum == 10 000 |
-/// | `protocol_fee_bp` | `≤ 10 000` |
+/// | `protocol_fee_bp` | `≤ 10 000`; charged at ticket purchase only |
 /// | `oracle_address` | Required (and not self) when `randomness_source == External`; forbidden otherwise |
 /// | `metadata_hash` | Must not be the all-zero 32-byte value |
 /// | `category` | See [`validate_category`] |

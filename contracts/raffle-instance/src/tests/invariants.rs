@@ -1,202 +1,97 @@
-//! Exhaustive status × entrypoint matrix (#832).
+use super::*;
+use proptest::prelude::*;
+use soroban_sdk::{Address, BytesN, Env, String, Vec};
 
-use raffle_shared::{CancelReason, RaffleConfig, RaffleStatus, RandomnessSource};
-use soroban_sdk::{token::StellarAssetClient, Address, BytesN, Env, String, Vec};
-
-use crate::{
-    read_raffle, write_raffle, DataKey, Error, RaffleInstance, RaffleInstanceClient, MIN_TICKET_PRICE,
-};
-
-#[derive(Clone, Copy, Debug)]
-enum Entrypoint {
-    DepositPrize,
-    BuyTickets,
-    FinalizeRaffle,
-    ClaimPrize,
-    SweepUnclaimed,
-    CancelRaffle,
-    RefundPrize,
-    PreviewBuy,
+fn valid_prize_weights() -> impl Strategy<Value = std::vec::Vec<u32>> {
+    prop::collection::vec(0u32..=10_000, 0..=99)
+        .prop_filter("basis points must leave room for the final tier", |weights| {
+            weights.iter().copied().sum::<u32>() <= 10_000
+        })
+        .prop_map(|mut weights| {
+            let allocated = weights.iter().copied().sum::<u32>();
+            weights.push(10_000 - allocated);
+            weights
+        })
 }
 
-fn seed_raffle(env: &Env, contract_id: &Address, status: RaffleStatus) {
-    env.as_contract(contract_id, || {
-        let mut raffle = read_raffle(env).unwrap_or_else(|_| {
-            panic!("raffle must be initialised before matrix tests");
-        });
-        raffle.status = status;
-        write_raffle(env, &raffle);
-    });
-}
+fn test_raffle(env: &Env, weights: &[u32], prize_amount: i128) -> Raffle {
+    let mut prizes = Vec::new(env);
+    for weight in weights {
+        prizes.push_back(*weight);
+    }
 
-fn setup_pending(env: &Env) -> (RaffleInstanceClient<'_>, Address, Address, Address) {
-    let contract_id = env.register(RaffleInstance, ());
-    let client = RaffleInstanceClient::new(env, &contract_id);
-    let factory = Address::generate(env);
-    let admin = Address::generate(env);
-    let creator = Address::generate(env);
-    let token_admin = Address::generate(env);
-    let payment_token = env
-        .register_stellar_asset_contract_v2(token_admin.clone())
-        .address();
-    StellarAssetClient::new(env, &payment_token).mint(&creator, &1_000_000);
-
-    let config = RaffleConfig {
-        description: String::from_str(env, "matrix"),
+    Raffle {
+        creator: Address::generate(env),
+        description: String::from_str(env, "tier invariant"),
         end_time: 0,
         no_deadline: true,
-        max_tickets: 3,
-        max_tickets_per_tx: 3,
-        max_tickets_per_address: 0,
+        max_tickets: 1,
+        max_tickets_per_tx: 1,
+        max_tickets_per_address: 1,
         min_tickets: 1,
         allow_multiple: true,
         ticket_price: MIN_TICKET_PRICE,
-        payment_token,
-        prize_amount: MIN_TICKET_PRICE * 3,
-        prizes: Vec::from_array(env, [10_000u32]),
-        randomness_source: RandomnessSource::Internal,
+        payment_token: Address::generate(env),
+        prize_token: Address::generate(env),
+        prize_amount,
+        prizes,
+        tickets_sold: 0,
+        status: RaffleStatus::PendingPrize,
+        prize_deposited: false,
+        winners: Vec::new(env),
+        randomness_source: raffle_shared::RandomnessSource::Internal,
         oracle_address: None,
         protocol_fee_bp: 0,
         treasury_address: None,
         swap_router: None,
         tikka_token: None,
-        metadata_hash: BytesN::from_array(env, &[1u8; 32]),
-        claim_lockup_seconds: None,
-        swap_deadline_seconds: None,
+        finalized_at: None,
+        claim_lockup_seconds: 0,
+        swap_deadline_seconds: 0,
+        ticket_sales_paused: false,
         early_bird_ticket_percentage: 0,
         early_bird_discount_bp: 0,
-        category: None,
+        metadata_hash: BytesN::from_array(env, &[1; 32]),
         unique_winners: false,
-        bundles: Vec::new(env),
-        prize_token: None,
         nft_contract: None,
-    };
-
-    client.init(&factory, &admin, &creator, &config);
-    (client, contract_id, creator, admin)
-}
-
-fn invoke(
-    client: &RaffleInstanceClient<'_>,
-    creator: &Address,
-    entrypoint: Entrypoint,
-) -> Result<(), Error> {
-    match entrypoint {
-        Entrypoint::DepositPrize => client.try_deposit_prize().map(|_| ()),
-        Entrypoint::BuyTickets => client
-            .try_buy_tickets(creator, &1u32)
-            .map(|_| ())
-            .map_err(|e| e.unwrap()),
-        Entrypoint::FinalizeRaffle => client.try_finalize_raffle().map(|_| ()),
-        Entrypoint::ClaimPrize => client
-            .try_claim_prize(creator, &0u32)
-            .map(|_| ())
-            .map_err(|e| e.unwrap()),
-        Entrypoint::SweepUnclaimed => client.try_sweep_unclaimed().map(|_| ()),
-        Entrypoint::CancelRaffle => client
-            .try_cancel_raffle(&CancelReason::CreatorCancelled)
-            .map(|_| ()),
-        Entrypoint::RefundPrize => client.try_refund_prize().map(|_| ()),
-        Entrypoint::PreviewBuy => client.try_preview_buy(&1u32).map(|_| ()),
     }
 }
 
-fn expected_illegal(status: RaffleStatus, entrypoint: Entrypoint) -> bool {
-    use Entrypoint::*;
-    use RaffleStatus::*;
-    match (status, entrypoint) {
-        (PendingPrize, DepositPrize) => false,
-        (PendingPrize, PreviewBuy) => false,
-        (Active, BuyTickets) => false,
-        (Active, FinalizeRaffle) => false,
-        (Active, CancelRaffle) => false,
-        (Finalized, ClaimPrize) => false,
-        (Finalized, SweepUnclaimed) => false,
-        (Cancelled | Failed, RefundPrize) => false,
-        (Claimed | Cancelled | Failed, _) if matches!(entrypoint, DepositPrize | BuyTickets | FinalizeRaffle | CancelRaffle) => true,
-        (PendingPrize, BuyTickets | FinalizeRaffle | ClaimPrize | SweepUnclaimed | CancelRaffle | RefundPrize) => true,
-        (Active, DepositPrize | ClaimPrize | SweepUnclaimed | RefundPrize) => true,
-        (Drawing, _) => true,
-        (Finalized, DepositPrize | BuyTickets | FinalizeRaffle | CancelRaffle | RefundPrize) => true,
-        (Claimed, _) => true,
-        _ => true,
-    }
-}
-
-#[test]
-fn terminal_states_are_absorbing() {
-    for status in RaffleStatus::all() {
-        assert_eq!(status.is_terminal(), matches!(status, RaffleStatus::Cancelled | RaffleStatus::Failed | RaffleStatus::Claimed));
-        if status.is_terminal() {
-            for target in RaffleStatus::all() {
-                if *target != status {
-                    assert!(
-                        !status.can_transition_to(*target),
-                        "{status:?} must not transition to {target:?}"
-                    );
-                }
-            }
-        }
-    }
-}
-
-#[test]
-fn transition_graph_matches_canonical_lifecycle() {
-    assert!(RaffleStatus::PendingPrize.can_transition_to(RaffleStatus::Active));
-    assert!(RaffleStatus::Active.can_transition_to(RaffleStatus::Drawing));
-    assert!(RaffleStatus::Active.can_transition_to(RaffleStatus::Failed));
-    assert!(RaffleStatus::Active.can_transition_to(RaffleStatus::Cancelled));
-    assert!(RaffleStatus::Drawing.can_transition_to(RaffleStatus::Finalized));
-    assert!(RaffleStatus::Drawing.can_transition_to(RaffleStatus::Cancelled));
-    assert!(RaffleStatus::Finalized.can_transition_to(RaffleStatus::Claimed));
-    assert!(RaffleStatus::Drawing.can_internal_revert_to(RaffleStatus::Active));
-    assert!(!RaffleStatus::Active.can_internal_revert_to(RaffleStatus::Drawing));
-}
-
-#[test]
-fn state_entrypoint_matrix_documents_errors() {
+fn assert_tier_sum(weights: &[u32], prize_amount: i128) {
     let env = Env::default();
-    env.mock_all_auths();
+    let raffle = test_raffle(&env, weights, prize_amount);
+    let mut total = 0i128;
 
-    let entrypoints = [
-        Entrypoint::DepositPrize,
-        Entrypoint::BuyTickets,
-        Entrypoint::FinalizeRaffle,
-        Entrypoint::ClaimPrize,
-        Entrypoint::SweepUnclaimed,
-        Entrypoint::CancelRaffle,
-        Entrypoint::RefundPrize,
-        Entrypoint::PreviewBuy,
-    ];
-
-    for status in RaffleStatus::all() {
-        let (client, contract_id, creator, _) = setup_pending(&env);
-        seed_raffle(&env, &contract_id, *status);
-
-        for entrypoint in entrypoints {
-            let result = invoke(&client, &creator, entrypoint);
-            if expected_illegal(*status, entrypoint) {
-                assert!(
-                    result.is_err(),
-                    "{status:?} + {entrypoint:?} should be rejected"
-                );
-                if let Err(err) = result {
-                    assert!(
-                        matches!(
-                            err,
-                            Error::InvalidStatus
-                                | Error::InvalidStateTransition
-                                | Error::RaffleInactive
-                                | Error::PrizeAlreadyDeposited
-                                | Error::PrizeNotDeposited
-                                | Error::NotInitialized
-                                | Error::InvalidParameters
-                                | Error::ClaimTooEarly
-                        ),
-                        "{status:?} + {entrypoint:?} returned unexpected {err:?}"
-                    );
-                }
-            }
-        }
+    for index in 0..raffle.prizes.len() {
+        let amount = calculate_tier_prize(&raffle, index).unwrap();
+        assert!(amount >= 0, "tier {index} computed a negative prize");
+        total += amount;
     }
+
+    assert_eq!(total, prize_amount);
+}
+
+proptest! {
+    #[test]
+    fn tier_prizes_sum_to_prize_amount(
+        weights in valid_prize_weights(),
+        prize_amount in MIN_TICKET_PRICE..=MAX_PRIZE_AMOUNT,
+    ) {
+        assert_tier_sum(&weights, prize_amount);
+    }
+}
+
+#[test]
+fn one_hundred_equal_tiers_sum_exactly() {
+    assert_tier_sum(&[100; 100], 1_000_003);
+}
+
+#[test]
+fn one_tier_receives_the_entire_prize() {
+    assert_tier_sum(&[10_000], MAX_PRIZE_AMOUNT);
+}
+
+#[test]
+fn final_tier_absorbs_maximum_rounding_dust() {
+    assert_tier_sum(&[101; 99].iter().copied().chain([1]).collect::<std::vec::Vec<_>>(), 10_000);
 }

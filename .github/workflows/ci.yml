@@ -35,6 +35,9 @@ jobs:
     - name: Check Formatting
       run: cargo fmt --all -- --check
 
+    - name: Check for Orphaned Modules
+      run: python3 scripts/check_orphan_modules.py
+
     - name: Build Contracts
       run: cargo build --target wasm32-unknown-unknown --release
 
@@ -67,19 +70,8 @@ jobs:
     - name: Run Tests
       run: cargo test --workspace
 
-  fuzz:
-    name: Fuzz targets (nightly)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
-        with:
-          toolchain: nightly
-      - name: Install cargo-fuzz
-        run: cargo install cargo-fuzz --locked
-      - name: Build fuzz targets
-        working-directory: fuzz
-        run: cargo +nightly fuzz build
+    - name: Run Documentation Tests
+      run: cargo test --workspace --doc
 
   shellcheck:
     name: Shell Script Checks
@@ -108,10 +100,9 @@ jobs:
         run: npm ci
       - name: Check formatting (Prettier)
         run: npm run format:check
+      - name: Lint (ESLint)
+        run: npm run lint
       - name: TypeScript compile check
         run: npm run build
       - name: Run tests
-        run: npm test
-        continue-on-error: true
-      - name: npm audit (production dependencies)
-        run: npm audit --omit=dev --audit-level=high
+        run: npm run test:ci

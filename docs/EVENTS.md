@@ -611,7 +611,7 @@ Emitted when a verified winner claims their prize.
 | `payment_token` | `Address` | Token contract used for the payout |
 | `gross_amount` | `i128` | Total prize amount before any deductions |
 | `net_amount` | `i128` | Amount transferred to the winner (equals gross; fees are charged at ticket purchase) |
-| `platform_fee` | `i128` | Always 0 — protocol fees are collected on ticket sales, not prize claims |
+| `platform_fee` | `i128` | Always 0 — prize-claim protocol fees are not implemented |
 | `claimed_at` | `u64` | Ledger timestamp of the claim |
 
 **Emitted by:** `claim_prize`
@@ -664,7 +664,7 @@ Emitted when an emergency withdrawal of the prize is performed for a stuck raffl
 | `timestamp` | `u64` | Ledger timestamp of the withdrawal |
 
 **Emitted by:** `emergency_withdraw`
-**When:** After the `EMERGENCY_WITHDRAW_DELAY_SECONDS` (90-day) timeout has elapsed for a raffle stuck in `Finalized` or `Drawing` status. Creator or admin forcibly withdraws the prize pool.
+**When:** After the `EMERGENCY_WITHDRAW_DELAY_SECONDS` (90-day) timeout has elapsed for a raffle stuck in `Drawing` status. The delay starts at `end_time`, or at the randomness request ledger for a no-deadline raffle. Finalized raffles are not eligible because winners may still claim.
 
 ---
 

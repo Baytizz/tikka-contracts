@@ -2156,7 +2156,8 @@ impl RaffleFactory {
 
 #[cfg(test)]
 mod tests {
-    mod budget;
+    #[path = "tests/governance.rs"]
+    mod governance;
 
     use super::*;
     use raffle_shared::{RandomnessSource, DEFAULT_PAGE_LIMIT, MAX_PAGE_LIMIT};

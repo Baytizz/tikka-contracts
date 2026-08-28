@@ -2,6 +2,10 @@
 
 ![Tikka Logo](docs/assets/tikka-logo.svg)
 
+> Documentation is indexed in [docs/README.md](docs/README.md). The repository
+> is currently undergoing a hardening and build-repair pass; feature claims
+> should be treated as unverified until the relevant contract compiles.
+
 [![codecov](https://codecov.io/gh/OWNER/tikka-contracts/branch/master/graph/badge.svg)](https://codecov.io/gh/OWNER/tikka-contracts)
 
 ## 🎯 What is Tikka?
@@ -118,6 +122,9 @@ flowchart TD
 
 ## 🔧 Technical Architecture
 
+For authoritative architecture, storage, randomness, event, error, testing,
+and deployment documentation, see the [documentation index](docs/README.md).
+
 ### **Smart Contract Stack**
 
 - **Soroban (Rust)**: Smart contract implementation
@@ -166,7 +173,7 @@ pub struct RaffleConfig {
     pub prizes: Vec<u32>,                     // Prize distribution vector; each value maps to winner allocation units.
     pub randomness_source: RandomnessSource,  // Randomness source strategy selected for the raffle.
     pub oracle_address: Option<Address>,      // Optional oracle contract address for external randomness flows.
-    pub protocol_fee_bp: u32,                 // Protocol fee in basis points (100 = 1%), charged at ticket purchase and prize claim.
+    pub protocol_fee_bp: u32,                 // Protocol fee in basis points (100 = 1%), charged at ticket purchase only.
     pub treasury_address: Option<Address>,    // Optional treasury recipient address for protocol fees.
     pub swap_router: Option<Address>,         // Optional router contract used when swap-based flows are enabled.
     pub tikka_token: Option<Address>,         // Optional protocol token used in incentive/swap features.
@@ -211,7 +218,7 @@ pub struct Raffle {
     pub claimed_winners: Vec<bool>,
     pub randomness_source: RandomnessSource,
     pub oracle_address: Option<Address>,
-    pub protocol_fee_bp: u32,
+    pub protocol_fee_bp: u32,                 // Charged at ticket purchase only; prize-claim fees are not implemented.
     pub treasury_address: Option<Address>,
     pub swap_router: Option<Address>,
     pub tikka_token: Option<Address>,
@@ -377,7 +384,7 @@ make fuzz        # Run fuzz targets
 make all         # lint + test + build (CI-like)
 ```
 
-For additional setup details and build prerequisites, see `DEVELOPMENT.md`.
+For additional setup details and build prerequisites, see [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md).
 
 ## 🤝 Contributing
 

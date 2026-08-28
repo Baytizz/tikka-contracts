@@ -1,10 +1,16 @@
 import { Alerter } from './alert/alerter';
 import { loadAndValidateConfig } from './config';
+import { OraclePipeline } from './pipeline';
 
 /**
- * Bootstrap entry point. Currently wires operational alerting (process
- * start/stop) so operators are notified when the oracle goes down. Service
- * wiring (KeyService, EventListenerService, TxSubmitterService) plugs in here.
+ * Bootstrap entry point. Wires the full oracle pipeline:
+ * - KeyService for cryptographic operations
+ * - EventListenerService for polling RandomnessRequested events
+ * - RequestQueue for job queuing
+ * - DeduplicationStore for duplicate detection
+ * - VrfService for randomness proof generation
+ * - TxSubmitterService for submitting provide_randomness transactions
+ * - GracefulShutdown for clean shutdown with job draining
  */
 async function main(): Promise<void> {
   const config = loadAndValidateConfig();
@@ -25,23 +31,14 @@ async function main(): Promise<void> {
     });
   }
 
-  let shuttingDown = false;
-  const shutdown = (signal: string) => {
-    if (shuttingDown) {
-      return;
-    }
-    shuttingDown = true;
-    void alerter
-      .notify({
-        type: 'process_stop',
-        severity: 'info',
-        message: `Oracle service stopped (${signal})`,
-      })
-      .finally(() => process.exit(0));
-  };
+  // Create and start the oracle pipeline
+  const pipeline = new OraclePipeline({
+    config,
+    alerter,
+  });
 
-  process.on('SIGINT', () => shutdown('SIGINT'));
-  process.on('SIGTERM', () => shutdown('SIGTERM'));
+  // Start listening for events from the factory contract
+  await pipeline.start([config.factoryContractId]);
 }
 
 main().catch((error) => {
