@@ -6,9 +6,30 @@ This document defines key terms used throughout Tikka contracts, documentation, 
 
 ### RaffleStatus
 
-The lifecycle state of a raffle instance. Transitions are enforced by contract logic and represent the canonical on-chain lifecycle used by indexers and clients. Possible states are: `PendingPrize` (prize not yet deposited), `Active` (ticket sales open), `Drawing` (randomness pending), `Finalized` (winners selected), `Cancelled`, `Failed`, or `Claimed` (all winners have collected). See the contract state machine in [`docs/ARCHITECTURE.md`](ARCHITECTURE.md) for transition rules.
+The lifecycle state of a raffle instance. Transitions are enforced by contract logic and represent the canonical on-chain lifecycle used by indexers and clients. Possible states are: `PendingPrize` (prize not yet deposited), `Active` (ticket sales open), `Drawing` (randomness pending), `Finalized` (winners selected), `Cancelled`, `Failed`, or `Claimed` (all winners have collected).
 
-**Code reference**: [`contracts/raffle-shared/src/lib.rs`](../contracts/raffle-shared/src/lib.rs) — `enum RaffleStatus`
+**Canonical transition graph** (defined in code via `RaffleStatus::can_transition_to`):
+
+```mermaid
+stateDiagram-v2
+    [*] --> PendingPrize: init()
+    PendingPrize --> Active: deposit_prize()
+    Active --> Drawing: finalize_raffle()
+    Active --> Failed: finalize_raffle() [min tickets unmet]
+    Active --> Cancelled: cancel_raffle()
+    Drawing --> Finalized: randomness delivered / internal finalize
+    Drawing --> Cancelled: oracle timeout refund
+    Finalized --> Claimed: all prizes claimed or swept
+    Cancelled --> [*]
+    Failed --> [*]
+    Claimed --> [*]
+```
+
+Terminal states (`Cancelled`, `Failed`, `Claimed`) are absorbing — no entrypoint may move a raffle out of them.
+
+Illegal transitions return `Error::InvalidStateTransition`.
+
+**Code reference**: [`contracts/raffle-shared/src/lib.rs`](../contracts/raffle-shared/src/lib.rs) — `enum RaffleStatus`, `is_terminal()`, `can_transition_to()`
 
 ### Raffle
 

@@ -775,3 +775,5 @@ if config.randomness_source == RandomnessSource::External {
 }
 #[cfg(test)]
 mod test;
+#[cfg(test)]
+mod tests;

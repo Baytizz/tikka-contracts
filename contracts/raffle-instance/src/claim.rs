@@ -1,8 +1,9 @@
 use soroban_sdk::{token, Address, Env};
 
-use crate::events::{PrizeClaimed, PrizeSwept, PrizeRefunded, RaffleStatusChanged, TicketRefunded};
+use crate::events::{PrizeClaimed, PrizeSwept, PrizeRefunded, TicketRefunded};
 use crate::{
-    calculate_tier_prize, read_raffle, write_raffle, DataKey, Error, Guard, RaffleStatus, Winner,
+    calculate_tier_prize, read_raffle, transition_status, write_raffle, DataKey, Error, Guard,
+    RaffleStatus, Winner,
 };
 
 pub(crate) fn claim_prize(env: Env, winner: Address, tier_index: u32) -> Result<i128, Error> {
@@ -41,8 +42,12 @@ pub(crate) fn claim_prize(env: Env, winner: Address, tier_index: u32) -> Result<
 
     let all_claimed = raffle.winners.iter().all(|w| w.claimed);
     if all_claimed {
-        raffle.status = RaffleStatus::Claimed;
-        RaffleStatusChanged { old_status: RaffleStatus::Finalized, new_status: RaffleStatus::Claimed, timestamp: env.ledger().timestamp() }.publish(&env);
+        transition_status(
+            &env,
+            &mut raffle,
+            RaffleStatus::Claimed,
+            env.ledger().timestamp(),
+        )?;
     }
     write_raffle(&env, &raffle);
 
@@ -97,8 +102,7 @@ pub(crate) fn sweep_unclaimed(env: Env) -> Result<u32, Error> {
     }
 
     if raffle.winners.iter().all(|w| w.claimed) {
-        raffle.status = RaffleStatus::Claimed;
-        RaffleStatusChanged { old_status: RaffleStatus::Finalized, new_status: RaffleStatus::Claimed, timestamp: now }.publish(&env);
+        transition_status(&env, &mut raffle, RaffleStatus::Claimed, now)?;
     }
     write_raffle(&env, &raffle);
     Ok(swept)

@@ -41,20 +41,23 @@ jobs:
     - name: Build Contracts
       run: cargo build --target wasm32-unknown-unknown --release
 
-    - name: Check WASM Binary Size (128KB limit)
+    - name: Check WASM Binary Size (128KB limit + baseline delta)
+      run: python3 scripts/check_wasm_sizes.py
+
+    - name: Report WASM size delta on PR
+      if: github.event_name == 'pull_request'
       run: |
-        MAX_SIZE=131072
-        FAILED=0
-        for wasm in target/wasm32-unknown-unknown/release/*.wasm; do
-          [ -e "$wasm" ] || continue
-          SIZE=$(stat -c%s "$wasm")
-          echo "$wasm: ${SIZE} bytes"
-          if [ "$SIZE" -gt "$MAX_SIZE" ]; then
-            echo "ERROR: $wasm exceeds 128KB limit (${SIZE} > ${MAX_SIZE} bytes)"
-            FAILED=1
-          fi
-        done
-        exit $FAILED
+        python3 scripts/check_wasm_sizes.py
+        if [ -f /tmp/wasm-size-report.txt ]; then
+          {
+            echo "### WASM size report"
+            echo '```'
+            cat /tmp/wasm-size-report.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+        fi
+      env:
+        WASM_SIZE_REPORT: /tmp/wasm-size-report.txt
 
     - name: Check Error Docs Sync
       run: |
@@ -64,7 +67,6 @@ jobs:
     - name: Run Linter (Clippy)
       run: cargo clippy --all-targets --all-features -- -D warnings
 
-    # Prefer `cargo test --workspace` over bare `cargo test` so all crates run.
     - name: Run Tests
       run: cargo test --workspace
 

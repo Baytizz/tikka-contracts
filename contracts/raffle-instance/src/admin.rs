@@ -169,8 +169,12 @@ pub(crate) fn cancel_raffle(env: Env, reason: CancelReason) -> Result<(), Error>
     {
         return Err(Error::InvalidStatus);
     }
-    raffle.status = RaffleStatus::Cancelled;
-    write_raffle(&env, &raffle);
+    transition_status(
+        &env,
+        &mut raffle,
+        RaffleStatus::Cancelled,
+        env.ledger().timestamp(),
+    )?;
     RaffleCancelled {
         creator: raffle.creator.clone(),
         reason,
@@ -567,8 +571,12 @@ pub(crate) fn emergency_withdraw(env: Env, caller: Address) -> Result<(), Error>
     }
 
     raffle.prize_deposited = false;
-    raffle.status = RaffleStatus::Cancelled;
-    write_raffle(&env, &raffle);
+    transition_status(
+        &env,
+        &mut raffle,
+        RaffleStatus::Cancelled,
+        env.ledger().timestamp(),
+    )?;
 
     let tc = token::Client::new(&env, &prize_token);
     tc.transfer(
