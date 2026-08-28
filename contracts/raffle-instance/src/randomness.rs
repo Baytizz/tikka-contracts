@@ -10,21 +10,22 @@
 //! | [`PrngWinnerSelection`] | On-chain PRNG | `RandomnessSource::Internal` and `CommitReveal` fallback |
 //! | [`OracleSeedWinnerSelection`] | External VRF seed | `RandomnessSource::External` via [`provide_randomness`] |
 //!
-//! Both implement the [`WinnerSelectionStrategy`] trait, which lets
-//! [`do_finalize_with_seed`](crate::helpers::do_finalize_with_seed) choose the
-//! right algorithm at runtime without a `match` on the randomness source.
+//! Both implement the [`WinnerSelectionStrategy`] trait. The finalize path
+//! currently dispatches explicitly in `draw.rs`; the trait is not itself a
+//! runtime selector.
 //!
 //! # Internal seed construction
 //!
-//! [`build_internal_seed`] mixes **five** independent entropy sources before
-//! passing the result to `env.prng().seed()`:
+//! [`build_internal_seed`] mixes four base inputs. `PrngWinnerSelection` then
+//! adds `tickets_sold` in a second hash before passing the result to
+//! `env.prng().seed()`:
 //!
 //! ```text
 //! ledger_timestamp  ─┐
 //! ledger_sequence   ─┤
 //! network_id        ─┼─► XDR-pack ─► SHA-256 ─► BytesN<32>
 //! raffle_id (XDR)   ─┤
-//! tickets_sold      ─┘  (added in PrngWinnerSelection::seed_bytes)
+//! raffle_id         ─┘
 //! ```
 //!
 //! Using XDR serialisation for packing eliminates length-ambiguity collisions
@@ -81,7 +82,7 @@ use soroban_sdk::{xdr::ToXdr, Address, Bytes, BytesN, Env, Vec};
 // that a VRF oracle provides a verifiably-unbiased seed that cannot be
 // predicted or manipulated before `provide_randomness` is called.
 //
-// Entropy sources mixed into the seed:
+// Base entropy sources mixed into the seed:
 //   1. `ledger_timestamp`  – wall-clock time in seconds
 //   2. `ledger_sequence`   – monotonically-increasing ledger counter
 //   3. `network_id`        – SHA-256 of the network passphrase (32 bytes),
@@ -90,18 +91,16 @@ use soroban_sdk::{xdr::ToXdr, Address, Bytes, BytesN, Env, Vec};
 //   4. `raffle_id`         – the raffle contract address in XDR encoding,
 //                            making every raffle's draw independent even when
 //                            finalized in the same ledger
-//   5. `tickets_sold`      – ticket count at draw time, so otherwise-identical
-//                            draws with different participation produce
-//                            different seeds
+// `PrngWinnerSelection::seed_bytes` adds `tickets_sold` in a second hash.
 //
-// All five inputs are packed together and passed through `env.crypto().sha256`
-// to produce a uniformly-distributed 32-byte value that is used as the PRNG
-// seed via `env.prng().seed()`.
+// The four base inputs are packed together and passed through
+// `env.crypto().sha256`; `PrngWinnerSelection` then incorporates the ticket
+// count in a second hash before calling `env.prng().seed()`.
 
-/// Build a 32-byte internal PRNG seed by hashing five independent entropy
-/// sources together.
+/// Build a 32-byte base internal PRNG seed by hashing four entropy sources
+/// together. The ticket count is added by [`PrngWinnerSelection::seed_bytes`].
 ///
-/// The five sources are (in order):
+/// The four base sources are (in order):
 ///
 /// 1. `ledger_timestamp` — wall-clock time in seconds; changes every ~5 s.
 /// 2. `ledger_sequence` — monotonically-increasing ledger counter.
@@ -110,12 +109,11 @@ use soroban_sdk::{xdr::ToXdr, Address, Bytes, BytesN, Env, Vec};
 ///    for an identical raffle and ledger state.
 /// 4. `raffle_id` (XDR-encoded) — the current contract's address, making
 ///    concurrent raffles finalised in the same ledger produce distinct seeds.
-/// 5. `tickets_sold` — added in [`PrngWinnerSelection::seed_bytes`] as an
-///    additional XDR-packed field so that otherwise-identical setups with
-///    different participation produce different outcomes.
+/// `PrngWinnerSelection::seed_bytes` then adds `tickets_sold` as an additional
+/// XDR-packed field in a second hash.
 ///
-/// All sources are XDR-serialised into a single byte buffer before being
-/// passed to `env.crypto().sha256`.  XDR encoding is unambiguous and
+/// The base sources are XDR-serialised into a single byte buffer before being
+/// passed to `env.crypto().sha256`. XDR encoding is unambiguous and
 /// length-delimited so there are no field-boundary collision attacks.
 ///
 /// # Returns

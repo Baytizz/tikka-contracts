@@ -9,6 +9,7 @@ use soroban_sdk::{
 };
 
 mod admin;
+mod attestation;
 mod claim;
 mod draw;
 mod events;
@@ -40,7 +41,8 @@ use crate::events::{
     FeesWithdrawn, MetadataHashUpdated, OracleAddressUpdated, PrizeClaimed, PrizeDeposited,
     PrizeRefunded, ProtocolFeeUpdated, RaffleCancelled, RaffleCreated, RaffleFailed,
     RaffleFinalized, RaffleStatusChanged, OracleSeedDelivered, RandomnessFallbackTriggered,
-    RandomnessReceived, RandomnessRequested, SwapDeadlineUpdated, TicketNftMinted, TicketPurchased,
+    RandomnessReceived, RandomnessRequested, StorageWiped, SwapDeadlineUpdated, TicketNftMinted,
+    TicketPurchased,
     TicketRefunded, TicketSalesPaused, TicketSalesResumed, TokensRescued, WinnerDrawn,
 };
 
@@ -63,8 +65,8 @@ pub struct Raffle {
     pub allow_multiple: bool,
     pub ticket_price: i128,
     pub payment_token: Address,
-    /// The token used for prize deposit and claims.
-    /// Defaults to `payment_token` when not explicitly set by the creator.
+    /// The token used for prize deposit and claims. The current initializer
+    /// always sets this to `payment_token`; the config override is not wired.
     pub prize_token: Address,
     pub prize_amount: i128,
     pub prizes: Vec<u32>,
@@ -125,9 +127,8 @@ pub enum DataKey {
     CommitEntry(u32),
     DrawingLock,
     TicketBuyers,
-    /// Per-owner ticket ID index: owner Address → Vec<u32> of ticket IDs.
-    /// Appended to on every successful ticket purchase, allowing O(1) owner
-    /// lookups without scanning the full ticket space.
+    /// Reserved per-owner ticket ID index: owner Address → Vec<u32> of ticket
+    /// IDs. It is not currently written by ticket purchase logic.
     OwnerTickets(Address),
     PendingAdminCancel,
     /// Quorum randomness: maps registered oracle address → submitted seed.
@@ -239,6 +240,9 @@ impl Contract {
         if config.max_tickets_per_tx == 0 || config.max_tickets_per_tx > config.max_tickets {
             return Err(Error::InvalidParameters);
         }
+        if config.max_tickets_per_address > config.max_tickets {
+            return Err(Error::InvalidParameters);
+        }
 
         if config.ticket_price < MIN_TICKET_PRICE {
             return Err(Error::InvalidParameters);
@@ -321,7 +325,7 @@ if config.randomness_source == RandomnessSource::External {
         // Validate that the payment_token is a valid token contract
         validate_token_address(&env, &config.payment_token)?;
 
-        // Prize token matches payment token (no separate prize_token on RaffleConfig).
+        // The prize-token config override is not wired into initialization.
         let prize_token = config.payment_token.clone();
 
         // Resolve default values for fields that use 0 as "use default"
@@ -352,6 +356,7 @@ if config.randomness_source == RandomnessSource::External {
             no_deadline: config.no_deadline,
             max_tickets: config.max_tickets,
             max_tickets_per_tx: config.max_tickets_per_tx,
+            max_tickets_per_address: config.max_tickets_per_address,
             min_tickets: config.min_tickets,
             allow_multiple: config.allow_multiple,
             ticket_price: config.ticket_price,
@@ -412,6 +417,15 @@ if config.randomness_source == RandomnessSource::External {
 
     pub fn buy_tickets(env: Env, buyer: Address, quantity: u32) -> Result<u32, Error> {
         tickets::buy_tickets(env, buyer, quantity)
+    }
+
+    pub fn buy_tickets_for(
+        env: Env,
+        buyer: Address,
+        recipient: Address,
+        quantity: u32,
+    ) -> Result<u32, Error> {
+        tickets::buy_tickets_for(env, buyer, recipient, quantity)
     }
 
     pub fn submit_commit(env: Env, ticket_id: u32, hash: BytesN<32>) -> Result<(), Error> {
@@ -686,6 +700,13 @@ if config.randomness_source == RandomnessSource::External {
         views::is_ticket_sales_paused(env)
     }
 
+    pub fn get_remaining_ticket_allowance(
+        env: Env,
+        owner: Address,
+    ) -> Result<u32, Error> {
+        views::get_remaining_ticket_allowance(env, owner)
+    }
+
     /// Quote the exact cost of buying `quantity` tickets including early-bird
     /// discounts and protocol fees.
     ///
@@ -699,8 +720,8 @@ if config.randomness_source == RandomnessSource::External {
     }
 
     /// Sweep tokens that were accidentally sent to this contract.
-    /// The raffle's own payment_token cannot be swept while a prize is held in escrow,
-    /// ensuring active raffle funds are never at risk.
+    /// Configured payment and prize tokens can only be swept to the extent
+    /// that all outstanding refunds, fees, and prize claims remain covered.
     pub fn rescue_tokens(
         env: Env,
         token: Address,
@@ -739,6 +760,11 @@ if config.randomness_source == RandomnessSource::External {
 
     /// Permissionless entrypoint — anyone may call this to prevent a raffle
     /// from being archived by Soroban's TTL expiry.
+    ///
+    /// This entrypoint is currently unimplemented and returns
+    /// [`Error::InvalidParameters`]. It does not bump any TTLs.
+    ///
+    /// The intended permissionless behavior is design documentation only.
     pub fn extend_ttl(env: Env) -> Result<(), Error> {
         let _raffle = read_raffle(&env)?;
         Err(Error::InvalidParameters)

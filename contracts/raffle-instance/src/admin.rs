@@ -4,13 +4,70 @@ use raffle_shared::CancelReason;
 
 use crate::events::{
     ContractPaused, ContractUnpaused, EmergencyWithdrawn, FeesWithdrawn, OracleAddressUpdated,
-    ProtocolFeeUpdated, RaffleCancelled, SwapDeadlineUpdated, TicketSalesPaused,
+    ProtocolFeeUpdated, RaffleCancelled, StorageWiped, SwapDeadlineUpdated, TicketSalesPaused,
     TicketSalesResumed, TokensRescued,
 };
 use crate::{
-    read_raffle, require_admin, write_raffle, DataKey, Error, RaffleStatus,
+    calculate_tier_prize, read_raffle, require_admin, write_raffle, DataKey, Error, RaffleStatus,
     EMERGENCY_WITHDRAW_DELAY_SECONDS, MAX_PROTOCOL_FEE_BP, MAX_SWAP_DEADLINE_SECONDS,
 };
+
+fn outstanding_ticket_refunds(env: &Env, raffle: &crate::Raffle) -> Result<i128, Error> {
+    let mut outstanding = 0i128;
+    for ticket_id in 1..=raffle.tickets_sold {
+        if !env.storage().persistent().has(&DataKey::TicketRefunded(ticket_id)) {
+            outstanding = outstanding
+                .checked_add(raffle.ticket_price)
+                .ok_or(Error::ArithmeticOverflow)?;
+        }
+    }
+    Ok(outstanding)
+}
+
+fn outstanding_prize(env: &Env, raffle: &crate::Raffle) -> Result<i128, Error> {
+    if !raffle.prize_deposited {
+        return Ok(0);
+    }
+    if raffle.status != RaffleStatus::Finalized {
+        return Ok(raffle.prize_amount);
+    }
+
+    let mut outstanding = 0i128;
+    for (tier_index, winner) in raffle.winners.iter().enumerate() {
+        if !winner.claimed {
+            outstanding = outstanding
+                .checked_add(calculate_tier_prize(raffle, tier_index as u32)?)
+                .ok_or(Error::ArithmeticOverflow)?;
+        }
+    }
+    Ok(outstanding)
+}
+
+fn token_entitlement(env: &Env, raffle: &crate::Raffle, token: &Address) -> Result<i128, Error> {
+    let mut entitlement = 0i128;
+    if token == &raffle.payment_token
+        && raffle.status != RaffleStatus::Finalized
+        && raffle.status != RaffleStatus::Claimed
+    {
+        entitlement = entitlement
+            .checked_add(outstanding_ticket_refunds(env, raffle)?)
+            .and_then(|value| {
+                value.checked_add(
+                    env.storage()
+                        .instance()
+                        .get::<_, i128>(&DataKey::AccumulatedFees)
+                        .unwrap_or(0),
+                )
+            })
+            .ok_or(Error::ArithmeticOverflow)?;
+    }
+    if token == &raffle.prize_token {
+        entitlement = entitlement
+            .checked_add(outstanding_prize(env, raffle)?)
+            .ok_or(Error::ArithmeticOverflow)?;
+    }
+    Ok(entitlement)
+}
 
 pub(crate) fn set_admin(env: Env, new_admin: Address) -> Result<(), Error> {
     let _old = require_admin(&env)?;
@@ -237,6 +294,11 @@ pub(crate) fn withdraw_fees(env: Env, recipient: Address, amount: i128) -> Resul
     Ok(())
 }
 
+/// Rescue unrelated tokens, or only the surplus of a configured token.
+///
+/// For `payment_token` and `prize_token`, the requested amount must leave all
+/// unpaid ticket refunds, accumulated fees, and outstanding prize claims in
+/// the contract. Other tokens may be rescued from the available balance.
 pub(crate) fn rescue_tokens(
     env: Env,
     token: Address,
@@ -253,8 +315,11 @@ pub(crate) fn rescue_tokens(
         return Err(Error::InvalidParameters);
     }
     if let Ok(raffle) = read_raffle(&env) {
-        if token == raffle.payment_token && raffle.prize_deposited {
-            return Err(Error::InvalidParameters);
+        let balance = token::Client::new(&env, &token)
+            .balance(&env.current_contract_address());
+        let entitlement = token_entitlement(&env, &raffle, &token)?;
+        if entitlement > balance || amount > balance - entitlement {
+            return Err(Error::InvalidStateTransition);
         }
     }
     let tc = token::Client::new(&env, &token);
@@ -275,6 +340,11 @@ pub(crate) fn rescue_tokens(
 /// Sweep residual payment-token dust to the treasury after the raffle is fully
 /// settled. Only allowed in `Claimed` / `Cancelled`, and only when no prize or
 /// ticket-refund entitlement remains outstanding.
+/// Sweep only payment-token balance that exceeds every remaining entitlement.
+///
+/// This is allowed after `Claimed`, or after `Cancelled` with the prize
+/// refunded and every ticket refund completed. Accumulated fees remain for
+/// `withdraw_fees` and are never swept as dust.
 pub(crate) fn sweep_dust(env: Env) -> Result<(), Error> {
     let admin: Address = env
         .storage()
@@ -310,16 +380,21 @@ pub(crate) fn sweep_dust(env: Env) -> Result<(), Error> {
 
     let token_client = token::Client::new(&env, &raffle.payment_token);
     let balance = token_client.balance(&env.current_contract_address());
-    if balance > 0 {
+    let entitlement = token_entitlement(&env, &raffle, &raffle.payment_token)?;
+    if balance < entitlement {
+        return Err(Error::InvalidStateTransition);
+    }
+    let dust = balance - entitlement;
+    if dust > 0 {
         let _ = token_client
-            .try_transfer(&env.current_contract_address(), &treasury, &balance)
+            .try_transfer(&env.current_contract_address(), &treasury, &dust)
             .map_err(|_| Error::TokenTransferFailed)?;
 
         DustSwept {
             swept_by: admin,
             token: raffle.payment_token,
             treasury,
-            amount: balance,
+            amount: dust,
             timestamp: env.ledger().timestamp(),
         }
         .publish(&env);
@@ -328,6 +403,15 @@ pub(crate) fn sweep_dust(env: Env) -> Result<(), Error> {
     Ok(())
 }
 
+/// Wipe settlement data from a raffle that has reached a terminal state and
+/// holds no payment or prize tokens.
+///
+/// This removes ticket records, refund markers, commit-reveal entries, owner
+/// and buyer indexes, quorum randomness entries, and transient lifecycle keys.
+/// It deliberately retains the raffle, factory, admin, metadata, and fairness
+/// records because those keys are still needed by read and privileged paths.
+/// The operation is rejected for every non-terminal status or when either
+/// configured token has a non-zero balance. It emits [`StorageWiped`].
 pub(crate) fn wipe_storage(env: Env) -> Result<(), Error> {
     let factory: Address = env
         .storage()
@@ -341,6 +425,33 @@ pub(crate) fn wipe_storage(env: Env) -> Result<(), Error> {
         && raffle.status != RaffleStatus::Failed
     {
         return Err(Error::InvalidStatus);
+    }
+
+    if raffle.status == RaffleStatus::Cancelled || raffle.status == RaffleStatus::Failed {
+        if raffle.prize_deposited {
+            return Err(Error::InvalidStateTransition);
+        }
+        for ticket_id in 1..=raffle.tickets_sold {
+            if !env
+                .storage()
+                .persistent()
+                .has(&DataKey::TicketRefunded(ticket_id))
+            {
+                return Err(Error::InvalidStateTransition);
+            }
+        }
+    }
+
+    let payment_balance = token::Client::new(&env, &raffle.payment_token)
+        .balance(&env.current_contract_address());
+    let prize_balance = if raffle.prize_token == raffle.payment_token {
+        payment_balance
+    } else {
+        token::Client::new(&env, &raffle.prize_token)
+            .balance(&env.current_contract_address())
+    };
+    if payment_balance != 0 || prize_balance != 0 {
+        return Err(Error::InvalidStateTransition);
     }
 
     for i in 1..=raffle.tickets_sold {
@@ -359,12 +470,12 @@ pub(crate) fn wipe_storage(env: Env) -> Result<(), Error> {
         env.storage()
             .persistent()
             .remove(&DataKey::TicketCount(b.clone()));
+        env.storage()
+            .persistent()
+            .remove(&DataKey::OwnerTickets(b.clone()));
     }
     env.storage().persistent().remove(&DataKey::TicketBuyers);
 
-    env.storage().instance().remove(&DataKey::Raffle);
-    env.storage().instance().remove(&DataKey::Factory);
-    env.storage().instance().remove(&DataKey::Admin);
     env.storage().instance().remove(&DataKey::Paused);
     env.storage().instance().remove(&DataKey::ReentrancyGuard);
     env.storage().instance().remove(&DataKey::AccumulatedFees);
@@ -379,12 +490,37 @@ pub(crate) fn wipe_storage(env: Env) -> Result<(), Error> {
         .remove(&DataKey::RandomnessRequestId);
     env.storage().instance().remove(&DataKey::DrawingLock);
     env.storage().instance().remove(&DataKey::FinishTime);
-    env.storage().persistent().remove(&DataKey::RandomnessSeed);
-    env.storage().persistent().remove(&DataKey::Admin);
+    env.storage().instance().remove(&DataKey::PendingAdminCancel);
+
+    let submitted_oracles: soroban_sdk::Vec<Address> = env
+        .storage()
+        .instance()
+        .get(&DataKey::QuorumSubmittedOracles)
+        .unwrap_or_else(|| soroban_sdk::Vec::new(&env));
+    for oracle in submitted_oracles.iter() {
+        env.storage()
+            .persistent()
+            .remove(&DataKey::QuorumSeed(oracle));
+    }
+    env.storage()
+        .instance()
+        .remove(&DataKey::QuorumSubmittedOracles);
+
+    StorageWiped {
+        wiped_by: factory,
+        timestamp: env.ledger().timestamp(),
+    }
+    .publish(&env);
 
     Ok(())
 }
 
+/// Recover a prize from a drawing that has become stuck.
+///
+/// The delay starts at `end_time` for raffles with a deadline. For
+/// no-deadline raffles it starts at the randomness request ledger, converted
+/// using the five-second ledger estimate already used by this contract.
+/// Finalized raffles are never eligible: their winners may still claim.
 pub(crate) fn emergency_withdraw(env: Env, caller: Address) -> Result<(), Error> {
     caller.require_auth();
     let mut raffle = read_raffle(&env)?;
@@ -402,34 +538,39 @@ pub(crate) fn emergency_withdraw(env: Env, caller: Address) -> Result<(), Error>
     }
 
     let now = env.ledger().timestamp();
-    match raffle.status {
-        RaffleStatus::Finalized => match raffle.finalized_at {
-            Some(fa) if now >= fa + EMERGENCY_WITHDRAW_DELAY_SECONDS => {}
-            _ => return Err(Error::EmergencyTooEarly),
-        },
-        RaffleStatus::Drawing => {
-            if raffle.no_deadline {
-                let rl: u32 = env
-                    .storage()
-                    .instance()
-                    .get(&DataKey::RandomnessRequestLedger)
-                    .unwrap_or(0);
-                let est = (env.ledger().sequence().saturating_sub(rl) as u64) * 5;
-                if est < EMERGENCY_WITHDRAW_DELAY_SECONDS {
-                    return Err(Error::EmergencyTooEarly);
-                }
-            } else if now < raffle.end_time + EMERGENCY_WITHDRAW_DELAY_SECONDS {
-                return Err(Error::EmergencyTooEarly);
-            }
+    if raffle.status != RaffleStatus::Drawing {
+        return Err(Error::InvalidStatus);
+    }
+    if raffle.no_deadline {
+        let rl: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::RandomnessRequestLedger)
+            .unwrap_or(0);
+        let est = (env.ledger().sequence().saturating_sub(rl) as u64) * 5;
+        if est < EMERGENCY_WITHDRAW_DELAY_SECONDS {
+            return Err(Error::EmergencyTooEarly);
         }
-        _ => return Err(Error::InvalidStatus),
+    } else if now < raffle.end_time + EMERGENCY_WITHDRAW_DELAY_SECONDS {
+        return Err(Error::EmergencyTooEarly);
+    }
+
+    let prize_token = raffle.prize_token.clone();
+    let prize_balance = token::Client::new(&env, &prize_token)
+        .balance(&env.current_contract_address());
+    let prize_entitlement = token_entitlement(&env, &raffle, &prize_token)?;
+    if prize_balance < raffle.prize_amount
+        || prize_balance - raffle.prize_amount
+            < prize_entitlement - raffle.prize_amount
+    {
+        return Err(Error::InvalidStateTransition);
     }
 
     raffle.prize_deposited = false;
     raffle.status = RaffleStatus::Cancelled;
     write_raffle(&env, &raffle);
 
-    let tc = token::Client::new(&env, &raffle.payment_token);
+    let tc = token::Client::new(&env, &prize_token);
     tc.transfer(
         &env.current_contract_address(),
         &raffle.creator,
@@ -440,7 +581,7 @@ pub(crate) fn emergency_withdraw(env: Env, caller: Address) -> Result<(), Error>
         withdrawn_by: caller,
         to: raffle.creator.clone(),
         amount: raffle.prize_amount,
-        token: raffle.payment_token.clone(),
+        token: prize_token,
         timestamp: now,
     }
     .publish(&env);

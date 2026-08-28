@@ -1,6 +1,11 @@
 # Randomness Modes: Internal vs External vs CommitReveal
 
-Tikka raffles select winners using one of three `RandomnessSource` values (`contracts/raffle-shared/src/lib.rs`). The mode is fixed in `RaffleConfig` at creation and enforced by `finalize_raffle` / `provide_randomness` (`contracts/raffle-instance/src/draw.rs`, `randomness.rs`).
+Tikka raffles select winners using the `RandomnessSource` values defined in
+`contracts/raffle-shared/src/lib.rs`. The mode is fixed in `RaffleConfig` at
+creation and enforced by `finalize_raffle` / `provide_randomness`
+(`contracts/raffle-instance/src/draw.rs`, `randomness.rs`). Quorum support is
+present in the configuration model but is not documented here as a completed,
+verified deployment feature.
 
 ## Quick decision table
 
@@ -28,7 +33,6 @@ Entropy mixed into the 32-byte path:
 1. Ledger sequence  
 1. Network id (SHA-256 of network passphrase)  
 1. Raffle contract address  
-1. `tickets_sold` (folded into the PRNG seed bytes)
 
 Values are XDR-packed and hashed with `env.crypto().sha256`, then fed to `env.prng().seed(...)`. Winner indices are sampled without replacement via `u64_in_range`.
 
@@ -253,7 +257,13 @@ Also consider:
 
 ---
 
-## Independent Draw Verification
+## Independent Draw Verification (Unimplemented / Unverified)
+
+> **Build status:** The attestation source exists, but the current checkout
+> does not wire `attestation.rs` into the raffle-instance module tree. The
+> contract API and examples in this section are therefore not available until
+> that build issue is resolved. Treat this section as design documentation,
+> not as a description of deployed or working behaviour.
 
 Third parties can verify that a finalized raffle draw was performed correctly without trusting off-chain indexers or making multiple contract queries. The contract provides a single-call attestation interface designed for independent auditors.
 

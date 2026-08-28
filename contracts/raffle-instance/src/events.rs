@@ -298,6 +298,14 @@ pub struct DustSwept {
 
 #[derive(Clone)]
 #[contractevent]
+#[soroban_sdk::contracttype]
+pub struct StorageWiped {
+    pub wiped_by: Address,
+    pub timestamp: u64,
+}
+
+#[derive(Clone)]
+#[contractevent]
 pub struct OracleAddressUpdated {
     pub old_oracle: Option<Address>,
     pub new_oracle: Address,
