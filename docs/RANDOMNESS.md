@@ -131,26 +131,58 @@ Medium-stakes raffles where buyers can be asked to commit, and you want stronger
 
 ### How the seed is built
 
-1. On draw initiation (`finalize_raffle` or ticket sales complete), the contract transitions to `Drawing` and emits `RandomnessRequested` events for all $n$ registered oracle addresses (`request fan-out`).
-2. Each oracle submits its randomness via `provide_randomness(random_seed, public_key, proof, request_id)`.
-3. The contract verifies the Ed25519 proof, matches `public_key` to a registered oracle in `oracles`, calls `oracle.require_auth()`, and enforces per-oracle deduplication (`duplicate submissions rejected`).
-4. Delivered seeds are accumulated on-chain under `DataKey::QuorumSeeds` and `DataKey::QuorumOraclesSubmitted`.
-5. Once at least $k$ unique registered oracles have submitted valid seeds, the contract aggregates all delivered seeds via SHA-256 over their concatenated big-endian bytes (`aggregate_quorum_seeds`) to form the final 64-bit seed.
-6. The raffle is finalized via `do_finalize_with_seed` using the aggregated VRF seed.
+1. On draw initiation (`finalize_raffle`), the contract transitions to `Drawing`, sets `DrawingLock`, and emits `RandomnessRequested` for each registered oracle (`request fan-out`).
+2. Each oracle calls `provide_quorum_randomness(caller, random_seed, request_id)` where `caller` is the authenticated oracle address.
+3. The contract verifies `caller` is in the `oracles` list, rejects duplicate submissions (`Error::DuplicateOracleSubmission`), and stores each seed under `DataKey::QuorumSeed(caller)`.
+4. Submitted oracles are tracked in `DataKey::QuorumSubmittedOracles`. Each delivery emits `OracleSeedDelivered`.
+5. When `submitted.len() >= k`, seeds are aggregated via `aggregate_quorum_seeds` and the raffle finalizes.
 
+### `aggregate_quorum_seeds` (order-independent)
 
-## K-of-N Quorum Randomness Scheme
+```
+sort seeds by oracle Address (XDR bytes, ascending)
+combined = seed₀_be || seed₁_be || … || seedₙ_be   (each seed is 8 big-endian bytes)
+aggregate  = first_8_bytes( SHA-256(combined) )
+```
 
-To eliminate single-oracle trust assumptions in high-stakes raffles, the contract supports a `Quorum` randomness mode.
+**Order independence:** submission order does not affect the result because seeds are sorted by oracle address before concatenation. The same multiset of `(oracle, seed)` pairs always yields the same `u64`.
 
-### Architecture & Protocol Steps
+Golden vectors for off-chain verification live in:
+- `contracts/raffle-instance/src/randomness.rs` (`aggregate_quorum_seeds_*` tests)
+- `oracle/src/vrf/__fixtures__/quorum-aggregate-vectors.json`
+
+Post-finalization, `clear_quorum_storage` removes all `QuorumSeed` entries and `QuorumSubmittedOracles` so a re-draw can accept the same oracles again.
+
+### Init validation
+
+| Rule | Error |
+|---|---|
+| `k == 0` or `k > n` | `InvalidParameters` |
+| `n > 10` | `InvalidParameters` |
+| oracle address == raffle contract | `InvalidParameters` |
+| `oracle_address` set alongside Quorum | `InvalidParameters` |
+
+### Who can influence it
+
+- No single oracle alone can bias the outcome if at least one honest oracle participates.
+- Collusion among **k** oracles is required to fully control the aggregated seed.
+- Submission order cannot influence the aggregate (address-sorted concatenation).
+
+### Timeout / fallback (`ORACLE_TIMEOUT_LEDGERS = 200`)
+
+If fewer than k oracles deliver before `request_ledger + 200`, `trigger_randomness_fallback` applies (same table as External mode) and quorum storage is cleared.
+
+---
+
+## K-of-N Quorum Randomness Scheme (legacy notes)
+
+The section below is superseded by the specification above. Retained for historical context only.
+
+### Architecture & Protocol Steps (deprecated description)
 
 1. **Request Fan-out**: When a draw is initiated, a `Quorum { k, oracles }` configuration specifies the threshold `k` and the set of $n$ authorized oracle addresses (`Vec<Address>`).
-2. **Per-Oracle Deduplication**: Each registered oracle can submit its seed via `provide_randomness(env, caller, seed)`. The contract tracks delivered seeds in storage using an `AddressSet` / map indexed by oracle address. Duplicate submissions from the same oracle are rejected with `Error::DuplicateOracleSubmission`.
-3. **Aggregation Function**: The aggregated seed is accumulated iteratively as seeds arrive using bitwise XOR and SHA-256 hashing:
-   $$\text{Aggregated Seed} = \text{SHA-256}(\text{Accumulated Seed} \oplus \text{Oracle Seed})$$
-   Once $k$ unique valid oracle submissions are delivered, the state transitions to `Ready` and the draw can be executed.
-4. **Timeout & Fallback**: If $k$ oracles fail to submit seeds within `ORACLE_TIMEOUT_LEDGERS` ledgers from the draw request height, any caller can trigger a fallback mechanism (e.g., falling back to commit-reveal or admin fallback seed depending on protocol fallback policy).
+2. **Per-Oracle Deduplication**: Each registered oracle can submit its seed via `provide_quorum_randomness(caller, seed, request_id)`. Duplicate submissions are rejected with `Error::DuplicateOracleSubmission`.
+3. **Aggregation Function (corrected)**: See `aggregate_quorum_seeds` above — **not** XOR accumulation.
 
 ### Who can influence it
 

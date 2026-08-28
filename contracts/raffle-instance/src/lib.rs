@@ -39,9 +39,9 @@ use crate::events::{
     CancelScheduled, ContractPaused, ContractUnpaused, DrawTriggered, EmergencyWithdrawn,
     FeesWithdrawn, MetadataHashUpdated, OracleAddressUpdated, PrizeClaimed, PrizeDeposited,
     PrizeRefunded, ProtocolFeeUpdated, RaffleCancelled, RaffleCreated, RaffleFailed,
-    RaffleFinalized, RaffleStatusChanged, RandomnessFallbackTriggered, RandomnessReceived,
-    RandomnessRequested, SwapDeadlineUpdated, TicketNftMinted, TicketPurchased, TicketRefunded,
-    TicketSalesPaused, TicketSalesResumed, TokensRescued, WinnerDrawn,
+    RaffleFinalized, RaffleStatusChanged, OracleSeedDelivered, RandomnessFallbackTriggered,
+    RandomnessReceived, RandomnessRequested, SwapDeadlineUpdated, TicketNftMinted, TicketPurchased,
+    TicketRefunded, TicketSalesPaused, TicketSalesResumed, TokensRescued, WinnerDrawn,
 };
 
 const RANDOMNESS_MIN_DELAY_LEDGERS: u32 = 10;
@@ -188,15 +188,18 @@ pub enum Error {
     InvalidTicketRange = 55,
     InsufficientAccumulatedFees = 56,
     PrizeConfigurationLocked = 57,
-    ExceedsMaxTicketsPerTx = 58,`n    ExceedsMaxTicketsPerAddress = 65,
+    ExceedsMaxTicketsPerTx = 58,
+    ExceedsMaxTicketsPerAddress = 65,
     DrawingAlreadyInProgress = 59,
     InvalidStatusForDrawingTransition = 60, // Note: This seems to be a copy-paste error in the original code.
     DrawingAlreadyComplete = 61,
     InvalidEndTime = 62,
     InvalidAdminAddress = 63,
     RandomnessTooEarly = 64,
-    CancelTimelockActive = 65,
-    CancelNotScheduled = 66,
+    CancelTimelockActive = 67,
+    CancelNotScheduled = 68,
+    OracleNotRegistered = 69,
+    DuplicateOracleSubmission = 70,
 }
 
 #[contractimpl]
@@ -437,6 +440,7 @@ if config.randomness_source == RandomnessSource::External {
     /// aggregated via `aggregate_quorum_seeds` and the raffle is finalized.
     pub fn provide_quorum_randomness(
         env: Env,
+        caller: Address,
         random_seed: u64,
         request_id: u64,
     ) -> Result<(), Error> {
@@ -446,12 +450,9 @@ if config.randomness_source == RandomnessSource::External {
             .get(&DataKey::DrawingLock)
             .unwrap_or(false);
         if !drawing_lock {
-            return Err(Error::DrawingAlreadyComplete);
+            return Err(Error::InvalidStatus);
         }
 
-        let caller = env
-            .invoker()
-            .expect("provide_quorum_randomness: invoker required");
         caller.require_auth();
 
         let raffle = read_raffle(&env)?;
@@ -736,24 +737,12 @@ if config.randomness_source == RandomnessSource::External {
         Err(Error::InvalidParameters)
     }
 
-}
-
     /// Permissionless entrypoint — anyone may call this to prevent a raffle
     /// from being archived by Soroban's TTL expiry.
-    ///
-    /// Bumps both the instance storage TTL and all persistent ticket entries
-    /// for tickets issued so far.  Safe to call at any point during the raffle
-    /// lifecycle; a no-op on a terminal (Claimed/Cancelled/Failed) raffle is
-    /// harmless.
-    ///
-    /// No authorization is required so long-running or no-deadline raffles can
-    /// be kept alive by participants, integrators, or automated keepers.
     pub fn extend_ttl(env: Env) -> Result<(), Error> {
-        let raffle = read_raffle(&env)?;
-        // This function was not implemented in the modules, keeping it inline for now.
-        // To complete the refactor, this logic should be moved to `helpers.rs`.
+        let _raffle = read_raffle(&env)?;
         Err(Error::InvalidParameters)
     }
 }
 #[cfg(test)]
-mod test;
+mod tests;

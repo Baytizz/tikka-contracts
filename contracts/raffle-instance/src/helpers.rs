@@ -359,6 +359,7 @@ pub(crate) fn do_finalize_with_seed(
     env.storage()
         .instance()
         .remove(&DataKey::RandomnessRequestLedger);
+    clear_quorum_storage(env);
     env.storage().instance().set(&DataKey::DrawingLock, &false);
 
     RaffleFinalized {
@@ -409,4 +410,22 @@ fn record_leaderboard(env: &Env, raffle: &Raffle) {
         &Symbol::new(env, "record_leaderboard_entry"),
         args,
     );
+}
+
+/// Remove all quorum seed storage so a re-draw can accept the same oracles again.
+pub(crate) fn clear_quorum_storage(env: &Env) {
+    if let Some(submitted) = env
+        .storage()
+        .persistent()
+        .get::<_, Vec<Address>>(&DataKey::QuorumSubmittedOracles)
+    {
+        for i in 0..submitted.len() {
+            if let Some(addr) = submitted.get(i) {
+                env.storage().persistent().remove(&DataKey::QuorumSeed(addr));
+            }
+        }
+        env.storage()
+            .persistent()
+            .remove(&DataKey::QuorumSubmittedOracles);
+    }
 }
