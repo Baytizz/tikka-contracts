@@ -170,6 +170,14 @@ pub(crate) fn buy_tickets(env: Env, buyer: Address, quantity: u32) -> Result<u32
     if !raffle.allow_multiple && (current_count > 0 || quantity > 1) {
         return Err(Error::MultipleTicketsNotAllowed);
     }
+    if raffle.max_tickets_per_address > 0 {
+        let new_count = current_count
+            .checked_add(quantity)
+            .ok_or(Error::ArithmeticOverflow)?;
+        if new_count > raffle.max_tickets_per_address {
+            return Err(Error::ExceedsMaxTicketsPerAddress);
+        }
+    }
 
     let timestamp = env.ledger().timestamp();
     let total_price = raffle
@@ -362,9 +370,16 @@ pub(crate) fn buy_tickets_for(env: Env, buyer: Address, recipient: Address, quan
     if !raffle.allow_multiple && (current_count > 0 || quantity > 1) {
         return Err(Error::MultipleTicketsNotAllowed);
     }
+    if raffle.max_tickets_per_address > 0 {
+        let new_count = current_count
+            .checked_add(quantity)
+            .ok_or(Error::ArithmeticOverflow)?;
+        if new_count > raffle.max_tickets_per_address {
+            return Err(Error::ExceedsMaxTicketsPerAddress);
+        }
+    }
 
     let timestamp = env.ledger().timestamp();
-    let total_price = raffle.ticket_price.checked_mul(quantity as i128).ok_or(Error::InvalidParameters)?;
     let protocol_fee = total_price.checked_mul(raffle.protocol_fee_bp as i128).ok_or(Error::ArithmeticOverflow)? / 10000;
 
     let persisted = crate::read_raffle(&env)?;

@@ -1,10 +1,11 @@
 import { Alerter } from './alert/alerter';
 import { loadAndValidateConfig } from './config';
+import { startHealthServer } from './health/health.server';
 
 /**
- * Bootstrap entry point. Currently wires operational alerting (process
- * start/stop) so operators are notified when the oracle goes down. Service
- * wiring (KeyService, EventListenerService, TxSubmitterService) plugs in here.
+ * Bootstrap entry point. Wires operational alerting and exposes /health and
+ * /metrics for observability. Service wiring (KeyService, EventListenerService,
+ * TxSubmitterService) plugs in here.
  */
 async function main(): Promise<void> {
   const config = loadAndValidateConfig();
@@ -13,6 +14,8 @@ async function main(): Promise<void> {
     webhookUrl: config.alertWebhookUrl,
     rateLimitMs: config.alertRateLimitMs,
   });
+
+  startHealthServer();
 
   if (!alerter.enabled) {
     console.warn('ALERT_WEBHOOK_URL is not set; operational alerts are disabled.');

@@ -37,7 +37,7 @@ describe('Oracle Pipeline Integration', () => {
 
   beforeEach(async () => {
     // Set up test oracle key
-    process.env.ORACLE_SECRET_KEY = testOracleKeypair.secret();
+    process.env['ORACLE_SECRET_KEY'] = testOracleKeypair.secret();
 
     queue = new RequestQueue();
     checkpoint = new MemoryLedgerCheckpointStore();
@@ -54,7 +54,7 @@ describe('Oracle Pipeline Integration', () => {
 
   afterEach(() => {
     keyService.shutdown();
-    delete process.env.ORACLE_SECRET_KEY;
+    delete process.env['ORACLE_SECRET_KEY'];
     nock.enableNetConnect();
     nock.cleanAll();
   });

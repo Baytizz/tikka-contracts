@@ -188,7 +188,7 @@ pub enum Error {
     InvalidTicketRange = 55,
     InsufficientAccumulatedFees = 56,
     PrizeConfigurationLocked = 57,
-    ExceedsMaxTicketsPerTx = 58,`n    ExceedsMaxTicketsPerAddress = 65,
+    ExceedsMaxTicketsPerTx = 58,
     DrawingAlreadyInProgress = 59,
     InvalidStatusForDrawingTransition = 60, // Note: This seems to be a copy-paste error in the original code.
     DrawingAlreadyComplete = 61,
@@ -197,6 +197,7 @@ pub enum Error {
     RandomnessTooEarly = 64,
     CancelTimelockActive = 65,
     CancelNotScheduled = 66,
+    ExceedsMaxTicketsPerAddress = 67,
 }
 
 #[contractimpl]
@@ -234,6 +235,11 @@ impl Contract {
             return Err(Error::InvalidTicketRange);
         }
         if config.max_tickets_per_tx == 0 || config.max_tickets_per_tx > config.max_tickets {
+            return Err(Error::InvalidParameters);
+        }
+        if config.max_tickets_per_address > 0
+            && config.max_tickets_per_address > config.max_tickets
+        {
             return Err(Error::InvalidParameters);
         }
 
@@ -349,6 +355,7 @@ if config.randomness_source == RandomnessSource::External {
             no_deadline: config.no_deadline,
             max_tickets: config.max_tickets,
             max_tickets_per_tx: config.max_tickets_per_tx,
+            max_tickets_per_address: config.max_tickets_per_address,
             min_tickets: config.min_tickets,
             allow_multiple: config.allow_multiple,
             ticket_price: config.ticket_price,
@@ -757,3 +764,11 @@ if config.randomness_source == RandomnessSource::External {
 }
 #[cfg(test)]
 mod test;
+
+#[cfg(test)]
+mod tests {
+    #[path = "tests/invariants.rs"]
+    mod invariants;
+    #[path = "tests/tickets.rs"]
+    mod tickets;
+}

@@ -1,9 +1,12 @@
 import { Alerter } from '../alert/alerter';
+import { updateQueueMetrics } from '../metrics/metrics';
 
 export interface RandomnessJob {
   requestId: bigint;
   raffleContract: string;
   timestamp: bigint;
+  /** Wall-clock time when the listener observed the RandomnessRequested event. */
+  observedAtMs: number;
 }
 
 export interface RequestQueueOptions {
@@ -21,19 +24,21 @@ export class RequestQueue {
 
   constructor(options: RequestQueueOptions = {}) {
     this.alerter = options.alerter;
-    this.depthLimit = options.depthLimit ?? Number(process.env.ALERT_QUEUE_DEPTH_LIMIT ?? 10);
-    this.ageLimitMs = options.ageLimitMs ?? Number(process.env.ALERT_QUEUE_AGE_LIMIT_MS ?? 300_000);
+    this.depthLimit = options.depthLimit ?? Number(process.env['ALERT_QUEUE_DEPTH_LIMIT'] ?? 10);
+    this.ageLimitMs = options.ageLimitMs ?? Number(process.env['ALERT_QUEUE_AGE_LIMIT_MS'] ?? 300_000);
   }
 
-  enqueue(job: RandomnessJob): void {
-    this.jobs.push(job);
+  enqueue(job: Omit<RandomnessJob, 'observedAtMs'>): void {
+    this.jobs.push({ ...job, observedAtMs: Date.now() });
     this.enqueuedAtMs.push(Date.now());
+    this.refreshMetrics();
   }
 
   drain(): RandomnessJob[] {
     const pending = [...this.jobs];
     this.jobs.length = 0;
     this.enqueuedAtMs.length = 0;
+    this.refreshMetrics();
     return pending;
   }
 
@@ -41,11 +46,24 @@ export class RequestQueue {
     return this.jobs.length;
   }
 
+  oldestAgeSeconds(now: number = Date.now()): number {
+    const oldestEnqueuedAt = this.enqueuedAtMs[0];
+    if (oldestEnqueuedAt === undefined) {
+      return 0;
+    }
+    return Math.max(0, (now - oldestEnqueuedAt) / 1000);
+  }
+
+  refreshMetrics(now: number = Date.now()): void {
+    updateQueueMetrics(this.size(), this.oldestAgeSeconds(now));
+  }
+
   /**
    * Alerts when the queue has grown too deep or the oldest request has been
    * waiting too long. Designed to be called on a fixed schedule by the worker.
    */
   checkHealth(now: number = Date.now()): void {
+    this.refreshMetrics(now);
     if (!this.alerter) {
       return;
     }

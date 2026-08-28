@@ -1,5 +1,10 @@
 import { Address, rpc as SorobanRpc, xdr } from '@stellar/stellar-sdk';
 import { Alerter } from '../alert/alerter';
+import {
+  oracleListenerLedgerLag,
+  oracleRequestsObservedTotal,
+  oracleRpcErrorsTotal,
+} from '../metrics/metrics';
 import { RequestQueue } from '../queue/request-queue';
 import { LedgerCheckpointStore } from './ledger-checkpoint';
 
@@ -36,14 +41,15 @@ export class EventListenerService {
     options: EventListenerOptions = {}
   ) {
     const rpcUrl =
-      options.rpcUrl ?? process.env.STELLAR_RPC_URL ?? 'https://soroban-testnet.stellar.org';
+      options.rpcUrl ?? process.env['STELLAR_RPC_URL'] ?? 'https://soroban-testnet.stellar.org';
     this.server = new SorobanRpc.Server(rpcUrl, { allowHttp: rpcUrl.startsWith('http://') });
     this.pollIntervalMs =
-      options.pollIntervalMs ?? Number(process.env.ORACLE_POLL_INTERVAL_MS ?? 5000);
+      options.pollIntervalMs ?? Number(process.env['ORACLE_POLL_INTERVAL_MS'] ?? 5000);
     this.sleep = options.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
     this.alerter = options.alerter;
     this.rpcUnreachableThreshold =
-      options.rpcUnreachableThreshold ?? Number(process.env.ALERT_RPC_UNREACHABLE_THRESHOLD ?? 3);
+      options.rpcUnreachableThreshold ??
+      Number(process.env['ALERT_RPC_UNREACHABLE_THRESHOLD'] ?? 3);
     this.startLedger = 1;
   }
 
@@ -80,6 +86,7 @@ export class EventListenerService {
         });
       } catch (error) {
         this.consecutiveRpcFailures += 1;
+        oracleRpcErrorsTotal.labels('poll').inc();
         if (this.consecutiveRpcFailures >= this.rpcUnreachableThreshold) {
           this.alertRpcUnreachable(error);
         }
@@ -88,6 +95,8 @@ export class EventListenerService {
       }
 
       this.consecutiveRpcFailures = 0;
+      const processedThrough = this.startLedger > 0 ? this.startLedger - 1 : 0;
+      oracleListenerLedgerLag.set(Math.max(0, events.latestLedger - processedThrough));
 
       for (const event of events.events) {
         const parsed = this.parseRandomnessRequestedEvent(event);
@@ -96,6 +105,7 @@ export class EventListenerService {
         }
 
         if (parsed.oracle === this.oracleAddress) {
+          oracleRequestsObservedTotal.labels(parsed.raffleContract).inc();
           this.queue.enqueue({
             requestId: parsed.requestId,
             raffleContract: parsed.raffleContract,
@@ -134,7 +144,8 @@ export class EventListenerService {
   parseRandomnessRequestedEvent(
     event: SorobanRpc.Api.EventResponse
   ): ParsedRandomnessRequest | null {
-    const topicName = event.topic[0]?.sym?.().toString();
+    const firstTopic = event.topic[0];
+    const topicName = firstTopic?.sym?.().toString();
     if (topicName !== 'RandomnessRequested') {
       return null;
     }
@@ -152,7 +163,12 @@ export class EventListenerService {
     let requestId = 0n;
     let timestamp = 0n;
 
-    for (const entry of event.value.map() ?? []) {
+    const mapEntries = event.value.map();
+    if (mapEntries === undefined) {
+      return null;
+    }
+
+    for (const entry of mapEntries) {
       const key = entry.key().sym().toString();
       const val = entry.val();
       if (key === 'oracle') {

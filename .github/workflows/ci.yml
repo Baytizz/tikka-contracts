@@ -93,7 +93,7 @@ jobs:
       - name: Check formatting (Prettier)
         run: npm run format:check
       - name: TypeScript compile check
-        run: npm run build
+        run: npm run typecheck
       - name: Run tests
         run: npm test
         continue-on-error: true

@@ -1,33 +1,46 @@
-// Test for per-address ticket cap feature
-// Add this to contracts/raffle-instance/src/test.rs
+//! Per-address ticket cap tests salvaged from repository root (#846).
+
+use crate::{Error, RaffleConfig, RaffleInstance, RaffleInstanceClient};
+use raffle_shared::RandomnessSource;
+use soroban_sdk::{
+    testutils::Address as _,
+    token::StellarAssetClient,
+    Address, BytesN, Env, String, Vec,
+};
+
+fn setup_token(env: &Env) -> (Address, StellarAssetClient<'_>) {
+    let admin = Address::generate(env);
+    let token = env.register_stellar_asset_contract_v2(admin.clone()).address();
+    (token, StellarAssetClient::new(env, &token))
+}
 
 #[test]
-fn test_per_address_cap_enforced() {
+fn per_address_cap_enforced() {
     let env = Env::default();
     env.mock_all_auths();
-    
+
     let admin = Address::generate(&env);
     let creator = Address::generate(&env);
     let factory = Address::generate(&env);
     let buyer = Address::generate(&env);
-    let token = create_token_contract(&env, &admin);
-    let contract_id = env.register_contract(None, Contract);
-    let client = ContractClient::new(&env, &contract_id);
+    let (token, token_client) = setup_token(&env);
 
-    // Create raffle with max 5 tickets per address
+    let contract_id = env.register(RaffleInstance, ());
+    let client = RaffleInstanceClient::new(&env, &contract_id);
+
     let config = RaffleConfig {
         description: String::from_str(&env, "Per-address cap test"),
         end_time: 0,
         no_deadline: true,
         max_tickets: 10,
         max_tickets_per_tx: 5,
-        max_tickets_per_address: 5, // Cap at 5 per address
+        max_tickets_per_address: 5,
         min_tickets: 1,
         allow_multiple: true,
         ticket_price: 1_000_000,
-        payment_token: token.address.clone(),
+        payment_token: token.clone(),
         prize_amount: 10_000_000,
-        prizes: Vec::from_array(&env, [10000]),
+        prizes: Vec::from_array(&env, [10_000]),
         randomness_source: RandomnessSource::Internal,
         oracle_address: None,
         protocol_fee_bp: 0,
@@ -35,64 +48,57 @@ fn test_per_address_cap_enforced() {
         swap_router: None,
         tikka_token: None,
         metadata_hash: BytesN::from_array(&env, &[1u8; 32]),
-        claim_lockup_seconds: 0,
-        swap_deadline_seconds: 0,
+        claim_lockup_seconds: Some(0),
+        swap_deadline_seconds: Some(0),
         early_bird_ticket_percentage: 0,
         early_bird_discount_bp: 0,
         category: None,
+        unique_winners: false,
+        bundles: Vec::new(&env),
+        prize_token: None,
+        nft_contract: None,
     };
 
     client.init(&factory, &admin, &creator, &config);
-    
-    // Mint tokens for buyer
-    token.mint(&buyer, &20_000_000);
-    
-    // Deposit prize
-    token.mint(&creator, &10_000_000);
+    token_client.mint(&buyer, &20_000_000);
+    token_client.mint(&creator, &10_000_000);
     client.deposit_prize();
 
-    // Buy 3 tickets - should succeed
-    let result = client.try_buy_tickets(&buyer, &3);
-    assert!(result.is_ok());
-    assert_eq!(result.unwrap(), 3);
-
-    // Buy 2 more tickets - should succeed (total = 5, at cap)
-    let result = client.try_buy_tickets(&buyer, &2);
-    assert!(result.is_ok());
-    assert_eq!(result.unwrap(), 5);
-
-    // Try to buy 1 more ticket - should fail with ExceedsMaxTicketsPerAddress
-    let result = client.try_buy_tickets(&buyer, &1);
-    assert_eq!(result, Err(Ok(Error::ExceedsMaxTicketsPerAddress)));
+    assert!(client.try_buy_tickets(&buyer, &3).is_ok());
+    assert!(client.try_buy_tickets(&buyer, &2).is_ok());
+    assert_eq!(
+        client.try_buy_tickets(&buyer, &1),
+        Err(Ok(Error::ExceedsMaxTicketsPerAddress))
+    );
 }
 
 #[test]
-fn test_per_address_cap_zero_unlimited() {
+fn per_address_cap_zero_means_unlimited() {
     let env = Env::default();
     env.mock_all_auths();
-    
+
     let admin = Address::generate(&env);
     let creator = Address::generate(&env);
     let factory = Address::generate(&env);
     let buyer = Address::generate(&env);
-    let token = create_token_contract(&env, &admin);
-    let contract_id = env.register_contract(None, Contract);
-    let client = ContractClient::new(&env, &contract_id);
+    let (token, token_client) = setup_token(&env);
 
-    // Create raffle with max_tickets_per_address = 0 (unlimited)
+    let contract_id = env.register(RaffleInstance, ());
+    let client = RaffleInstanceClient::new(&env, &contract_id);
+
     let config = RaffleConfig {
         description: String::from_str(&env, "Unlimited per address"),
         end_time: 0,
         no_deadline: true,
         max_tickets: 10,
         max_tickets_per_tx: 5,
-        max_tickets_per_address: 0, // 0 means unlimited
+        max_tickets_per_address: 0,
         min_tickets: 1,
         allow_multiple: true,
         ticket_price: 1_000_000,
-        payment_token: token.address.clone(),
+        payment_token: token.clone(),
         prize_amount: 10_000_000,
-        prizes: Vec::from_array(&env, [10000]),
+        prizes: Vec::from_array(&env, [10_000]),
         randomness_source: RandomnessSource::Internal,
         oracle_address: None,
         protocol_fee_bp: 0,
@@ -100,46 +106,41 @@ fn test_per_address_cap_zero_unlimited() {
         swap_router: None,
         tikka_token: None,
         metadata_hash: BytesN::from_array(&env, &[1u8; 32]),
-        claim_lockup_seconds: 0,
-        swap_deadline_seconds: 0,
+        claim_lockup_seconds: Some(0),
+        swap_deadline_seconds: Some(0),
         early_bird_ticket_percentage: 0,
         early_bird_discount_bp: 0,
         category: None,
+        unique_winners: false,
+        bundles: Vec::new(&env),
+        prize_token: None,
+        nft_contract: None,
     };
 
     client.init(&factory, &admin, &creator, &config);
-    
-    // Mint tokens for buyer
-    token.mint(&buyer, &20_000_000);
-    
-    // Deposit prize
-    token.mint(&creator, &10_000_000);
+    token_client.mint(&buyer, &20_000_000);
+    token_client.mint(&creator, &10_000_000);
     client.deposit_prize();
 
-    // Buy all 10 tickets in two transactions - should succeed
-    let result = client.try_buy_tickets(&buyer, &5);
-    assert!(result.is_ok());
-    
-    let result = client.try_buy_tickets(&buyer, &5);
-    assert!(result.is_ok());
-    assert_eq!(result.unwrap(), 10);
+    assert!(client.try_buy_tickets(&buyer, &5).is_ok());
+    assert_eq!(client.try_buy_tickets(&buyer, &5).unwrap(), 10);
 }
 
 #[test]
-fn test_per_address_cap_multiple_buyers() {
+fn per_address_cap_multiple_buyers() {
     let env = Env::default();
     env.mock_all_auths();
-    
+
     let admin = Address::generate(&env);
     let creator = Address::generate(&env);
     let factory = Address::generate(&env);
     let buyer1 = Address::generate(&env);
     let buyer2 = Address::generate(&env);
-    let token = create_token_contract(&env, &admin);
-    let contract_id = env.register_contract(None, Contract);
-    let client = ContractClient::new(&env, &contract_id);
+    let (token, token_client) = setup_token(&env);
 
-    // Create raffle with max 3 tickets per address
+    let contract_id = env.register(RaffleInstance, ());
+    let client = RaffleInstanceClient::new(&env, &contract_id);
+
     let config = RaffleConfig {
         description: String::from_str(&env, "Multiple buyers test"),
         end_time: 0,
@@ -150,9 +151,9 @@ fn test_per_address_cap_multiple_buyers() {
         min_tickets: 1,
         allow_multiple: true,
         ticket_price: 1_000_000,
-        payment_token: token.address.clone(),
+        payment_token: token.clone(),
         prize_amount: 10_000_000,
-        prizes: Vec::from_array(&env, [10000]),
+        prizes: Vec::from_array(&env, [10_000]),
         randomness_source: RandomnessSource::Internal,
         oracle_address: None,
         protocol_fee_bp: 0,
@@ -160,30 +161,32 @@ fn test_per_address_cap_multiple_buyers() {
         swap_router: None,
         tikka_token: None,
         metadata_hash: BytesN::from_array(&env, &[1u8; 32]),
-        claim_lockup_seconds: 0,
-        swap_deadline_seconds: 0,
+        claim_lockup_seconds: Some(0),
+        swap_deadline_seconds: Some(0),
         early_bird_ticket_percentage: 0,
         early_bird_discount_bp: 0,
         category: None,
+        unique_winners: false,
+        bundles: Vec::new(&env),
+        prize_token: None,
+        nft_contract: None,
     };
 
     client.init(&factory, &admin, &creator, &config);
-    
-    // Mint tokens
-    token.mint(&buyer1, &10_000_000);
-    token.mint(&buyer2, &10_000_000);
-    token.mint(&creator, &10_000_000);
-    
+    token_client.mint(&buyer1, &10_000_000);
+    token_client.mint(&buyer2, &10_000_000);
+    token_client.mint(&creator, &10_000_000);
     client.deposit_prize();
 
-    // Each buyer can buy up to 3 tickets
     client.buy_tickets(&buyer1, &3);
     client.buy_tickets(&buyer2, &3);
-    
-    // Both buyers hit their cap
-    let result = client.try_buy_tickets(&buyer1, &1);
-    assert_eq!(result, Err(Ok(Error::ExceedsMaxTicketsPerAddress)));
-    
-    let result = client.try_buy_tickets(&buyer2, &1);
-    assert_eq!(result, Err(Ok(Error::ExceedsMaxTicketsPerAddress)));
+
+    assert_eq!(
+        client.try_buy_tickets(&buyer1, &1),
+        Err(Ok(Error::ExceedsMaxTicketsPerAddress))
+    );
+    assert_eq!(
+        client.try_buy_tickets(&buyer2, &1),
+        Err(Ok(Error::ExceedsMaxTicketsPerAddress))
+    );
 }

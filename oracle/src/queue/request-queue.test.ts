@@ -14,8 +14,8 @@ describe('RequestQueue', () => {
 
   beforeEach(() => {
     process.env = { ...originalEnv };
-    delete process.env.ALERT_QUEUE_DEPTH_LIMIT;
-    delete process.env.ALERT_QUEUE_AGE_LIMIT_MS;
+    delete process.env['ALERT_QUEUE_DEPTH_LIMIT'];
+    delete process.env['ALERT_QUEUE_AGE_LIMIT_MS'];
   });
 
   afterEach(() => {
