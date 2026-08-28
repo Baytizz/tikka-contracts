@@ -9,6 +9,7 @@ use soroban_sdk::{
 };
 
 mod admin;
+mod attestation;
 mod claim;
 mod draw;
 mod events;
