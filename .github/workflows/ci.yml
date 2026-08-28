@@ -6,10 +6,16 @@ on:
   pull_request:
     branches: [ "master" ]
   workflow_dispatch:
+  schedule:
+    # Weekly advisory database refresh (Mondays 06:00 UTC)
+    - cron: '0 6 * * 1'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
+
+permissions:
+  contents: read
 
 env:
   CARGO_TERM_COLOR: always
@@ -69,7 +75,7 @@ jobs:
     name: Shell Script Checks
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install shellcheck
         run: sudo apt-get update && sudo apt-get install -y shellcheck
       - name: Run shellcheck
@@ -97,3 +103,25 @@ jobs:
       - name: Run tests
         run: npm test
         continue-on-error: true
+
+  cargo_deny:
+    name: Supply-chain policy (cargo-deny)
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: EmbarkStudios/cargo-deny-action@c3bbe7e4e3f7baeee1a3dd9aec0a3b2aded580fb # v2.1.1
+        with:
+          command: check
+          log-level: warn
+
+  cargo_deny_advisories:
+    name: Advisory database refresh
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: EmbarkStudios/cargo-deny-action@c3bbe7e4e3f7baeee1a3dd9aec0a3b2aded580fb # v2.1.1
+        with:
+          command: check advisories
+          log-level: warn

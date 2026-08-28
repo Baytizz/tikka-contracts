@@ -113,6 +113,30 @@ Reproduce it with:
 cargo fuzz run <target-name> fuzz/artifacts/<target-name>/crash-<hash>
 ```
 
+### Reproducing a crash from CI
+
+The [nightly fuzz workflow](../.github/workflows/fuzz.yml) uploads crash inputs as
+workflow artifacts and opens a GitHub issue with reproduction steps.
+
+1. Open the failing workflow run under **Actions → Fuzz**.
+2. Download the artifact named `fuzz-crash-<target>-<run-id>`.
+3. Extract the crash file and place it under `fuzz/artifacts/<target>/`, or pass
+   the path directly:
+
+```bash
+rustup toolchain install nightly
+cargo install cargo-fuzz --locked
+cargo fuzz run <target-name> path/to/crash-<hash>
+```
+
+4. After fixing the bug, minimize the input and commit it as a regression seed:
+
+```bash
+cargo fuzz tmin <target-name> fuzz/artifacts/<target-name>/crash-<hash>
+cp fuzz/artifacts/<target-name>/crash-<hash> fuzz/corpus/<target-name>/
+git add fuzz/corpus/<target-name>/crash-<hash>
+```
+
 ---
 
 ## Corpus
@@ -134,4 +158,5 @@ Commit this directory to seed future runs and prevent regression.
 - [x] Fuzz target for `winner_selection` (issue #86)
 - [x] Fuzz target for `refund_cancel` (issue #466)
 - [x] Fuzz target for `commit_reveal` (issue #632)
+- [x] Nightly CI job runs all targets with corpus caching (see `.github/workflows/fuzz.yml`)
 - [ ] Fuzzer runs for at least 30 minutes without discovery of panics *(run in CI or locally)*
