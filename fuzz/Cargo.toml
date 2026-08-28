@@ -1,3 +1,5 @@
+[workspace]
+
 [package]
 name    = "raffle-fuzz"
 version = "0.0.0"
@@ -44,9 +46,4 @@ arbitrary     = { version = "1", features = ["derive"] }
 # Pure-Rust sha256 for the commit-reveal preimage/seed model
 sha2          = "0.10"
 # Local contracts
-tikka-raffle-instance = { package = "raffle-instance", path = "../contracts/raffle-instance", features = ["std"] }
-
-[profile.release]
-# Optimisation level useful for fuzzing; debug info helps with crash reports
-opt-level = 3
-debug     = false
+raffle-instance = { path = "../contracts/raffle-instance", features = ["std"] }

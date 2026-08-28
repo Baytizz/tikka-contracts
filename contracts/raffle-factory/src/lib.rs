@@ -2156,6 +2156,8 @@ impl RaffleFactory {
 
 #[cfg(test)]
 mod tests {
+    mod budget;
+
     use super::*;
     use raffle_shared::{RandomnessSource, DEFAULT_PAGE_LIMIT, MAX_PAGE_LIMIT};
     use soroban_sdk::{String, Vec as SdkVec, Val, IntoVal, Symbol};

@@ -8,7 +8,7 @@ use crate::events::{
     TicketSalesResumed, TokensRescued,
 };
 use crate::{
-    read_raffle, require_admin, write_raffle, DataKey, Error, RaffleStatus,
+    read_raffle, require_admin, transition_status, write_raffle, DataKey, Error, RaffleStatus,
     EMERGENCY_WITHDRAW_DELAY_SECONDS, MAX_PROTOCOL_FEE_BP, MAX_SWAP_DEADLINE_SECONDS,
 };
 
@@ -112,8 +112,12 @@ pub(crate) fn cancel_raffle(env: Env, reason: CancelReason) -> Result<(), Error>
     {
         return Err(Error::InvalidStatus);
     }
-    raffle.status = RaffleStatus::Cancelled;
-    write_raffle(&env, &raffle);
+    transition_status(
+        &env,
+        &mut raffle,
+        RaffleStatus::Cancelled,
+        env.ledger().timestamp(),
+    )?;
     RaffleCancelled {
         creator: raffle.creator.clone(),
         reason,
@@ -426,8 +430,12 @@ pub(crate) fn emergency_withdraw(env: Env, caller: Address) -> Result<(), Error>
     }
 
     raffle.prize_deposited = false;
-    raffle.status = RaffleStatus::Cancelled;
-    write_raffle(&env, &raffle);
+    transition_status(
+        &env,
+        &mut raffle,
+        RaffleStatus::Cancelled,
+        env.ledger().timestamp(),
+    )?;
 
     let tc = token::Client::new(&env, &raffle.payment_token);
     tc.transfer(

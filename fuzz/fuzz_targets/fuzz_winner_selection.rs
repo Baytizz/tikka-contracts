@@ -2,7 +2,7 @@
 
 use arbitrary::Arbitrary;
 use libfuzzer_sys::fuzz_target;
-use tikka_raffle_instance::randomness::OracleSeedWinnerSelection;
+use raffle_instance::randomness::OracleSeedWinnerSelection;
 
 #[derive(Debug, Arbitrary)]
 struct WinnerSelectionInput {

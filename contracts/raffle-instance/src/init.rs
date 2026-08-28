@@ -30,11 +30,12 @@ use soroban_sdk::{token, Address, BytesN, Env, String};
 use raffle_shared::constants::MAX_CATEGORY_LENGTH;
 use raffle_shared::{RaffleConfig, RandomnessSource};
 
-use crate::events::{PrizeDeposited, RaffleCreated, RaffleStatusChanged};
+use crate::events::{PrizeDeposited, RaffleCreated};
 use crate::{
-    read_raffle, require_not_paused, validate_token_address, write_raffle, DataKey, Error, Raffle,
-    MAX_CLAIM_LOCKUP_SECONDS, MAX_DESCRIPTION_LENGTH, MAX_PRIZES, MAX_PRIZE_AMOUNT,
-    MAX_SWAP_DEADLINE_SECONDS, MAX_TICKETS_LIMIT, MIN_TICKET_PRICE, RaffleStatus,
+    helpers::{read_raffle, require_not_paused, transition_status, validate_token_address},
+    write_raffle, DataKey, Error, Raffle, MAX_CLAIM_LOCKUP_SECONDS, MAX_DESCRIPTION_LENGTH,
+    MAX_PRIZES, MAX_PRIZE_AMOUNT, MAX_SWAP_DEADLINE_SECONDS, MAX_TICKETS_LIMIT, MIN_TICKET_PRICE,
+    RaffleStatus,
 };
 
 /// Initialise a freshly-deployed raffle-instance contract.
@@ -317,20 +318,16 @@ pub(crate) fn deposit_prize(env: Env) -> Result<(), Error> {
         return Err(Error::PrizeAlreadyDeposited);
     }
 
-    let old_status = raffle.status.clone();
-
     let token_client = token::Client::new(&env, &raffle.payment_token);
     let _ = token_client
         .try_transfer(&raffle.creator, env.current_contract_address(), &raffle.prize_amount)
         .map_err(|_| Error::TokenTransferFailed)?;
 
     raffle.prize_deposited = true;
-    raffle.status = RaffleStatus::Active;
-    write_raffle(&env, &raffle);
-
     let ts = env.ledger().timestamp();
+    transition_status(&env, &mut raffle, RaffleStatus::Active, ts)?;
+
     PrizeDeposited { creator: raffle.creator.clone(), amount: raffle.prize_amount, token: raffle.payment_token.clone(), timestamp: ts }.publish(&env);
-    RaffleStatusChanged { old_status, new_status: RaffleStatus::Active, timestamp: ts }.publish(&env);
 
     Ok(())
 }
