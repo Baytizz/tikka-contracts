@@ -173,6 +173,51 @@ If fewer than $k$ oracles deliver valid seeds before `request_ledger + 200`:
 
 ---
 
+## Unique-winner re-resolution (`unique_winners = true`)
+
+When `RaffleConfig.unique_winners` is enabled (#485), each address may win at
+most one prize tier. The base selection (see above) only guarantees *distinct
+ticket indices* — one owner holding several tickets can still be selected for
+multiple tiers. After the base selection the draw therefore re-resolves each
+tier through `resolve_unique_winner` in
+`contracts/raffle-instance/src/helpers.rs`.
+
+### Probing strategy (deterministic, replayable)
+
+For tier `i` with base index `initial_index` (zero-based):
+
+1. **Accept** — if the owner of `initial_index` has not already won an earlier
+   tier, keep it unchanged.
+2. **LCG probe** — otherwise walk a per-tier LCG stream
+   `state = seed + (tier << 32) + attempt`, advanced with the same Knuth
+   multiplier/addend used by `OracleSeedWinnerSelection`
+   (`state = state * 6364136223846793005 + 1442695040888963407`), and return the
+   first ticket whose owner has not yet won.
+3. **Linear fallback** — if no probe succeeds, sweep every ticket in order and
+   return the lowest-indexed ticket whose owner has not yet won.
+4. **Repeat** — if no distinct owner exists at all (an address owns every
+   ticket), fall back to `initial_index`. With fewer owners than tiers the
+   invariant is necessarily relaxed: the draw **terminates with a repeated
+   address** rather than panicking or looping forever.
+
+The resolver only reads on-chain ticket storage plus the winners selected so
+far, so the final winner set is a pure function of `(seed, tier_order,
+ticket_layout, winners_so_far)` — the same inputs always reproduce the same
+outcome, which keeps off-chain draw verification valid in unique-winner mode.
+
+### Notes
+
+- Re-resolved indices are persisted in `FairnessMetadata.winning_ticket_indices`
+  under `DataKey::RandomnessSeed`, so the recorded audit trail reflects the
+  *effective* winners, and `get_fairness_data()` can be replayed by auditors.
+- Behaviour is identical for `Internal`, `External`/VRF, and `CommitReveal`
+  paths because all modes finalize through `do_finalize_with_seed`.
+- Test coverage lives in `contracts/raffle-instance/src/tests/draw.rs`
+  (distinct-owner, single-owner repeat, two-owner repeat, disabled-mode parity,
+  seed replay, index-to-payer resolution, and a `MAX_PRIZES` budget regression).
+
+---
+
 
 ## Guidance thresholds
 

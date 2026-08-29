@@ -251,6 +251,84 @@ pub(crate) fn calculate_tier_prize(raffle: &Raffle, tier_index: u32) -> Result<i
         .map(|a| a / 10000)
 }
 
+/// Returns `true` when `addr` already appears among the winners selected so far in the draw.
+fn address_already_won(winners: &Vec<Address>, addr: &Address) -> bool {
+    for i in 0..winners.len() {
+        if winners.get(i) == Some(addr.clone()) {
+            return true;
+        }
+    }
+    false
+}
+
+/// Resolve the winning ticket index for a tier under `unique_winners` mode (#485, #826).
+///
+/// The initial index selected by the seed comes from a distinct-index
+/// selection, so it can still collide on *address* when one owner holds
+/// multiple tickets.  When that happens this function picks a different ticket
+/// whose owner has not yet won any tier.
+///
+/// ## Probing strategy (deterministic, replayable)
+///
+/// 1. **Accept** — if the owner of `initial_index` has not already won, return
+///    it unchanged.
+/// 2. **LCG probe** — walk a per-tier LCG stream
+///    `state = seed + (tier << 32) + attempt`, advanced by the same Knuth
+///    multiplier/addend used by [`OracleSeedWinnerSelection`], up to
+///    `total_tickets` times, and return the first ticket whose owner has not
+///    yet won.
+/// 3. **Linear fallback** — a bounded full sweep over every ticket in order;
+///    return the lowest-indexed ticket whose owner has not yet won.
+/// 4. **Repeat** — if no distinct owner exists (a single address owns every
+///    ticket), fall back to `initial_index`.  The draw terminates with a
+///    repeated address rather than panicking or looping forever; with fewer
+///    owners than tiers the invariant "each address wins at most one tier"
+///    is necessarily relaxed.
+///
+/// All steps are pure functions of `(seed, tier, total_tickets, winners_so_far)`
+/// and on-chain ticket storage, so the same seed always reproduces the same
+/// winner set.
+fn resolve_unique_winner(
+    env: &Env,
+    seed: u64,
+    tier: u32,
+    total_tickets: u32,
+    winners_so_far: &Vec<Address>,
+    initial_index: u32,
+) -> u32 {
+    let initial_owner = match get_ticket_owner(env, initial_index + 1) {
+        Some(owner) => owner,
+        None => return initial_index,
+    };
+    if !address_already_won(winners_so_far, &initial_owner) {
+        return initial_index;
+    }
+
+    let mut attempt: u32 = 0;
+    while attempt < total_tickets {
+        let mut s = seed
+            .wrapping_add((tier as u64) << 32)
+            .wrapping_add(attempt as u64);
+        s = s
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        let idx = (s % total_tickets as u64) as u32;
+        if let Some(owner) = get_ticket_owner(env, idx + 1) {
+            if !address_already_won(winners_so_far, &owner) {
+                return idx;
+            }
+        }
+        attempt += 1;
+    }
+
+    for ticket_id in 1..=total_tickets {
+        if let Some(owner) = get_ticket_owner(env, ticket_id) {
+            if !address_already_won(winners_so_far, &owner) {
+                return ticket_id - 1;
+            }
+        }
+    }
+
     initial_index
 }
 
@@ -342,17 +420,6 @@ pub(crate) fn do_finalize_with_seed(
     for _ in 0..raffle.prizes.len() {
         claimed_winners.push_back(false);
     }
-
-    env.storage().persistent().set(
-        &DataKey::RandomnessSeed,
-        &FairnessMetadata {
-            seed,
-            randomness_source: raffle.randomness_source.clone(),
-            winning_ticket_indices: winning_ticket_ids.clone(),
-            draw_timestamp: env.ledger().timestamp(),
-            draw_sequence: env.ledger().sequence(),
-        },
-    );
 
     env.storage().persistent().set(
         &DataKey::RandomnessSeed,
