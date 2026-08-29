@@ -10,7 +10,7 @@ rust-version = "1.70"
 
 
 [workspace.dependencies]
-soroban-sdk = "23"
+soroban-sdk = "27"
 
 [profile.release]
 opt-level = "z"
