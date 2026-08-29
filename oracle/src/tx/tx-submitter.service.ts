@@ -8,6 +8,7 @@ import {
 } from '@stellar/stellar-sdk';
 import { Alerter } from '../alert/alerter';
 import { KeyService } from '../keys/key.service';
+import { logger } from '../logging/logger';
 
 const MAX_RETRIES = 5;
 const BASE_BACKOFF_MS = 500;
@@ -130,7 +131,7 @@ export class TxSubmitterService {
 
     if (status.status === SorobanRpc.Api.GetTransactionStatus.SUCCESS) {
       this.sequenceCache = String(BigInt(sequence) + 1n);
-      console.log(`provide_randomness confirmed: ${hash}`);
+      logger.info(`provide_randomness confirmed: ${hash}`);
       return hash;
     }
 

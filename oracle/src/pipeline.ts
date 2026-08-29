@@ -8,6 +8,7 @@ import { DeduplicationStore } from './deduplication/deduplication.store';
 import { GracefulShutdown } from './shutdown/graceful-shutdown';
 import { Alerter } from './alert/alerter';
 import { OracleConfig } from './config';
+import { childLogger, type Logger } from './logging/logger';
 
 export interface PipelineOptions {
   config: OracleConfig;
@@ -91,7 +92,8 @@ export class OraclePipeline {
   }
 
   async start(contractIds: string[]): Promise<void> {
-    console.log(`Starting oracle service for contracts: ${contractIds.join(', ')}`);
+    const pipelineLogger = childLogger({ raffleId: contractIds.join(',') });
+    pipelineLogger.info(`Starting oracle service for contracts: ${contractIds.join(', ')}`);
 
     // Initialize KeyService
     await this.keyService.initialize();
@@ -124,15 +126,16 @@ export class OraclePipeline {
     // Start listening for events
     await this.eventListener.startListening(contractIds);
 
-    console.log('Oracle service started successfully');
+    pipelineLogger.info('Oracle service started successfully');
   }
 
   private async processJob(job: { requestId: bigint; raffleContract: string; timestamp: bigint }): Promise<boolean> {
     const { requestId, raffleContract } = job;
+    const jobLogger = childLogger({ requestId: requestId.toString(), raffleId: raffleContract });
 
     // Check for duplicates
     if (this.dedupStore.isDuplicate(requestId, raffleContract)) {
-      console.log(`Skipping duplicate request: raffle=${raffleContract} requestId=${requestId}`);
+      jobLogger.info(`Skipping duplicate request: raffle=${raffleContract} requestId=${requestId}`);
       return false;
     }
 
@@ -150,19 +153,20 @@ export class OraclePipeline {
         requestId,
       });
 
-      console.log(`Successfully submitted provide_randomness: ${txHash} for raffle=${raffleContract} requestId=${requestId}`);
+      jobLogger.info(`Successfully submitted provide_randomness: ${txHash} for raffle=${raffleContract} requestId=${requestId}`);
 
       // Mark as processed (after successful submission)
       this.dedupStore.isDuplicate(requestId, raffleContract); // This marks it as seen
 
       return true;
     } catch (error) {
-      console.error(`Failed to process job raffle=${raffleContract} requestId=${requestId}:`, error);
+      jobLogger.error(`Failed to process job raffle=${raffleContract} requestId=${requestId}:`, error);
       throw error;
     }
   }
 
   private async processQueue(): Promise<void> {
+    const queueLogger = childLogger();
     while (true) {
       const jobs = this.requestQueue.drain();
       if (jobs.length === 0) {
@@ -174,7 +178,7 @@ export class OraclePipeline {
         try {
           await this.processJob(job);
         } catch (error) {
-          console.error('Error processing job:', error);
+          queueLogger.error('Error processing job:', error);
           // Job will be retried on next restart if not marked as duplicate
         }
       }
@@ -182,7 +186,7 @@ export class OraclePipeline {
   }
 
   async shutdown(): Promise<void> {
-    console.log('Shutting down oracle service...');
+    logger.info('Shutting down oracle service...');
     await this.gracefulShutdown.shutdown();
   }
 }

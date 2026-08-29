@@ -2,6 +2,7 @@ import { Address, rpc as SorobanRpc, xdr } from '@stellar/stellar-sdk';
 import { Alerter } from '../alert/alerter';
 import { RequestQueue } from '../queue/request-queue';
 import { LedgerCheckpointStore } from './ledger-checkpoint';
+import { childLogger, type Logger } from '../logging/logger';
 
 export interface EventListenerOptions {
   pollIntervalMs?: number;
@@ -25,6 +26,7 @@ export class EventListenerService {
   private readonly sleep: (ms: number) => Promise<void>;
   private readonly alerter?: Alerter;
   private readonly rpcUnreachableThreshold: number;
+  private readonly logger: Logger;
   private startLedger: number;
   private listening = false;
   private consecutiveRpcFailures = 0;
@@ -44,6 +46,7 @@ export class EventListenerService {
     this.alerter = options.alerter;
     this.rpcUnreachableThreshold =
       options.rpcUnreachableThreshold ?? Number(process.env.ALERT_RPC_UNREACHABLE_THRESHOLD ?? 3);
+    this.logger = childLogger();
     this.startLedger = 1;
   }
 
@@ -96,6 +99,15 @@ export class EventListenerService {
         }
 
         if (parsed.oracle === this.oracleAddress) {
+          const eventLogger = childLogger({
+            requestId: parsed.requestId.toString(),
+            raffleId: parsed.raffleContract,
+          });
+          eventLogger.info('Enqueuing randomness request', {
+            requestId: parsed.requestId.toString(),
+            raffleContract: parsed.raffleContract,
+            timestamp: parsed.timestamp.toString(),
+          });
           this.queue.enqueue({
             requestId: parsed.requestId,
             raffleContract: parsed.raffleContract,
