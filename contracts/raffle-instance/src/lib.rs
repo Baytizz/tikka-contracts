@@ -256,6 +256,9 @@ impl Contract {
         if config.prizes.len() > MAX_PRIZES {
             return Err(Error::TooManyPrizes);
         }
+        if config.prizes.len() > config.max_tickets {
+            return Err(Error::InvalidParameters);
+        }
         let mut total_prizes_bp = 0u32;
         for prize_bp in config.prizes.iter() {
             total_prizes_bp += prize_bp;
@@ -771,8 +774,8 @@ if config.randomness_source == RandomnessSource::External {
         // This function was not implemented in the modules, keeping it inline for now.
         // To complete the refactor, this logic should be moved to `helpers.rs`.
         Err(Error::InvalidParameters)
-    }
 }
+
 #[cfg(test)]
 mod test;
 #[cfg(test)]

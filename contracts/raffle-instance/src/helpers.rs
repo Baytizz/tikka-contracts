@@ -233,25 +233,24 @@ pub(crate) fn calculate_tier_prize(raffle: &Raffle, tier_index: u32) -> Result<i
                 .prize_amount
                 .checked_mul(bp as i128)
                 .ok_or(Error::ArithmeticOverflow)?
-                / 10000;
+                .checked_add(allocated)
+                .ok_or(Error::ArithmeticOverflow)?;
             allocated = allocated
                 .checked_add(amt)
                 .ok_or(Error::ArithmeticOverflow)?;
         }
-        return raffle
+        raffle
             .prize_amount
             .checked_sub(allocated)
-            .ok_or(Error::ArithmeticOverflow);
+            .ok_or(Error::ArithmeticOverflow)
+    } else {
+        let bp = raffle.prizes.get(tier_index).ok_or(Error::InvalidIndex)?;
+        raffle
+            .prize_amount
+            .checked_mul(bp as i128)
+            .ok_or(Error::ArithmeticOverflow)
+            .map(|a| a / 10000)
     }
-    let bp = raffle.prizes.get(tier_index).ok_or(Error::InvalidIndex)?;
-    raffle
-        .prize_amount
-        .checked_mul(bp as i128)
-        .ok_or(Error::ArithmeticOverflow)
-        .map(|a| a / 10000)
-}
-
-    initial_index
 }
 
 /// Finalize the raffle using a pre-computed `u64` seed.

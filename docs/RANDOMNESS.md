@@ -34,7 +34,13 @@ Entropy mixed into the 32-byte path:
 1. Network id (SHA-256 of network passphrase)  
 1. Raffle contract address  
 
-Values are XDR-packed and hashed with `env.crypto().sha256`, then fed to `env.prng().seed(...)`. Winner indices are sampled without replacement via `u64_in_range`.
+Values are XDR-packed and hashed with `env.crypto().sha256`, then fed to `env.prng().seed(...)`. Winner indices are selected via a **partial Fisher–Yates shuffle**: exactly `k` deterministic draws from the PRNG, using swap tracking to guarantee uniqueness without retries or modulo bias. This replaces the previous rejection-sampling loop which had an unbounded retry probability as `k` approached `n`.
+
+### Who can influence it
+
+- Anyone who can choose **when** `finalize_raffle` lands can work from visible ledger state.
+- Validators can influence timestamp/sequence.
+- Outcomes are **deterministic** for identical ledger + raffle inputs (good for audit, bad against motivated bias).
 
 The compact u64 seed used when finalizing through `do_finalize_with_seed` hashes `(timestamp, sequence, current_contract_address)` and takes the first 8 bytes.
 
@@ -340,35 +346,68 @@ assert_eq!(computed_metadata_hash, attestation.metadata_hash);
 Independently reproduce the winner selection using the recorded seed:
 
 ```rust
-use rejection_sampling::*;
+use soroban_sdk::Env;
 
+// Partial Fisher–Yates winner selection: exactly k draws, no unbounded loop,
+// no modulo bias, O(k) draws.  Off-chain reproducibility is achieved by
+// replicating the seed construction and the shuffle algorithm below.
 let seed = attestation.fairness_data.seed;
 let ticket_ids = attestation.fairness_data.ticket_ids;
 let num_winners = attestation.prize_distribution_bp.len();
+let n = ticket_ids.len() as u64;
 
-// Rejection sampling (same algorithm as OracleSeedWinnerSelection)
-let mut rng = initialize_rng(seed);
-let mut winners = Vec::new();
-let mut used = HashSet::new();
+// Build the u64 seed the same way the contract does (first 8 bytes of the
+// finalized seed — see build_internal_seed / PrngWinnerSelection for details).
+let mut current_seed = seed;
 
-while winners.len() < num_winners {
-    let candidate = uniform_u64_in_range(&mut rng, 0, ticket_ids.len());
-    if !used.contains(&candidate) {
-        winners.push(ticket_ids[candidate]);
-        used.insert(candidate);
+// Partial Fisher–Yates shuffle
+let mut remaining = n;
+let mut swaps: std::collections::BTreeMap<u64, u64> = std::collections::BTreeMap::new();
+let mut winners = std::vec::Vec::new();
+
+for _ in 0..num_winners {
+    // Generate an unbiased u64 in [0, remaining) using rejection sampling.
+    let largest_multiple_remaining = (u64::MAX / remaining) * remaining;
+    let mut candidate = loop {
+        if current_seed < largest_multiple_remaining {
+            break current_seed;
+        }
+        current_seed = current_seed
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+    };
+    let r = (candidate % remaining) as usize;
+
+    // Map candidate to actual index via swap tracking.
+    let mut actual = r as u64;
+    if let Some(&val) = swaps.get(&actual) {
+        actual = val;
     }
-}
 
-assert_eq!(winners, attestation.winning_ticket_ids);
+    // The winning ticket (1-indexed) is ticket_ids[actual]
+    winners.push(ticket_ids[actual as usize].clone());
+
+    // Swap: position r now contains what was at position remaining-1.
+    let last = remaining - 1;
+    let mut last_actual = last as u64;
+    if let Some(&val) = swaps.get(&last) {
+        last_actual = val;
+    }
+
+    // Record the swap: position r now contains what was at position last.
+    swaps.insert(r, last_actual);
+
+    remaining -= 1;
+}
 ```
 
-The key algorithm is rejection sampling without modulo bias:
-
-- Generate uniform random `u64` in range `[0, n)`
-- Track used indices in a set
-- Retry on collision until `num_winners` distinct indices selected
-
-This matches `OracleSeedWinnerSelection::select_winner_indices` in `randomness.rs`.
+```rust
+// Verify the reproduced winners match the on-chain result.
+assert_eq!(winners.len(), attestation.winning_ticket_ids.len());
+for (i, (reproduced, on_chain)) in winners.iter().zip(attestation.winning_ticket_ids.iter()).enumerate() {
+    assert_eq!(reproduced, on_chain, "winner {} mismatch at index {}", i, reproduced);
+}
+```
 
 #### 4. Winner-to-Owner Resolution
 
