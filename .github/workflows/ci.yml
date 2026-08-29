@@ -6,10 +6,16 @@ on:
   pull_request:
     branches: [ "master" ]
   workflow_dispatch:
+  schedule:
+    # Weekly advisory database refresh (Mondays 06:00 UTC)
+    - cron: '0 6 * * 1'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
+
+permissions:
+  contents: read
 
 env:
   CARGO_TERM_COLOR: always
@@ -77,7 +83,7 @@ jobs:
     name: Shell Script Checks
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install shellcheck
         run: sudo apt-get update && sudo apt-get install -y shellcheck
       - name: Run shellcheck
