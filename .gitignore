@@ -14,7 +14,6 @@ oracle/dist/
 deployments/mainnet.json
 
 # Local environment variables
-.env
 
 # Planning and development files
 task_plan.md
@@ -56,3 +55,7 @@ check_out*.txt
 error*.txt
 *.tar.gz
 patch*.py
+branch_structure.json
+temp_auto_push.bat
+temp_interactive_push.bat
+config.bat

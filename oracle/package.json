@@ -4,8 +4,8 @@
   "description": "Off-chain oracle service for Tikka Contracts",
   "main": "dist/src/index.js",
   "scripts": {
-    "build": "tsc",
-    "start": "node dist/src/index.js",
+    "build": "node init && tsc",
+    "start": "node init && node dist/src/index.js",
     "test": "jest",
     "test:ci": "jest --ci --coverage --runInBand",
     "format": "prettier --write \"src/**/*.{ts,md}\" \"*.md\"",
