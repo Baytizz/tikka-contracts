@@ -376,6 +376,7 @@ pub(crate) fn do_finalize_with_seed(
     )?;
     raffle.finalized_at = Some(env.ledger().timestamp());
     write_raffle(env, &raffle);
+    record_leaderboard(env, &raffle);
 
     env.storage()
         .instance()
