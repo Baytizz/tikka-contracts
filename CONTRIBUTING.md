@@ -64,13 +64,30 @@ cargo test -p raffle-instance
 
 ## Error Documentation Sync
 
-If you modify or add any variants to the `Error` enum in `contracts/raffle-instance/src/lib.rs`, regenerate `docs/ERRORS.md` before committing:
+If you modify or add any variants to the `Error` enum in `contracts/raffle-instance/src/lib.rs`
+or the `ContractError` enum in `contracts/raffle-factory/src/lib.rs`, regenerate
+`docs/ERRORS.md` before committing:
 
 ```bash
-python scripts/generate_error_docs.py
+python3 scripts/generate_error_docs.py
 ```
 
-CI will fail if `docs/ERRORS.md` is out of sync with the Rust `Error` enum.
+CI will fail if `docs/ERRORS.md` is out of sync with either enum. Every variant must
+have a `///` doc comment; duplicate discriminants and undeclared-but-used variants
+also fail the generator.
+
+## Continuous Integration
+
+All CI jobs must pass before a pull request can merge. A red build blocks merge —
+there are no exceptions for individual jobs. Required checks on `master` are:
+
+- `Build, Test, and Lint` (includes `cargo check`, formatting, clippy, and tests)
+- `Oracle Service CI`
+- `Shell Script Checks`
+
+Repository admins must enable branch protection on `master` so these checks are
+required and branches must be up to date before merging. Workflow changes land in
+PRs first; enforcement is enabled once the pipeline is green.
 
 ## Markdown
 
