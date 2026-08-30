@@ -35,7 +35,8 @@ Run `cargo audit` and `cd oracle && npm audit --omit=dev` locally before release
 
 | Advisory | Package | Status | Reviewed |
 |----------|---------|--------|----------|
-| _(none recorded)_ | | | |
+| RUSTSEC-2024-0388 | `derivative` | Accepted — informational ("unmaintained") proc-macro used at build time only via `ark-ec` (transitive of `soroban-env-host 23.x`); ignored in `.cargo/audit.toml` until the `soroban-sdk` major upgrade that replaces arkworks | 2026-08-30 |
+| RUSTSEC-2024-0436 | `paste` | Accepted — informational ("unmaintained") proc-macro used at build time only via `ark-ff` (transitive of `soroban-env-host 23.x`); ignored in `.cargo/audit.toml` until the `soroban-sdk` major upgrade that replaces arkworks | 2026-08-30 |
 
 ## Secure development
 
