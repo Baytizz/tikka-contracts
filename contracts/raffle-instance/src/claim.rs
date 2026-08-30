@@ -96,7 +96,7 @@ pub(crate) fn sweep_unclaimed(env: Env) -> Result<u32, Error> {
         if amount <= 0 { continue; }
         let _ = tc.try_transfer(&env.current_contract_address(), &treasury, &amount)
             .map_err(|_| Error::TokenTransferFailed)?;
-        raffle.winners.set(i, Winner { address: entry.address.clone(), claimed: true, prize_index: entry.prize_index });
+        raffle.winners.set(i, Winner { address: entry.address.clone(), claimed: true, tier_index: entry.tier_index });
         PrizeSwept { winner: entry.address, tier_index: i, treasury: treasury.clone(), amount, swept_at: now }.publish(&env);
         swept += 1;
     }

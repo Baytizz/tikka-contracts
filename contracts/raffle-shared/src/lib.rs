@@ -297,6 +297,18 @@ impl Ticket {
     }
 }
 
+/// A single drawn winner and their claim state.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[contracttype]
+pub struct Winner {
+    /// Address that owns the winning ticket at draw time.
+    pub address: Address,
+    /// True once this tier's prize has been paid out or swept.
+    pub claimed: bool,
+    /// Index into `Raffle::prizes` identifying the tier won.
+    pub tier_index: u32,
+}
+
 /// Audit data proving how a draw outcome was derived.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[contracttype]
