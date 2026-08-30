@@ -40,3 +40,34 @@ Cargo.lock @Otaiki1
 package.json @Otaiki1
 package-lock.json @Otaiki1
 .env.example @Otaiki1
+* @crackedstudio/maintainers
+
+# Smart contracts (Rust)
+contracts/** @crackedstudio/maintainers
+
+# Oracle service (TypeScript/Node.js)
+oracle/** @crackedstudio/maintainers
+
+# GitHub configuration (workflows, templates, etc.)
+.github/** @crackedstudio/maintainers
+
+# Documentation
+docs/** @crackedstudio/maintainers
+*.md @crackedstudio/maintainers
+
+# Deployment scripts
+scripts/** @crackedstudio/maintainers
+
+# CI/CD configuration
+.github/workflows/** @crackedstudio/maintainers
+
+# Root configuration files
+Cargo.toml @crackedstudio/maintainers
+Cargo.lock @crackedstudio/maintainers
+package.json @crackedstudio/maintainers
+package-lock.json @crackedstudio/maintainers
+.env.example @crackedstudio/maintainers
+
+# Dependency manifests — individual review for supply-chain changes
+deny.toml @crackedstudio/maintainers
+oracle/Dockerfile @crackedstudio/maintainers

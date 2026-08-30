@@ -128,6 +128,49 @@ The configuration lives in `.markdownlint.jsonc`. Auto-fixable issues can be res
 - Note any follow-up work or limitations.
 - Use the PR template at `.github/PULL_REQUEST_TEMPLATE.md` to ensure all required information is included.
 
+## Dependency updates
+
+Dependabot opens weekly PRs for **GitHub Actions**, **Cargo**, **npm** (`oracle/`), and
+**Docker** (`oracle/Dockerfile`). Review policy:
+
+| Ecosystem | Grouping | Review expectations |
+|-----------|----------|---------------------|
+| **Cargo — production** | Individual PRs for `soroban-sdk`, `ed25519-dalek`, `sha2`, and other runtime/crypto deps | Rebuild WASM (`cargo build --target wasm32-unknown-unknown --release`), run the full test suite, and verify host behaviour before merge. Soroban SDK minors can change contract semantics. |
+| **Cargo — dev tooling** | Grouped (`proptest`, test helpers, fuzz crates, etc.) | Run `cargo test --workspace` and `cargo clippy`. |
+| **npm — production** | Individual PRs for `@stellar/stellar-sdk`, `dotenv` | Confirm SDK major matches the Soroban protocol (see `oracle/README.md`), run `npm test` and `npm run build`. |
+| **npm — dev tooling** | Grouped (Jest, TypeScript, Prettier, types) | Run `npm test` and `npm run format:check`. |
+| **Docker** | Individual PRs for base image bumps | Rebuild the oracle image and smoke-test `/health`. |
+| **GitHub Actions** | Individual PRs per action bump | Ensure SHA pins include a version comment; `actionlint` must pass. |
+
+All dependency PRs route to `@crackedstudio/maintainers` via CODEOWNERS. Do not merge
+supply-chain bumps without maintainer approval.
+
+## Supply-chain policy (`cargo-deny`)
+
+CI runs [`cargo-deny`](https://embarkstudios.github.io/cargo-deny/) on every PR using
+the root [`deny.toml`](deny.toml). The policy enforces allowed licenses, warns on
+duplicate crate versions, and denies known advisories. Advisories are also refreshed
+on a weekly schedule.
+
+### Adding an exception
+
+If `cargo-deny` reports a finding that cannot be resolved immediately:
+
+1. Prefer fixing the dependency (upgrade, replace, or remove) over allowlisting.
+2. If an allowlist entry is unavoidable, add it to the relevant section in `deny.toml`
+   with an inline `reason` (or `ignore` entry for advisories) explaining the risk
+   accepted and the planned remediation.
+3. Obtain approval from a `@crackedstudio/maintainers` reviewer — exceptions require
+   explicit maintainer sign-off in the PR.
+4. Link any related RUSTSEC advisory ID in the PR description.
+
+Run locally before opening a PR:
+
+```bash
+cargo install cargo-deny --locked
+cargo deny check
+```
+
 ## Stale issues and PRs
 
 To keep the contribution queue healthy, we run GitHub's [`actions/stale`](https://github.com/actions/stale) bot (see [`.github/workflows/stale.yml`](.github/workflows/stale.yml)):
