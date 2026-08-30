@@ -1,261 +1,197 @@
 #!/usr/bin/env python3
 """
-Script to auto-generate error code documentation from Rust Error enum.
-This script parses the Error enum in contracts/raffle-instance/src/lib.rs
-and generates the markdown table for docs/ERRORS.md.
+Generate docs/ERRORS.md from contract error enums.
+
+Parses:
+  - contracts/raffle-instance/src/lib.rs — `Error`
+  - contracts/raffle-factory/src/lib.rs — `ContractError`
+
+Fails when duplicate discriminants, undeclared-but-used variants, or missing
+doc comments are detected.
 """
+
+from __future__ import annotations
 
 import re
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 
 
-def parse_error_enum(file_path):
-    """Parse the Error enum from the Rust source file."""
-    with open(file_path, 'r') as f:
-        content = f.read()
-    
-    # Find the Error enum
-    enum_match = re.search(
-        r'#\[contracterror\].*?pub enum Error \{(.*?)\}',
-        content,
-        re.DOTALL
+@dataclass(frozen=True)
+class ErrorVariant:
+    code: int
+    name: str
+    doc: str
+
+
+@dataclass(frozen=True)
+class ErrorEnumSpec:
+    contract: str
+    enum_name: str
+    source_path: str
+    variants: list[ErrorVariant]
+
+
+ENUM_PATTERN = re.compile(
+    r"#\[contracterror\]\s*"
+    r"#\[derive\([^\]]*\)\]\s*"
+    r"pub enum (\w+) \{(.*?)\n\}",
+    re.DOTALL,
+)
+
+VARIANT_PATTERN = re.compile(
+    r"(?P<name>\w+)\s*=\s*(?P<code>\d+)\s*,",
+    re.MULTILINE,
+)
+
+
+def extract_doc_comment(block: str, variant_name: str, variant_start: int) -> str:
+    """Return the /// doc comment immediately preceding a variant."""
+    prefix = block[:variant_start]
+    lines: list[str] = []
+    for line in reversed(prefix.rstrip().splitlines()):
+        stripped = line.strip()
+        if stripped.startswith("///"):
+            lines.append(stripped[3:].strip())
+        elif stripped == "":
+            continue
+        else:
+            break
+    if not lines:
+        return ""
+    return " ".join(reversed(lines)).strip()
+
+
+def parse_enum(content: str, enum_name: str) -> list[ErrorVariant]:
+    match = ENUM_PATTERN.search(content)
+    if not match or match.group(1) != enum_name:
+        raise ValueError(f"Could not find #[contracterror] pub enum {enum_name}")
+
+    enum_body = match.group(2)
+    variants: list[ErrorVariant] = []
+    seen_codes: dict[int, str] = {}
+
+    for variant_match in VARIANT_PATTERN.finditer(enum_body):
+        name = variant_match.group("name")
+        code = int(variant_match.group("code"))
+        if code in seen_codes:
+            raise ValueError(
+                f"Duplicate discriminant {code} in {enum_name}: "
+                f"{seen_codes[code]} and {name}"
+            )
+        seen_codes[code] = name
+        doc = extract_doc_comment(enum_body, name, variant_match.start("name"))
+        if not doc:
+            raise ValueError(f"Missing doc comment for {enum_name}::{name}")
+        variants.append(ErrorVariant(code=code, name=name, doc=doc))
+
+    variants.sort(key=lambda v: v.code)
+    return variants
+
+
+def find_used_variants(content: str, enum_name: str, declared: set[str]) -> list[str]:
+    """Find Error::Variant references that are not declared in the enum."""
+    pattern = re.compile(rf"{enum_name}::(\w+)")
+    used = set(pattern.findall(content))
+    return sorted(name for name in used if name not in declared)
+
+
+def load_spec(path: Path, contract: str, enum_name: str) -> ErrorEnumSpec:
+    content = path.read_text()
+    variants = parse_enum(content, enum_name)
+    declared = {v.name for v in variants}
+    missing = find_used_variants(content, enum_name, declared)
+    if missing:
+        raise ValueError(
+            f"{enum_name} in {path}: referenced but not declared: {', '.join(missing)}"
+        )
+    rel = path.relative_to(path.parents[2])
+    return ErrorEnumSpec(
+        contract=contract,
+        enum_name=enum_name,
+        source_path=str(rel),
+        variants=variants,
     )
-    
-    if not enum_match:
-        print("Error: Could not find Error enum in the file")
-        sys.exit(1)
-    
-    enum_body = enum_match.group(1)
-    
-    # Parse each variant with its discriminant
-    error_pattern = r'(\w+)\s*=\s*(\d+)'
-    errors = []
-    
-    for match in re.finditer(error_pattern, enum_body):
-        name = match.group(1)
-        code = int(match.group(2))
-        errors.append((code, name))
-    
-    # Sort by code
-    errors.sort(key=lambda x: x[0])
-    
-    return errors
 
 
-def generate_markdown_table(errors):
-    """Generate markdown table from error list."""
-    lines = []
-    lines.append("| Code | Error | Description | Frontend Message |")
-    lines.append("| ---- | ----- | ----------- | ---------------- |")
-    
-    # Define descriptions and messages based on error names
-    descriptions = {
-        'RaffleNotFound': 'The raffle data was not found in storage',
-        'RaffleInactive': 'The raffle is not in an active state',
-        'TicketsSoldOut': 'All tickets have been sold',
-        'InsufficientFunds': 'User does not have enough balance',
-        'NotAuthorized': 'User is not authorized to perform this action',
-        'OracleNotSet': 'Oracle address is not configured',
-        'RandomnessAlreadyRequested': 'Randomness has already been requested',
-        'NoRandomnessRequest': 'No randomness request found',
-        'FallbackTooEarly': 'Fallback randomness triggered too early',
-        'PrizeNotDeposited': 'Prize has not been deposited yet',
-        'PrizeAlreadyClaimed': 'Prize has already been claimed',
-        'PrizeAlreadyDeposited': 'Prize deposit was already completed',
-        'NotWinner': 'Only the winner can claim the prize',
-        'ClaimTooEarly': 'Cannot claim before cooldown period',
-        'InvalidParameters': 'Invalid input parameters provided',
-        'InvalidQuantity': 'Invalid ticket quantity requested',
-        'InvalidStatus': 'The current raffle status doesn\'t allow this operation',
-        'ContractPaused': 'The contract is paused',
-        'InvalidStateTransition': 'Cannot transition to the requested state',
-        'RaffleExpired': 'The raffle end time has passed',
-        'InsufficientTickets': 'Not enough tickets sold to finalize',
-        'MultipleTicketsNotAllowed': 'User already has a ticket',
-        'NoTicketsSold': 'No tickets have been purchased',
-        'TicketNotFound': 'The requested ticket was not found',
-        'RaffleEnded': 'The raffle has already ended',
-        'ArithmeticOverflow': 'Arithmetic operation overflow',
-        'AlreadyInitialized': 'Contract is already initialized',
-        'NotInitialized': 'Contract has not been initialized',
-        'Reentrancy': 'Reentrant call detected',
-        'TokenTransferFailed': 'Token transfer failed',
-        'NoActiveTickets': 'No active tickets available',
-        'DeadlinePassed': 'Swap deadline has passed',
-        'SlippageExceeded': 'Slippage tolerance exceeded',
-        'InvalidIndex': 'Invalid index provided',
-        'MorePrizesThanTickets': 'More prizes than tickets',
-        'ZeroPrize': 'Prize amount is zero',
-        'InvalidTokenAddress': 'Invalid token address provided',
-        'TooManyPrizes': 'Exceeds maximum number of prizes',
-        'EmergencyTooEarly': 'Emergency withdraw too early',
-        'InvalidTicketRange': 'Invalid ticket range configured',
-        'InsufficientAccumulatedFees': 'Insufficient accumulated fees',
-        'PrizeConfigurationLocked': 'Prize configuration is locked',
-        'ExceedsMaxTicketsPerTx': 'Exceeds max tickets per transaction',
-    }
-    
-    messages = {
-        'RaffleNotFound': '"Raffle not found"',
-        'RaffleInactive': '"This raffle is not currently active"',
-        'TicketsSoldOut': '"Sorry, all tickets have been sold!"',
-        'InsufficientFunds': '"Insufficient funds to complete this action"',
-        'NotAuthorized': '"You are not authorized to perform this action"',
-        'OracleNotSet': '"Oracle address is not set"',
-        'RandomnessAlreadyRequested': '"Randomness request already in progress"',
-        'NoRandomnessRequest': '"No randomness request found"',
-        'FallbackTooEarly': '"Fallback randomness not available yet"',
-        'PrizeNotDeposited': '"Prize not yet deposited"',
-        'PrizeAlreadyClaimed': '"Prize has already been claimed"',
-        'PrizeAlreadyDeposited': '"Prize has already been deposited"',
-        'NotWinner': '"You are not the winner of this raffle"',
-        'ClaimTooEarly': '"Please wait before claiming your prize"',
-        'InvalidParameters': '"Invalid parameters provided"',
-        'InvalidQuantity': '"Invalid ticket quantity"',
-        'InvalidStatus': '"This action is not allowed in the current raffle state"',
-        'ContractPaused': '"Contract is temporarily paused"',
-        'InvalidStateTransition': '"Cannot change raffle to the requested state"',
-        'RaffleExpired': '"This raffle has ended"',
-        'InsufficientTickets': '"Minimum ticket requirement not met"',
-        'MultipleTicketsNotAllowed': '"Multiple tickets not allowed for this raffle"',
-        'NoTicketsSold': '"No tickets have been sold yet"',
-        'TicketNotFound': '"Ticket not found"',
-        'RaffleEnded': '"This raffle has already ended"',
-        'ArithmeticOverflow': '"Calculation error occurred"',
-        'AlreadyInitialized': '"Contract already initialized"',
-        'NotInitialized': '"Contract not initialized"',
-        'Reentrancy': '"Please try again later"',
-        'TokenTransferFailed': '"Token transfer failed"',
-        'NoActiveTickets': '"No active tickets available"',
-        'DeadlinePassed': '"Swap deadline has passed"',
-        'SlippageExceeded': '"Slippage tolerance exceeded"',
-        'InvalidIndex': '"Invalid index provided"',
-        'MorePrizesThanTickets': '"More prizes than tickets"',
-        'ZeroPrize': '"Prize amount cannot be zero"',
-        'InvalidTokenAddress': '"Invalid token address"',
-        'TooManyPrizes': '"Too many prizes configured"',
-        'EmergencyTooEarly': '"Emergency withdraw not available yet"',
-        'InvalidTicketRange': '"Invalid ticket range"',
-        'InsufficientAccumulatedFees': '"Insufficient accumulated fees"',
-        'PrizeConfigurationLocked': '"Prize configuration is locked"',
-        'ExceedsMaxTicketsPerTx': '"Too many tickets for one transaction"',
-    }
-    
-    for code, name in errors:
-        desc = descriptions.get(name, 'TODO: Add description')
-        msg = messages.get(name, 'TODO: Add message')
-        lines.append(f"| {code} | `{name}` | {desc} | {msg} |")
-    
-    return '\n'.join(lines)
+def frontend_message(doc: str) -> str:
+    first = doc.split(".")[0].strip()
+    if not first:
+        return '"Unknown error"'
+    if not first.endswith('"'):
+        return f'"{first}"'
+    return first
 
 
-def generate_typescript_mapping(errors):
-    """Generate TypeScript error mapping from error list."""
-    lines = []
-    lines.append("const errorMessages: Record<number, string> = {")
-    lines.append("  // Instance errors (1-58)")
-    
-    messages = {
-        'RaffleNotFound': 'Raffle not found',
-        'RaffleInactive': 'This raffle is not currently active',
-        'TicketsSoldOut': 'Sorry, all tickets have been sold!',
-        'InsufficientFunds': 'Insufficient funds to complete this action',
-        'NotAuthorized': 'You are not authorized to perform this action',
-        'OracleNotSet': 'Oracle address is not set',
-        'RandomnessAlreadyRequested': 'Randomness request already in progress',
-        'NoRandomnessRequest': 'No randomness request found',
-        'FallbackTooEarly': 'Fallback randomness not available yet',
-        'PrizeNotDeposited': 'Prize not yet deposited',
-        'PrizeAlreadyClaimed': 'Prize has already been claimed',
-        'PrizeAlreadyDeposited': 'Prize has already been deposited',
-        'NotWinner': 'You are not the winner of this raffle',
-        'ClaimTooEarly': 'Please wait before claiming your prize',
-        'InvalidParameters': 'Invalid parameters provided',
-        'InvalidQuantity': 'Invalid ticket quantity',
-        'InvalidStatus': 'This action is not allowed in the current raffle state',
-        'ContractPaused': 'Contract is temporarily paused',
-        'InvalidStateTransition': 'Cannot change raffle to the requested state',
-        'RaffleExpired': 'This raffle has ended',
-        'InsufficientTickets': 'Minimum ticket requirement not met',
-        'MultipleTicketsNotAllowed': 'Multiple tickets not allowed for this raffle',
-        'NoTicketsSold': 'No tickets have been sold yet',
-        'TicketNotFound': 'Ticket not found',
-        'RaffleEnded': 'This raffle has already ended',
-        'ArithmeticOverflow': 'Calculation error occurred',
-        'AlreadyInitialized': 'Contract already initialized',
-        'NotInitialized': 'Contract not initialized',
-        'Reentrancy': 'Please try again later',
-        'TokenTransferFailed': 'Token transfer failed',
-        'NoActiveTickets': 'No active tickets available',
-        'DeadlinePassed': 'Swap deadline has passed',
-        'SlippageExceeded': 'Slippage tolerance exceeded',
-        'InvalidIndex': 'Invalid index provided',
-        'MorePrizesThanTickets': 'More prizes than tickets',
-        'ZeroPrize': 'Prize amount cannot be zero',
-        'InvalidTokenAddress': 'Invalid token address',
-        'TooManyPrizes': 'Too many prizes configured',
-        'EmergencyTooEarly': 'Emergency withdraw not available yet',
-        'InvalidTicketRange': 'Invalid ticket range',
-        'InsufficientAccumulatedFees': 'Insufficient accumulated fees',
-        'PrizeConfigurationLocked': 'Prize configuration is locked',
-        'ExceedsMaxTicketsPerTx': 'Too many tickets for one transaction',
-    }
-    
-    for code, name in errors:
-        msg = messages.get(name, 'TODO: Add message')
-        lines.append(f"  {code}: \"{msg}\",")
-    
-    lines.append("};")
-    return '\n'.join(lines)
+def render_table(spec: ErrorEnumSpec) -> str:
+    lines = [
+        f"Source enum: `{spec.enum_name}` in [`{spec.source_path}`]({spec.source_path})",
+        "",
+        "| Code | Error | Description | Contract | Frontend Message |",
+        "| ---- | ----- | ----------- | -------- | ---------------- |",
+    ]
+    for variant in spec.variants:
+        msg = frontend_message(variant.doc)
+        lines.append(
+            f"| {variant.code} | `{variant.name}` | {variant.doc} | "
+            f"{spec.contract} | {msg} |"
+        )
+    return "\n".join(lines)
 
 
-def main():
-    # Get the repository root
+def render_doc(instance: ErrorEnumSpec, factory: ErrorEnumSpec) -> str:
+    return f"""# Error Codes Documentation
+
+This document is generated from the contract error enums. Regenerate with:
+
+```bash
+python3 scripts/generate_error_docs.py
+```
+
+Sources:
+- `{instance.enum_name}` — `{instance.source_path}`
+- `{factory.enum_name}` — `{factory.source_path}`
+
+## Table of Contents
+
+- [Instance Contract Errors](#instance-contract-errors)
+- [Factory Contract Errors](#factory-contract-errors)
+
+---
+
+## Instance Contract Errors
+
+The instance contract (`RaffleInstance`) handles individual raffle operations.
+
+{render_table(instance)}
+
+---
+
+## Factory Contract Errors
+
+The factory contract (`RaffleFactory`) manages raffle creation.
+
+{render_table(factory)}
+"""
+
+
+def main() -> None:
     repo_root = Path(__file__).parent.parent
-    rust_file = repo_root / "contracts" / "raffle-instance" / "src" / "lib.rs"
+    instance_path = repo_root / "contracts" / "raffle-instance" / "src" / "lib.rs"
+    factory_path = repo_root / "contracts" / "raffle-factory" / "src" / "lib.rs"
     errors_doc = repo_root / "docs" / "ERRORS.md"
-    
-    if not rust_file.exists():
-        print(f"Error: Rust file not found at {rust_file}")
+
+    try:
+        instance = load_spec(instance_path, "RaffleInstance", "Error")
+        factory = load_spec(factory_path, "RaffleFactory", "ContractError")
+    except ValueError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
         sys.exit(1)
-    
-    # Parse the error enum
-    errors = parse_error_enum(rust_file)
-    
-    table_content = generate_markdown_table(errors)
-    
-    if errors_doc.exists():
-        with open(errors_doc, 'r') as f:
-            doc_text = f.read()
-        
-        # Replace content between Error Code Mapping header or update table section
-        # Ensure deterministic file writing
-        lines = doc_text.splitlines()
-        new_lines = []
-        in_table_section = False
-        
-        for line in lines:
-            if line.startswith("### General Errors") or line.startswith("| Code | Error"):
-                if not in_table_section:
-                    in_table_section = True
-                    new_lines.append(table_content)
-                continue
-            if in_table_section:
-                if line.startswith("## ") or line.startswith("---"):
-                    in_table_section = False
-                    new_lines.append(line)
-            else:
-                new_lines.append(line)
-        
-        updated_doc = '\n'.join(new_lines) + '\n'
-        with open(errors_doc, 'w') as f:
-            f.write(updated_doc)
-    else:
-        with open(errors_doc, 'w') as f:
-            f.write(table_content + '\n')
+
+    errors_doc.write_text(render_doc(instance, factory))
+    print(f"Wrote {errors_doc}")
 
 
 if __name__ == "__main__":
     main()
-
