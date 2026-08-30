@@ -182,7 +182,8 @@ pub struct RaffleFailed {
 #[contractevent]
 #[soroban_sdk::contracttype]
 pub struct TicketRefunded {
-    pub buyer: Address,
+    pub payer: Address,
+    pub owner: Address,
     pub ticket_number: u32,
     pub amount: i128,
     pub timestamp: u64,
