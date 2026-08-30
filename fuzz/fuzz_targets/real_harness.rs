@@ -2,6 +2,12 @@ use soroban_sdk::{testutils::Address as _, token::StellarAssetClient, Address, B
 use tikka_raffle_instance::{Contract, ContractClient, RaffleStatus};
 use raffle_shared::{RaffleConfig, RandomnessSource};
 
+fn assert_solvent(env: &Env, client: &ContractClient<'_>) {
+    env.as_contract(&client.address, || {
+        tikka_raffle_instance::assert_solvent(env);
+    });
+}
+
 pub fn setup(env: &Env, max_tickets: u32) -> (ContractClient<'_>, Address, Address, StellarAssetClient<'_>) {
     let contract_id = env.register(Contract, ());
     let client = ContractClient::new(env, &contract_id);
@@ -49,6 +55,7 @@ pub fn setup(env: &Env, max_tickets: u32) -> (ContractClient<'_>, Address, Addre
         env.storage().instance().remove(&tikka_raffle_instance::DataKey::Factory);
     });
     client.deposit_prize();
+    assert_solvent(env, &client);
     (client, creator, admin, token)
 }
 
@@ -60,6 +67,7 @@ pub fn buy(data: &[u8]) {
     token.mint(&buyer, &1_000_000);
     let quantity = (data.first().copied().unwrap_or(1) as u32 % 5) + 1;
     let _ = client.try_buy_tickets(&buyer, &quantity);
+    assert_solvent(&env, &client);
 }
 
 pub fn finalize(data: &[u8]) {
@@ -68,6 +76,7 @@ pub fn finalize(data: &[u8]) {
     let (client, creator, _admin, token) = setup(&env, 1);
     token.mint(&creator, &10_000);
     let _ = client.try_finalize_raffle();
+    assert_solvent(&env, &client);
     let _ = data;
 }
 
@@ -78,9 +87,12 @@ pub fn refund_cancel(data: &[u8]) {
     let buyer = Address::generate(&env);
     token.mint(&buyer, &100_000);
     let _ = client.try_buy_tickets(&buyer, &1);
+    assert_solvent(&env, &client);
     let _ = client.try_cancel_raffle(&raffle_shared::CancelReason::CreatorCancelled);
+    assert_solvent(&env, &client);
     let ticket_id = (data.first().copied().unwrap_or(0) as u32 % 2) + 1;
     let _ = client.try_refund_ticket(&ticket_id);
+    assert_solvent(&env, &client);
 }
 
 pub fn commit_reveal(data: &[u8]) {
@@ -90,8 +102,10 @@ pub fn commit_reveal(data: &[u8]) {
     let buyer = Address::generate(&env);
     token.mint(&buyer, &100_000);
     let _ = client.try_buy_tickets(&buyer, &1);
+    assert_solvent(&env, &client);
     let hash = BytesN::from_array(&env, &[data.first().copied().unwrap_or(0); 32]);
     let _ = client.try_submit_commit(&1, &hash);
+    assert_solvent(&env, &client);
 }
 
 pub fn lifecycle(data: &[u8]) {
@@ -128,6 +142,8 @@ pub fn lifecycle(data: &[u8]) {
                 }
             }
         }
+
+        assert_solvent(&env, &client);
 
         if let Ok(Ok(raffle)) = client.try_get_raffle() {
             assert!(raffle.tickets_sold <= raffle.max_tickets);

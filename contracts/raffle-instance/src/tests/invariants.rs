@@ -1,6 +1,10 @@
 use super::*;
 use proptest::prelude::*;
-use soroban_sdk::{Address, BytesN, Env, String, Vec};
+use crate::{
+    assert_solvent, calculate_tier_prize, DataKey, Raffle, RaffleStatus, Ticket, MAX_PRIZE_AMOUNT,
+    MIN_TICKET_PRICE,
+};
+use soroban_sdk::{testutils::Address as _, Address, BytesN, Env, String, Vec};
 
 fn valid_prize_weights() -> impl Strategy<Value = std::vec::Vec<u32>> {
     prop::collection::vec(0u32..=10_000, 0..=99)
@@ -94,4 +98,49 @@ fn one_tier_receives_the_entire_prize() {
 #[test]
 fn final_tier_absorbs_maximum_rounding_dust() {
     assert_tier_sum(&[101; 99].iter().copied().chain([1]).collect::<std::vec::Vec<_>>(), 10_000);
+}
+
+#[test]
+fn assert_solvent_accepts_storage_derived_combined_token_obligations() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let token_admin = Address::generate(&env);
+    let token_address = env
+        .register_stellar_asset_contract_v2(token_admin.clone())
+        .address();
+    let token = soroban_sdk::token::StellarAssetClient::new(&env, &token_address);
+    let contract_id = env.register(crate::RaffleInstance, ());
+    let creator = Address::generate(&env);
+    let buyer = Address::generate(&env);
+
+    let mut raffle = test_raffle(&env, &[10_000], 50_000);
+    raffle.creator = creator;
+    raffle.max_tickets = 2;
+    raffle.max_tickets_per_tx = 2;
+    raffle.max_tickets_per_address = 0;
+    raffle.ticket_price = 10_000;
+    raffle.payment_token = token_address.clone();
+    raffle.prize_token = token_address.clone();
+    raffle.tickets_sold = 2;
+    raffle.status = RaffleStatus::Active;
+    raffle.prize_deposited = true;
+    raffle.early_bird_ticket_percentage = 50;
+    raffle.early_bird_discount_bp = 5_000;
+
+    env.as_contract(&contract_id, || {
+        env.storage().instance().set(&DataKey::Raffle, &raffle);
+        env.storage().instance().set(&DataKey::AccumulatedFees, &300i128);
+        env.storage()
+            .persistent()
+            .set(&DataKey::Ticket(1), &Ticket::new(1, buyer.clone(), 0));
+        env.storage()
+            .persistent()
+            .set(&DataKey::Ticket(2), &Ticket::new(2, buyer, 0));
+    });
+
+    token.mint(&contract_id, &65_300);
+
+    env.as_contract(&contract_id, || {
+        assert_solvent(&env);
+    });
 }
