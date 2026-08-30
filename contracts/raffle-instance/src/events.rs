@@ -19,6 +19,8 @@ pub struct RaffleCreated {
     #[topic]
     pub metadata_hash: BytesN<32>,
     pub unique_winners: bool,
+    /// Seconds after finalization before unclaimed prizes may be swept.
+    pub claim_expiry_seconds: u64,
 }
 
 #[derive(Clone)]
