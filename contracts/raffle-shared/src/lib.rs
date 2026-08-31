@@ -2,6 +2,7 @@
 #![cfg_attr(not(test), deny(clippy::unwrap_used))]
 
 pub mod constants;
+pub mod errors;
 
 #[cfg(any(test, feature = "testutils"))]
 pub mod config_builder;

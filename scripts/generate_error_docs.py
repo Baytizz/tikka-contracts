@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """
-Script to auto-generate error code documentation from Rust Error enum.
-This script parses the Error enum in contracts/raffle-instance/src/lib.rs
-and generates the markdown table for docs/ERRORS.md.
+Script to auto-generate error code documentation from Rust Error enums.
+This script parses the Error enum in contracts/raffle-instance/src/lib.rs,
+the ContractError enum in contracts/raffle-factory/src/lib.rs, and the
+ProtocolError enum in contracts/raffle-shared/src/errors.rs, then generates
+the markdown table for docs/ERRORS.md.
 """
 
 import re
@@ -10,25 +12,21 @@ import sys
 from pathlib import Path
 
 
-def parse_error_enum(file_path):
-    """Parse the Error enum from the Rust source file."""
+def parse_error_enum(file_path, enum_name):
+    """Parse an error enum from the Rust source file."""
     with open(file_path, 'r') as f:
         content = f.read()
     
-    # Find the Error enum
     enum_match = re.search(
-        r'#\[contracterror\].*?pub enum Error \{(.*?)\}',
+        r'(?:#\[contracterror\].*?)?pub enum ' + enum_name + r' \{(.*?)\}',
         content,
         re.DOTALL
     )
     
     if not enum_match:
-        print("Error: Could not find Error enum in the file")
-        sys.exit(1)
+        return []
     
     enum_body = enum_match.group(1)
-    
-    # Parse each variant with its discriminant
     error_pattern = r'(\w+)\s*=\s*(\d+)'
     errors = []
     
@@ -37,19 +35,16 @@ def parse_error_enum(file_path):
         code = int(match.group(2))
         errors.append((code, name))
     
-    # Sort by code
     errors.sort(key=lambda x: x[0])
-    
     return errors
 
 
-def generate_markdown_table(errors):
-    """Generate markdown table from error list."""
+def generate_markdown_table(instance_errors, factory_errors, protocol_errors):
+    """Generate markdown table from error lists."""
     lines = []
     lines.append("| Code | Error | Description | Frontend Message |")
     lines.append("| ---- | ----- | ----------- | ---------------- |")
     
-    # Define descriptions and messages based on error names
     descriptions = {
         'RaffleNotFound': 'The raffle data was not found in storage',
         'RaffleInactive': 'The raffle is not in an active state',
@@ -94,6 +89,29 @@ def generate_markdown_table(errors):
         'InsufficientAccumulatedFees': 'Insufficient accumulated fees',
         'PrizeConfigurationLocked': 'Prize configuration is locked',
         'ExceedsMaxTicketsPerTx': 'Exceeds max tickets per transaction',
+        'DrawingAlreadyInProgress': 'A draw is already in progress',
+        'DrawingAlreadyComplete': 'Randomness was already provided',
+        'InvalidEndTime': 'Raffle end time is invalid',
+        'InvalidAdminAddress': 'Admin address is invalid',
+        'InvalidStatusForDrawingTransition': 'Raffle status cannot enter Drawing',
+        'RandomnessTooEarly': 'Randomness request too early',
+        'InvalidRaffleId': 'Invalid raffle stable-ID',
+        'RaffleNotEligible': 'Raffle is not eligible for this operation',
+        'TreasuryNotSet': 'Treasury address is not configured',
+        'FactoryAlreadyInitialized': 'Factory is already initialized',
+        'FactoryNotAuthorized': 'Caller is not the factory admin',
+        'FactoryContractPaused': 'Factory is paused',
+        'FactoryInvalidParameters': 'Invalid factory parameters',
+        'FactoryRaffleNotFound': 'Raffle instance not found in factory',
+        'FactoryAdminTransferPending': 'Admin transfer already pending',
+        'FactoryNoPendingTransfer': 'No pending admin transfer',
+        'FactoryRateLimitExceeded': 'Raffle creation rate limit exceeded',
+        'FactoryNoPendingOp': 'No pending operation',
+        'FactoryTimelockNotElapsed': 'Timelock delay has not elapsed',
+        'FactoryInvalidRaffleId': 'Invalid raffle stable-ID',
+        'FactoryRaffleNotEligible': 'Raffle is not eligible for this operation',
+        'FactoryArithmeticOverflow': 'Arithmetic overflow in factory',
+        'FactoryTreasuryNotSet': 'Factory treasury address not configured',
     }
     
     messages = {
@@ -140,21 +158,61 @@ def generate_markdown_table(errors):
         'InsufficientAccumulatedFees': '"Insufficient accumulated fees"',
         'PrizeConfigurationLocked': '"Prize configuration is locked"',
         'ExceedsMaxTicketsPerTx': '"Too many tickets for one transaction"',
+        'DrawingAlreadyInProgress': '"Drawing already in progress"',
+        'DrawingAlreadyComplete': '"Drawing already complete"',
+        'InvalidEndTime': '"Invalid raffle end time"',
+        'InvalidAdminAddress': '"Invalid admin address"',
+        'InvalidStatusForDrawingTransition': '"Cannot start drawing in current state"',
+        'RandomnessTooEarly': '"Randomness request too early"',
+        'InvalidRaffleId': '"Invalid raffle ID"',
+        'RaffleNotEligible': '"Raffle is not eligible for this operation"',
+        'TreasuryNotSet': '"Treasury address is not set"',
+        'FactoryAlreadyInitialized': '"Factory already initialized"',
+        'FactoryNotAuthorized': '"You are not the factory admin"',
+        'FactoryContractPaused': '"Factory is temporarily paused"',
+        'FactoryInvalidParameters': '"Invalid factory parameters provided"',
+        'FactoryRaffleNotFound': '"Raffle not found in factory registry"',
+        'FactoryAdminTransferPending': '"Admin transfer already pending"',
+        'FactoryNoPendingTransfer': '"No pending admin transfer"',
+        'FactoryRateLimitExceeded': '"Raffle creation rate limit exceeded"',
+        'FactoryNoPendingOp': '"No pending operation"',
+        'FactoryTimelockNotElapsed': '"Timelock delay has not elapsed"',
+        'FactoryInvalidRaffleId': '"Invalid raffle ID"',
+        'FactoryRaffleNotEligible': '"Raffle is not eligible for this operation"',
+        'FactoryArithmeticOverflow': '"Calculation error in factory"',
+        'FactoryTreasuryNotSet': '"Treasury address is not set"',
     }
     
-    for code, name in errors:
+    all_errors = []
+    seen = set()
+    for code, name in instance_errors:
+        if code not in seen:
+            seen.add(code)
+            all_errors.append((code, name, 'instance'))
+    for code, name in factory_errors:
+        if code not in seen:
+            seen.add(code)
+            all_errors.append((code, name, 'factory'))
+    for code, name in protocol_errors:
+        if code not in seen:
+            seen.add(code)
+            all_errors.append((code, name, 'protocol'))
+    
+    all_errors.sort(key=lambda x: x[0])
+    
+    for code, name, source in all_errors:
         desc = descriptions.get(name, 'TODO: Add description')
         msg = messages.get(name, 'TODO: Add message')
-        lines.append(f"| {code} | `{name}` | {desc} | {msg} |")
+        source_label = f" ({source})" if source != 'instance' else ""
+        lines.append(f"| {code} | `{name}`{source_label} | {desc} | {msg} |")
     
     return '\n'.join(lines)
 
 
-def generate_typescript_mapping(errors):
-    """Generate TypeScript error mapping from error list."""
+def generate_typescript_mapping(instance_errors, factory_errors, protocol_errors):
+    """Generate TypeScript error mapping from error lists."""
     lines = []
     lines.append("const errorMessages: Record<number, string> = {")
-    lines.append("  // Instance errors (1-58)")
     
     messages = {
         'RaffleNotFound': 'Raffle not found',
@@ -200,9 +258,49 @@ def generate_typescript_mapping(errors):
         'InsufficientAccumulatedFees': 'Insufficient accumulated fees',
         'PrizeConfigurationLocked': 'Prize configuration is locked',
         'ExceedsMaxTicketsPerTx': 'Too many tickets for one transaction',
+        'DrawingAlreadyInProgress': 'Drawing already in progress',
+        'DrawingAlreadyComplete': 'Drawing already complete',
+        'InvalidEndTime': 'Invalid raffle end time',
+        'InvalidAdminAddress': 'Invalid admin address',
+        'InvalidStatusForDrawingTransition': 'Cannot start drawing in current state',
+        'RandomnessTooEarly': 'Randomness request too early',
+        'InvalidRaffleId': 'Invalid raffle ID',
+        'RaffleNotEligible': 'Raffle is not eligible for this operation',
+        'TreasuryNotSet': 'Treasury address is not set',
+        'FactoryAlreadyInitialized': 'Factory already initialized',
+        'FactoryNotAuthorized': 'You are not the factory admin',
+        'FactoryContractPaused': 'Factory is temporarily paused',
+        'FactoryInvalidParameters': 'Invalid factory parameters provided',
+        'FactoryRaffleNotFound': 'Raffle not found in factory registry',
+        'FactoryAdminTransferPending': 'Admin transfer already pending',
+        'FactoryNoPendingTransfer': 'No pending admin transfer',
+        'FactoryRateLimitExceeded': 'Raffle creation rate limit exceeded',
+        'FactoryNoPendingOp': 'No pending operation',
+        'FactoryTimelockNotElapsed': 'Timelock delay has not elapsed',
+        'FactoryInvalidRaffleId': 'Invalid raffle ID',
+        'FactoryRaffleNotEligible': 'Raffle is not eligible for this operation',
+        'FactoryArithmeticOverflow': 'Calculation error in factory',
+        'FactoryTreasuryNotSet': 'Treasury address is not set',
     }
     
-    for code, name in errors:
+    all_errors = []
+    seen = set()
+    for code, name in instance_errors:
+        if code not in seen:
+            seen.add(code)
+            all_errors.append((code, name))
+    for code, name in factory_errors:
+        if code not in seen:
+            seen.add(code)
+            all_errors.append((code, name))
+    for code, name in protocol_errors:
+        if code not in seen:
+            seen.add(code)
+            all_errors.append((code, name))
+    
+    all_errors.sort(key=lambda x: x[0])
+    
+    for code, name in all_errors:
         msg = messages.get(name, 'TODO: Add message')
         lines.append(f"  {code}: \"{msg}\",")
     
@@ -211,22 +309,22 @@ def generate_typescript_mapping(errors):
 
 
 def main():
-    # Get the repository root
     repo_root = Path(__file__).parent.parent
-    rust_file = repo_root / "contracts" / "raffle-instance" / "src" / "lib.rs"
+    instance_file = repo_root / "contracts" / "raffle-instance" / "src" / "lib.rs"
+    factory_file = repo_root / "contracts" / "raffle-factory" / "src" / "lib.rs"
+    shared_file = repo_root / "contracts" / "raffle-shared" / "src" / "errors.rs"
     
-    if not rust_file.exists():
-        print(f"Error: Rust file not found at {rust_file}")
-        sys.exit(1)
+    instance_errors = parse_error_enum(instance_file, "Error")
+    factory_errors = parse_error_enum(factory_file, "ContractError")
+    protocol_errors = parse_error_enum(shared_file, "ProtocolError")
     
-    # Parse the error enum
-    errors = parse_error_enum(rust_file)
-    
-    print(f"Found {len(errors)} error codes")
+    print(f"Instance errors: {len(instance_errors)}")
+    print(f"Factory errors: {len(factory_errors)}")
+    print(f"Protocol errors: {len(protocol_errors)}")
     print("\nMarkdown Table:")
-    print(generate_markdown_table(errors))
+    print(generate_markdown_table(instance_errors, factory_errors, protocol_errors))
     print("\nTypeScript Mapping:")
-    print(generate_typescript_mapping(errors))
+    print(generate_typescript_mapping(instance_errors, factory_errors, protocol_errors))
 
 
 if __name__ == "__main__":

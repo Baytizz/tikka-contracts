@@ -1,14 +1,15 @@
 # Error Codes Documentation
 
-This document describes all error codes used in the Tikka Raffle contracts. Frontend applications can use these codes to display user-friendly error messages.
+This document describes all error codes used in the Tikka Raffle protocol.
+Frontend applications can use these codes to display user-friendly error messages.
 
-> **Note:** To keep this documentation in sync with the Rust Error enum, run the generation script:
+> **Note:** To keep this documentation in sync with the Rust error enums, run the generation script:
 >
 > ```bash
 > python scripts/generate_error_docs.py
 > ```
 >
-> This script parses `contracts/raffle-instance/src/lib.rs` and outputs the current error codes and their mappings.
+> This script parses `contracts/raffle-instance/src/lib.rs`, `contracts/raffle-factory/src/lib.rs`, and `contracts/raffle-shared/src/errors.rs` and outputs the current error codes and their mappings.
 
 ## Table of Contents
 
@@ -26,7 +27,7 @@ The instance contract (`Raffle`) handles individual raffle operations. All error
 
 The protocol fee (`protocol_fee_bp`) is charged **once**, at ticket purchase. Winners receive the full gross prize amount on claim; `PrizeClaimed.platform_fee` is always `0`. Total protocol revenue equals the sum of fees collected from ticket sales.
 
-### General Errors (1-10)
+### General Errors (1-15)
 
 | Code | Error                        | Description                                   | Frontend Message                                |
 | ---- | ---------------------------- | --------------------------------------------- | ----------------------------------------------- |
@@ -39,18 +40,13 @@ The protocol fee (`protocol_fee_bp`) is charged **once**, at ticket purchase. Wi
 | 7    | `RandomnessAlreadyRequested` | Randomness has already been requested          | "Randomness request already in progress"        |
 | 8    | `NoRandomnessRequest`        | No randomness request found                   | "No randomness request found"                  |
 | 9    | `FallbackTooEarly`           | Fallback randomness triggered too early       | "Fallback randomness not available yet"         |
+| 11   | `PrizeNotDeposited`          | Prize has not been deposited yet              | "Prize not yet deposited"                       |
+| 12   | `PrizeAlreadyClaimed`        | Prize has already been claimed                | "Prize has already been claimed"                |
+| 13   | `PrizeAlreadyDeposited`      | Prize deposit was already completed           | "Prize has already been deposited"              |
+| 14   | `NotWinner`                  | Only the winner can claim the prize           | "You are not the winner of this raffle"         |
+| 15   | `ClaimTooEarly`              | Cannot claim before cooldown period           | "Please wait before claiming your prize"        |
 
-### Prize/Claim Errors (11-20)
-
-| Code | Error                   | Description                         | Frontend Message                         |
-| ---- | ----------------------- | ----------------------------------- | ---------------------------------------- |
-| 11   | `PrizeNotDeposited`     | Prize has not been deposited yet    | "Prize not yet deposited"                |
-| 12   | `PrizeAlreadyClaimed`   | Prize has already been claimed      | "Prize has already been claimed"         |
-| 13   | `PrizeAlreadyDeposited` | Prize deposit was already completed | "Prize has already been deposited"       |
-| 14   | `NotWinner`             | Only the winner can claim the prize | "You are not the winner of this raffle"  |
-| 15   | `ClaimTooEarly`         | Cannot claim before cooldown period | "Please wait before claiming your prize" |
-
-### State/Validation Errors (21-30)
+### State/Validation Errors (21-26)
 
 | Code | Error                    | Description                                            | Frontend Message                                         |
 | ---- | ------------------------ | ------------------------------------------------------ | -------------------------------------------------------- |
@@ -61,7 +57,7 @@ The protocol fee (`protocol_fee_bp`) is charged **once**, at ticket purchase. Wi
 | 25   | `InvalidStateTransition` | Cannot transition to the requested state               | "Cannot change raffle to the requested state"            |
 | 26   | `RaffleExpired`          | The raffle end time has passed                         | "This raffle has ended"                                  |
 
-### Ticket Errors (31-40)
+### Ticket Errors (31-35)
 
 | Code | Error                       | Description                         | Frontend Message                               |
 | ---- | --------------------------- | ----------------------------------- | ---------------------------------------------- |
@@ -71,7 +67,7 @@ The protocol fee (`protocol_fee_bp`) is charged **once**, at ticket purchase. Wi
 | 34   | `TicketNotFound`            | The requested ticket was not found  | "Ticket not found"                             |
 | 35   | `RaffleEnded`               | The raffle has already ended         | "This raffle has already ended"                |
 
-### System Errors (41-50)
+### System Errors (41-64)
 
 | Code | Error                    | Description                       | Frontend Message               |
 | ---- | ------------------------ | --------------------------------- | ------------------------------ |
@@ -85,24 +81,20 @@ The protocol fee (`protocol_fee_bp`) is charged **once**, at ticket purchase. Wi
 | 48   | `SlippageExceeded`       | Slippage tolerance exceeded       | "Slippage tolerance exceeded"  |
 | 49   | `InvalidIndex`           | Invalid index provided            | "Invalid index provided"       |
 | 50   | `MorePrizesThanTickets`  | More prizes than tickets          | "More prizes than tickets"     |
-
-### Additional Errors (51-63)
-
-| Code | Error                        | Description                              | Frontend Message                      |
-| ---- | ---------------------------- | ---------------------------------------- | ------------------------------------- |
-| 51   | `ZeroPrize`                  | Prize amount is zero                     | "Prize amount cannot be zero"         |
-| 52   | `InvalidTokenAddress`         | Invalid token address provided           | "Invalid token address"               |
-| 53   | `TooManyPrizes`              | Exceeds maximum number of prizes         | "Too many prizes configured"          |
-| 54   | `EmergencyTooEarly`          | Emergency withdraw too early            | "Emergency withdraw not available yet"|
-| 55   | `InvalidTicketRange`         | Invalid ticket range configured          | "Invalid ticket range"               |
-| 56   | `InsufficientAccumulatedFees`| Insufficient accumulated fees            | "Insufficient accumulated fees"       |
-| 57   | `PrizeConfigurationLocked`   | Prize configuration is locked            | "Prize configuration is locked"       |
-| 58   | `ExceedsMaxTicketsPerTx`     | Exceeds max tickets per transaction      | "Too many tickets for one transaction"|
-| 59   | `DrawingAlreadyInProgress`   | A draw is already in progress            | "Drawing already in progress"         |
-| 60   | `DrawingAlreadyComplete`     | Randomness was already provided            | "Drawing already complete"            |
-| 61   | `InvalidEndTime`             | Raffle end time is invalid               | "Invalid raffle end time"             |
-| 62   | `InvalidAdminAddress`        | Admin address is invalid                 | "Invalid admin address"               |
-| 63   | `InvalidStatusForDrawingTransition` | Raffle status cannot enter Drawing | "Cannot start drawing in current state"|
+| 51   | `ZeroPrize`              | Prize amount is zero              | "Prize amount cannot be zero"  |
+| 52   | `InvalidTokenAddress`    | Invalid token address provided    | "Invalid token address"        |
+| 53   | `TooManyPrizes`          | Exceeds maximum number of prizes  | "Too many prizes configured"   |
+| 54   | `EmergencyTooEarly`      | Emergency withdraw too early      | "Emergency withdraw not available yet" |
+| 55   | `InvalidTicketRange`     | Invalid ticket range configured   | "Invalid ticket range"         |
+| 56   | `InsufficientAccumulatedFees` | Insufficient accumulated fees | "Insufficient accumulated fees" |
+| 57   | `PrizeConfigurationLocked` | Prize configuration is locked   | "Prize configuration is locked" |
+| 58   | `ExceedsMaxTicketsPerTx` | Exceeds max tickets per transaction | "Too many tickets for one transaction" |
+| 59   | `DrawingAlreadyInProgress` | A draw is already in progress   | "Drawing already in progress"  |
+| 60   | `DrawingAlreadyComplete` | Randomness was already provided   | "Drawing already complete"     |
+| 61   | `InvalidEndTime`         | Raffle end time is invalid        | "Invalid raffle end time"      |
+| 62   | `InvalidAdminAddress`    | Admin address is invalid          | "Invalid admin address"        |
+| 63   | `InvalidStatusForDrawingTransition` | Raffle status cannot enter Drawing | "Cannot start drawing in current state" |
+| 64   | `RandomnessTooEarly`     | Randomness request too early      | "Randomness request too early" |
 
 ---
 
@@ -110,7 +102,7 @@ The protocol fee (`protocol_fee_bp`) is charged **once**, at ticket purchase. Wi
 
 The factory contract (`RaffleFactory`) manages raffle creation. All error codes are defined in the `ContractError` enum in [`contracts/raffle-factory/src/lib.rs`](contracts/raffle-factory/src/lib.rs).
 
-### General Errors (1-10)
+### General Errors (1-5)
 
 | Code | Error                | Description                    | Frontend Message                |
 | ---- | -------------------- | ------------------------------ | ------------------------------- |
@@ -119,15 +111,20 @@ The factory contract (`RaffleFactory`) manages raffle creation. All error codes 
 | 3    | `ContractPaused`     | Factory is paused              | "Factory is temporarily paused" |
 | 4    | `InvalidParameters`  | Invalid parameters provided    | "Invalid parameters provided"   |
 | 5    | `RaffleNotFound`     | Raffle instance not found      | "Raffle not found"              |
-| 18   | `TreasuryNotSet`     | Treasury address is not configured | "Treasury address is not set" |
 
-### Admin Errors (11-20)
+### Admin & Operation Errors (11-19)
 
 | Code | Error                  | Description                    | Frontend Message                 |
 | ---- | ---------------------- | ------------------------------ | -------------------------------- |
 | 11   | `AdminTransferPending` | Admin transfer already pending | "Admin transfer already pending" |
 | 12   | `NoPendingTransfer`    | No pending admin transfer      | "No pending admin transfer"      |
-| 18   | `UnsupportedSac`       | Payment token is not whitelisted as a supported Stellar Asset Contract | "Unsupported payment token" |
+| 13   | `RateLimitExceeded`    | Raffle creation rate limited   | "Raffle creation rate limit exceeded" |
+| 14   | `NoPendingOp`          | No pending operation           | "No pending operation"           |
+| 15   | `TimelockNotElapsed`   | Timelock delay not elapsed     | "Timelock delay has not elapsed" |
+| 16   | `InvalidRaffleId`      | Invalid raffle stable-ID       | "Invalid raffle ID"              |
+| 17   | `RaffleNotEligible`    | Raffle not eligible            | "Raffle is not eligible for this operation" |
+| 18   | `ArithmeticOverflow`   | Arithmetic overflow            | "Calculation error occurred"     |
+| 19   | `TreasuryNotSet`       | Treasury address not set       | "Treasury address is not set"    |
 
 ---
 
@@ -138,7 +135,7 @@ The factory contract (`RaffleFactory`) manages raffle creation. All error codes 
 ```typescript
 // Frontend error mapping
 const errorMessages: Record<number, string> = {
-  // Instance errors (1-63)
+  // Instance errors (1-64)
   1: "Raffle not found",
   2: "This raffle is not currently active",
   3: "Sorry, all tickets have been sold!",
@@ -187,20 +184,26 @@ const errorMessages: Record<number, string> = {
   61: "Invalid raffle end time",
   62: "Invalid admin address",
   63: "Cannot start drawing in current state",
+  64: "Randomness request too early",
 
-  // Factory errors (offset by 100 to avoid conflicts)
-  101: "Factory already initialized",
-  102: "You are not the admin",
-  103: "Factory is temporarily paused",
-  104: "Invalid parameters provided",
-  105: "Raffle not found",
-  111: "Admin transfer already pending",
-  112: "No pending admin transfer",
-  118: "Treasury address is not set",
-  119: "Unsupported payment token",
+  // Factory errors (1-19)
+  1: "Factory already initialized",
+  2: "You are not the admin",
+  3: "Factory is temporarily paused",
+  4: "Invalid parameters provided",
+  5: "Raffle not found",
+  11: "Admin transfer already pending",
+  12: "No pending admin transfer",
+  13: "Raffle creation rate limit exceeded",
+  14: "No pending operation",
+  15: "Timelock delay has not elapsed",
+  16: "Invalid raffle ID",
+  17: "Raffle is not eligible for this operation",
+  18: "Calculation error occurred",
+  19: "Treasury address is not set",
 };
 
-function handleContractError(errorCode: number): string {
+function handleContractError(errorCode: number, contract: 'instance' | 'factory'): string {
   return errorMessages[errorCode] || "An unknown error occurred";
 }
 ```
@@ -212,6 +215,7 @@ import React from "react";
 
 interface ErrorDisplayProps {
   errorCode: number;
+  contract: 'instance' | 'factory';
 }
 
 const ERROR_MESSAGES: Record<number, string> = {
@@ -264,16 +268,22 @@ const ERROR_MESSAGES: Record<number, string> = {
   61: "Invalid raffle end time",
   62: "Invalid admin address",
   63: "Cannot start drawing in current state",
+  64: "Randomness request too early",
   // Factory errors
-  101: "Factory already initialized",
-  102: "You are not the admin",
-  103: "Factory is temporarily paused",
-  104: "Invalid parameters provided",
-  105: "Raffle not found",
-  111: "Admin transfer already pending",
-  112: "No pending admin transfer",
-  118: "Treasury address is not set",
-  119: "Unsupported payment token",
+  1: "Factory already initialized",
+  2: "You are not the admin",
+  3: "Factory is temporarily paused",
+  4: "Invalid parameters provided",
+  5: "Raffle not found",
+  11: "Admin transfer already pending",
+  12: "No pending admin transfer",
+  13: "Raffle creation rate limit exceeded",
+  14: "No pending operation",
+  15: "Timelock delay has not elapsed",
+  16: "Invalid raffle ID",
+  17: "Raffle is not eligible for this operation",
+  18: "Calculation error occurred",
+  19: "Treasury address is not set",
 };
 
 export const ErrorDisplay: React.FC<ErrorDisplayProps> = ({ errorCode }) => {
@@ -297,6 +307,7 @@ All error codes should be tested in the contract test suite to ensure proper err
 
 ```bash
 cargo test -p raffle-factory
+cargo test -p raffle-instance
 ```
 
 ---
@@ -308,3 +319,17 @@ cargo test -p raffle-factory
 1. **Document all errors**: Keep this file updated with any new error codes
 1. **Handle edge cases**: Test all error paths to ensure proper error propagation
 1. **Use appropriate error granularity**: Different errors should have different codes for better UX
+
+---
+
+## Error Code Ranges
+
+To prevent collisions as the protocol evolves, error codes are reserved in non-overlapping ranges:
+
+| Range     | Owner            | Purpose                                      |
+| --------- | ---------------- | -------------------------------------------- |
+| 1 – 99    | Shared           | Conditions used by both instance and factory  |
+| 100 – 199 | Instance-only    | New instance-specific errors                 |
+| 200 – 299 | Factory-only     | New factory-specific errors                  |
+
+**Rule:** codes are append-only within a range and are never reused. See `CONTRIBUTING.md` for the full policy.
