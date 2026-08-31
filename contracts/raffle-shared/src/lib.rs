@@ -3,6 +3,12 @@
 
 pub mod constants;
 
+#[cfg(any(test, feature = "testutils"))]
+pub mod config_builder;
+
+#[cfg(any(test, feature = "testutils"))]
+pub use config_builder::RaffleConfigBuilder;
+
 use soroban_sdk::{contracttype, Address, BytesN, String, Vec};
 
 /// Lifecycle state of a raffle instance.

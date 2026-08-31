@@ -15,6 +15,9 @@ use raffle_shared::{
     effective_limit, AdminOp, FairnessData, PageResultRaffles, PaginationParams, RaffleConfig,
 };
 
+#[cfg(any(test, feature = "testutils"))]
+use raffle_shared::RaffleConfigBuilder;
+
 use raffle_shared::constants::{CHECKPOINT_INTERVAL, MAX_PROTOCOL_FEE_BP, TIMELOCK_DELAY_SECONDS};
 
 /// A timelocked administrative operation queued for future execution.
@@ -1401,28 +1404,25 @@ mod tests {
     }
 
     fn test_raffle_config(env: &Env, payment_token: &Address) -> RaffleConfig {
-        RaffleConfig {
-            description: String::from_str(env, "Test Raffle"),
-            end_time: 0,
-            no_deadline: true,
-            max_tickets: 10,
-            max_tickets_per_tx: 10,
-            min_tickets: 1,
-            allow_multiple: true,
-            ticket_price: 10_000,
-            payment_token: payment_token.clone(),
-            prize_amount: 10_000,
-            prizes: SdkVec::from_array(env, [10_000u32]),
-            randomness_source: RandomnessSource::Internal,
-            oracle_address: None,
-            protocol_fee_bp: 0,
-            treasury_address: None,
-            swap_router: None,
-            tikka_token: None,
-            metadata_hash: BytesN::from_array(env, &[1u8; 32]),
-            claim_lockup_seconds: 0,
-            swap_deadline_seconds: 0,
-        }
+        RaffleConfigBuilder::new(env, payment_token.clone())
+            .description(String::from_str(env, "Test Raffle"))
+            .max_tickets(10)
+            .max_tickets_per_tx(10)
+            .min_tickets(1)
+            .allow_multiple(true)
+            .ticket_price(10_000)
+            .prize_amount(10_000)
+            .prizes(SdkVec::from_array(env, [10_000u32]))
+            .randomness_source(RandomnessSource::Internal)
+            .oracle_address(None)
+            .protocol_fee_bp(0)
+            .treasury_address(None)
+            .swap_router(None)
+            .tikka_token(None)
+            .metadata_hash(BytesN::from_array(env, &[1u8; 32]))
+            .claim_lockup_seconds(0)
+            .swap_deadline_seconds(0)
+            .build()
     }
 
     fn create_raffles_via_factory(
@@ -2242,31 +2242,28 @@ mod tests {
     /// A complete, valid `RaffleConfig` for rate-limiter tests.  Prize tiers sum
     /// to 10_000 bp and `prize_amount >= ticket_price`, satisfying instance init.
     fn rate_limit_config(env: &Env, payment_token: &Address, desc: &str) -> RaffleConfig {
-        RaffleConfig {
-            description: String::from_str(env, desc),
-            end_time: 0,
-            no_deadline: true,
-            max_tickets: 10,
-            max_tickets_per_tx: 10,
-            min_tickets: 1,
-            allow_multiple: true,
-            ticket_price: 10_000,
-            payment_token: payment_token.clone(),
-            prize_amount: 10_000,
-            prizes: SdkVec::from_array(env, [10_000u32]),
-            randomness_source: RandomnessSource::Internal,
-            oracle_address: None,
-            protocol_fee_bp: 0,
-            treasury_address: None,
-            swap_router: None,
-            tikka_token: None,
-            metadata_hash: BytesN::from_array(env, &[1u8; 32]),
-            claim_lockup_seconds: 0,
-            swap_deadline_seconds: 0,
-            early_bird_ticket_percentage: 0,
-            early_bird_discount_bp: 0,
-            category: None,
-        }
+        RaffleConfigBuilder::new(env, payment_token.clone())
+            .description(String::from_str(env, desc))
+            .max_tickets(10)
+            .max_tickets_per_tx(10)
+            .min_tickets(1)
+            .allow_multiple(true)
+            .ticket_price(10_000)
+            .prize_amount(10_000)
+            .prizes(SdkVec::from_array(env, [10_000u32]))
+            .randomness_source(RandomnessSource::Internal)
+            .oracle_address(None)
+            .protocol_fee_bp(0)
+            .treasury_address(None)
+            .swap_router(None)
+            .tikka_token(None)
+            .metadata_hash(BytesN::from_array(env, &[1u8; 32]))
+            .claim_lockup_seconds(0)
+            .swap_deadline_seconds(0)
+            .early_bird_ticket_percentage(0)
+            .early_bird_discount_bp(0)
+            .category(None)
+            .build()
     }
 
     /// Register a payment token the instance init will accept.

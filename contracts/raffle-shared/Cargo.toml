@@ -12,5 +12,8 @@ categories = ["cryptography::cryptocurrencies", "no-std"]
 [lib]
 crate-type = ["lib"]
 
+[features]
+testutils = []
+
 [dependencies]
 soroban-sdk = { workspace = true }
