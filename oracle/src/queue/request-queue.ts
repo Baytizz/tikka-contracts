@@ -6,6 +6,8 @@ export interface RandomnessJob {
   requestId: bigint;
   raffleContract: string;
   timestamp: bigint;
+  /** Wall-clock time when the listener observed the RandomnessRequested event. */
+  observedAtMs: number;
 }
 
 export interface TrackedJob {

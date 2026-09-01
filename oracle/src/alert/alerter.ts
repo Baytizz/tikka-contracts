@@ -26,8 +26,8 @@ export class Alerter {
   private readonly lastSentAt: Map<string, number> = new Map();
 
   constructor(options: AlerterOptions = {}) {
-    this.webhookUrl = options.webhookUrl ?? process.env.ALERT_WEBHOOK_URL ?? '';
-    const rawRateLimit = options.rateLimitMs ?? Number(process.env.ALERT_RATE_LIMIT_MS ?? 60_000);
+    this.webhookUrl = options.webhookUrl ?? process.env['ALERT_WEBHOOK_URL'] ?? '';
+    const rawRateLimit = options.rateLimitMs ?? Number(process.env['ALERT_RATE_LIMIT_MS'] ?? 60_000);
     this.rateLimitMs = Number.isFinite(rawRateLimit) && rawRateLimit >= 0 ? rawRateLimit : 60_000;
     this.fetchImpl =
       options.fetchImpl ??

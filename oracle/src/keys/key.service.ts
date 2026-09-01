@@ -25,7 +25,7 @@ export class EnvSecretsAdapter implements SecretsAdapter {
 
 export class KeyService {
   private keypair!: Keypair;
-  private secretBytes?: Buffer;
+  private secretBytes: Buffer | undefined;
   private initialized = false;
 
   constructor(

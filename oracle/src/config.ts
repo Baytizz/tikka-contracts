@@ -32,7 +32,6 @@ function readPositiveInt(name: string, defaultValue: number, errors: string[]): 
 function isValidSecretKey(secret: string): boolean {
   const trimmed = secret.trim();
 
-  // Accept Stellar S... secrets directly.
   if (trimmed.startsWith('S')) {
     try {
       Keypair.fromSecret(trimmed);
@@ -42,7 +41,6 @@ function isValidSecretKey(secret: string): boolean {
     }
   }
 
-  // Reuse existing decoder support (hex/base64) and enforce 32-byte seed.
   try {
     const decoded = decodeSecretKey(trimmed);
     return decoded.length === 32;
@@ -59,19 +57,19 @@ export function loadAndValidateConfig(): OracleConfig {
     errors.push('STELLAR_RPC_URL is required');
   }
 
-  const factoryContractId = process.env.FACTORY_CONTRACT_ID;
+  const factoryContractId = process.env['FACTORY_CONTRACT_ID'];
   if (!factoryContractId) {
     errors.push('FACTORY_CONTRACT_ID is required');
   }
 
   const rawPollInterval =
-    process.env.POLL_INTERVAL_MS ?? process.env.ORACLE_POLL_INTERVAL_MS ?? '5000';
+    process.env['POLL_INTERVAL_MS'] ?? process.env['ORACLE_POLL_INTERVAL_MS'] ?? '5000';
   const pollIntervalMs = Number(rawPollInterval);
   if (!Number.isFinite(pollIntervalMs) || pollIntervalMs <= 0) {
     errors.push('POLL_INTERVAL_MS must be a positive number');
   }
 
-  const alertWebhookUrl = process.env.ALERT_WEBHOOK_URL ?? '';
+  const alertWebhookUrl = process.env['ALERT_WEBHOOK_URL'] ?? '';
   const alertFailureThreshold = readPositiveInt('ALERT_FAILURE_THRESHOLD', 3, errors);
   const alertRateLimitMs = readPositiveInt('ALERT_RATE_LIMIT_MS', 60_000, errors);
   const alertQueueDepthLimit = readPositiveInt('ALERT_QUEUE_DEPTH_LIMIT', 10, errors);
@@ -84,6 +82,10 @@ export function loadAndValidateConfig(): OracleConfig {
       console.error(` - ${error}`);
     }
     process.exit(1);
+  }
+
+  if (secretKey === undefined || rpcUrl === undefined || factoryContractId === undefined) {
+    throw new Error('Required configuration missing after validation');
   }
 
   return {

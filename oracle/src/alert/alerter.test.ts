@@ -10,8 +10,8 @@ describe('Alerter', () => {
 
   beforeEach(() => {
     process.env = { ...originalEnv };
-    delete process.env.ALERT_WEBHOOK_URL;
-    delete process.env.ALERT_RATE_LIMIT_MS;
+    delete process.env['ALERT_WEBHOOK_URL'];
+    delete process.env['ALERT_RATE_LIMIT_MS'];
   });
 
   afterEach(() => {
@@ -132,8 +132,8 @@ describe('Alerter', () => {
   });
 
   it('reads the webhook URL and rate limit from the environment', async () => {
-    process.env.ALERT_WEBHOOK_URL = webhookUrl;
-    process.env.ALERT_RATE_LIMIT_MS = '5000';
+    process.env['ALERT_WEBHOOK_URL'] = webhookUrl;
+    process.env['ALERT_RATE_LIMIT_MS'] = '5000';
     const fetchImpl = mockFetch();
     const alerter = new Alerter({ fetchImpl });
 

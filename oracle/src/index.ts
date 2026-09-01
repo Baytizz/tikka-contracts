@@ -3,14 +3,8 @@ import { loadAndValidateConfig } from './config';
 import { createPipeline } from './pipeline';
 
 /**
- * Bootstrap entry point. Wires the full oracle pipeline:
- * - KeyService for cryptographic operations
- * - EventListenerService for polling RandomnessRequested events
- * - RequestQueue for job queuing
- * - DeduplicationStore for duplicate detection
- * - VrfService for randomness proof generation
- * - TxSubmitterService for submitting provide_randomness transactions
- * - GracefulShutdown for clean shutdown with job draining
+ * Bootstrap entry point. Wires the full oracle pipeline and exposes /health and
+ * /metrics for observability.
  */
 async function main(): Promise<void> {
   const config = loadAndValidateConfig();
@@ -19,6 +13,8 @@ async function main(): Promise<void> {
     webhookUrl: config.alertWebhookUrl,
     rateLimitMs: config.alertRateLimitMs,
   });
+
+  startHealthServer();
 
   if (!alerter.enabled) {
     console.warn('ALERT_WEBHOOK_URL is not set; operational alerts are disabled.');

@@ -117,7 +117,7 @@ jobs:
       - name: Lint (ESLint)
         run: npm run lint
       - name: TypeScript compile check
-        run: npm run build
+        run: npm run typecheck
       - name: Run tests
         run: npm run test:ci
 

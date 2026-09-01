@@ -296,7 +296,9 @@ impl RaffleInstance {
         if config.max_tickets_per_tx == 0 || config.max_tickets_per_tx > config.max_tickets {
             return Err(Error::InvalidParameters);
         }
-        if config.max_tickets_per_address > config.max_tickets {
+        if config.max_tickets_per_address > 0
+            && config.max_tickets_per_address > config.max_tickets
+        {
             return Err(Error::InvalidParameters);
         }
 

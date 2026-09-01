@@ -388,7 +388,6 @@ pub(crate) fn buy_tickets_for(env: Env, buyer: Address, recipient: Address, quan
     }
 
     let timestamp = env.ledger().timestamp();
-    let total_price = raffle.ticket_price.checked_mul(quantity as i128).ok_or(Error::InvalidParameters)?;
     let protocol_fee = total_price.checked_mul(raffle.protocol_fee_bp as i128).ok_or(Error::ArithmeticOverflow)? / 10000;
 
     let persisted = crate::read_raffle(&env)?;
