@@ -10,7 +10,7 @@ use crate::events::{
 };
 use crate::helpers::{
     build_internal_seed_u64, do_finalize_with_seed, read_raffle, request_randomness,
-    transition_to_drawing, write_raffle,
+    revert_status, transition_status, transition_to_drawing, write_raffle,
 };
 use crate::randomness::build_vrf_proof_message;
 use crate::{CommitRevealEntry, DataKey, Error, RaffleStatus, ORACLE_TIMEOUT_LEDGERS};
@@ -45,8 +45,7 @@ pub(crate) fn finalize_raffle(env: Env) -> Result<(), Error> {
         } else {
             FailureReason::MinTicketsNotMet
         };
-        raffle.status = RaffleStatus::Failed;
-        write_raffle(&env, &raffle);
+        transition_status(&env, &mut raffle, RaffleStatus::Failed, now)?;
         RaffleFailed {
             creator: raffle.creator.clone(),
             reason: failure_reason,
@@ -92,8 +91,7 @@ pub(crate) fn finalize_raffle(env: Env) -> Result<(), Error> {
                 return Ok(());
             }
             Err(err) => {
-                raffle.status = pre_status;
-                write_raffle(&env, &raffle);
+                revert_status(&env, &mut raffle, pre_status)?;
                 env.storage()
                     .instance()
                     .set(&DataKey::DrawingLock, &false);
@@ -124,8 +122,7 @@ pub(crate) fn finalize_raffle(env: Env) -> Result<(), Error> {
                 return Ok(());
             }
             Err(err) => {
-                raffle.status = pre_status;
-                write_raffle(&env, &raffle);
+                revert_status(&env, &mut raffle, pre_status)?;
                 env.storage()
                     .instance()
                     .set(&DataKey::DrawingLock, &false);
@@ -283,8 +280,12 @@ pub(crate) fn trigger_randomness_fallback(
     }
 
     if do_refund {
-        raffle.status = RaffleStatus::Cancelled;
-        write_raffle(&env, &raffle);
+        transition_status(
+            &env,
+            &mut raffle,
+            RaffleStatus::Cancelled,
+            env.ledger().timestamp(),
+        )?;
         env.storage()
             .instance()
             .remove(&DataKey::RandomnessRequested);

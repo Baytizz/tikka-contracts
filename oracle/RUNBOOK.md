@@ -131,63 +131,36 @@ The service creates two data files in the `./data` directory:
 
 Ensure the `./data` directory is writable by the service process.
 
----
+## Key Rotation Procedure
 
-## Dead-letter queue
+To rotate the cryptographic keys used by the oracle:
 
-Randomness requests that can **never** succeed are moved to a persistent dead-letter store
-(`data/dead-letter.json`) instead of retrying forever or being silently dropped.
+1. **Generate a new keypair**: Generate a new Stellar Ed25519 keypair.
+2. **Register the new oracle on-chain**: Add/register the new public key (address) as a authorized oracle in the Raffle contract/factory configurations.
+3. **Update Secret Storage**:
+   - If using **HashiCorp Vault** (production), update the configured path in Vault with the new private key.
+   - If using **EnvVars** (non-production), update the `ORACLE_SECRET_KEY` environment variable. Note that the env var is parsed into memory as a zeroizable buffer and immediately wiped from `process.env` for security.
+4. **Initiate Graceful Shutdown**: Send a `SIGTERM` signal to the active process. The oracle will finish processing all queued jobs, save its checkpoint, and exit.
+5. **Redeploy/Restart**: Restart the container/process. It will automatically load the new secret key, verify the public key, and resume processing from the last saved ledger checkpoint.
 
-### When a request is dead-lettered
+## Graceful Shutdown Details
 
-| Trigger | Reason code | Typical cause |
-|---|---|---|
-| Fatal contract error | `fatal` | Raffle cancelled, draw already complete, no outstanding request, request ID mismatch |
-| Retry cap exceeded | `retry_exhausted` | Transient RPC failures persisted past `QUEUE_MAX_ATTEMPTS` (default 5) |
-| Queue age breach | `queue_age` | Oldest queued request older than `ALERT_QUEUE_AGE_LIMIT_MS` |
-| Queue depth breach | `queue_depth` | Queue deeper than `ALERT_QUEUE_DEPTH_LIMIT` |
+The oracle registers signal listeners for `SIGINT` and `SIGTERM`. When received, the entrypoint starts the graceful shutdown flow:
 
-Each dead-letter entry includes the original job, error message, attempt count,
-first-enqueued timestamp, dead-lettered timestamp, and reason. Every entry raises a
-`dead_letter` alert (critical, not rate-limited).
+1. **Stop Pollers**: Stops the event listener from querying the Soroban RPC for new events.
+2. **Queue Draining**: In-flight jobs currently in the `RequestQueue` are processed to completion.
+3. **Checkpoint Saving**: The current ledger sequence is written to `data/checkpoint.json` so no events are lost or duplicated upon restart.
+4. **Alert notification**: Sends a `process_stop` operational alert indicating a graceful stop.
+5. **Exit**: The process cleanly exits with code `0`. If draining takes longer than 30 seconds, a forced timeout triggers an exit with code `1`.
 
-### Inspection
+## Multi-Operator Setup (Quorum Mode)
 
-```sh
-# List dead-letter entries (JSON)
-cat oracle/data/dead-letter.json | jq '.entries[] | {raffle: .job.raffleContract, requestId: .job.requestId, reason, error, attemptCount}'
+When the raffle contract uses the `k-of-n` Quorum randomness mode:
 
-# Health endpoint (queue + dead-letter depth)
-curl -s http://127.0.0.1:3000/health | jq
-```
+- Multiple independent oracle operators must run instances of this service.
+- Each operator configures their service with their own unique private key.
+- The service automatically checks if its public key is part of the raffle's configured `oracles` list.
+- When an event is detected, participating services independently generate cryptographically secure random seeds and submit them via `provide_quorum_randomness` (without requiring a VRF proof).
+- The transaction submitter retries transient network errors to ensure each operator's contribution lands successfully.
 
-Readiness returns HTTP 503 (`status: "degraded"`) when dead-letter depth ≥ 1 or queue
-depth exceeds `ALERT_QUEUE_DEPTH_LIMIT`.
-
-### Manual replay
-
-Replay is appropriate only after the underlying condition is resolved (e.g. raffle
-re-funded, new draw initiated with a matching request ID).
-
-1. Inspect the entry and confirm the root cause is fixed.
-2. Remove the entry from the dead-letter store (via admin tooling or by deleting
-   the specific object from `dead-letter.json` and restarting).
-3. Re-enqueue the job:
-
-```typescript
-import { DeadLetterStore } from './src/queue/dead-letter.store';
-import { RequestQueue } from './src/queue/request-queue';
-
-const store = new DeadLetterStore();
-const queue = new RequestQueue({ deadLetterStore: store });
-
-const entry = store.remove(raffleContract, requestId);
-if (entry) {
-  queue.requeue(entry.job);
-}
-```
-
-4. Monitor `/health` until `deadLetterDepth` returns to 0.
-
-Automated replay tests live in `src/queue/request-queue.test.ts` (`supports manual replay via requeue`).
 
