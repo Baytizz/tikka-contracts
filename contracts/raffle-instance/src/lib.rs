@@ -46,8 +46,9 @@ use crate::events::{
     CancelScheduled, ContractPaused, ContractUnpaused, DrawTriggered, EmergencyWithdrawn,
     FeesWithdrawn, MetadataHashUpdated, OracleAddressUpdated, PrizeClaimed, PrizeDeposited,
     PrizeRefunded, ProtocolFeeUpdated, RaffleCancelled, RaffleCreated, RaffleFailed,
-    RaffleFinalized, RaffleStatusChanged, RandomnessFallbackTriggered, RandomnessReceived,
-    RandomnessRequested, StorageWiped, SwapDeadlineUpdated, TicketNftMinted, TicketPurchased,
+    RaffleFinalized, RaffleStatusChanged, OracleSeedDelivered, RandomnessFallbackTriggered,
+    RandomnessReceived, RandomnessRequested, StorageWiped, SwapDeadlineUpdated, TicketNftMinted,
+    TicketPurchased,
     TicketRefunded, TicketSalesPaused, TicketSalesResumed, TokensRescued, WinnerDrawn,
     OracleSeedDelivered,
 };
@@ -522,6 +523,7 @@ if config.randomness_source == RandomnessSource::External {
     /// aggregated via `aggregate_quorum_seeds` and the raffle is finalized.
     pub fn provide_quorum_randomness(
         env: Env,
+        caller: Address,
         random_seed: u64,
         request_id: u64,
     ) -> Result<(), Error> {
@@ -531,12 +533,9 @@ if config.randomness_source == RandomnessSource::External {
             .get(&DataKey::DrawingLock)
             .unwrap_or(false);
         if !drawing_lock {
-            return Err(Error::DrawingAlreadyComplete);
+            return Err(Error::InvalidStatus);
         }
 
-        let caller = env
-            .invoker()
-            .expect("provide_quorum_randomness: invoker required");
         caller.require_auth();
 
         let raffle = read_raffle(&env)?;

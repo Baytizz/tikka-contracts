@@ -43,16 +43,24 @@ export class Alerter {
    * window. Returns `true` when the alert was delivered (or at least allowed
    * through the rate limiter), `false` when suppressed by rate limiting or when
    * no webhook is configured.
+   *
+   * Pass `bypassRateLimit: true` for events that must always notify (e.g.
+   * dead-letter entries — each represents a stalled raffle).
    */
-  async notify(alert: Omit<AlertPayload, 'timestamp'>): Promise<boolean> {
+  async notify(
+    alert: Omit<AlertPayload, 'timestamp'> & { bypassRateLimit?: boolean },
+  ): Promise<boolean> {
     if (!this.enabled) {
       return false;
     }
 
     const now = Date.now();
-    const lastSent = this.lastSentAt.get(alert.type) ?? 0;
-    if (now - lastSent < this.rateLimitMs) {
-      return false;
+    if (!alert.bypassRateLimit) {
+      const lastSent = this.lastSentAt.get(alert.type) ?? 0;
+      if (now - lastSent < this.rateLimitMs) {
+        return false;
+      }
+      this.lastSentAt.set(alert.type, now);
     }
 
     const payload: AlertPayload = { ...alert, timestamp: now };
