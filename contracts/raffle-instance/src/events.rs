@@ -47,6 +47,8 @@ pub struct RaffleCreated {
     pub metadata_hash: BytesN<32>,
     /// Whether each address may win at most once.
     pub unique_winners: bool,
+    /// Seconds after finalization before unclaimed prizes may be swept.
+    pub claim_expiry_seconds: u64,
 }
 
 /// Emitted when the metadata hash backing a raffle's description is updated.

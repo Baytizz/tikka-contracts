@@ -38,6 +38,9 @@ jobs:
     - name: Rust Cache
       uses: Swatinem/rust-cache@9d47c6ad4b02e050fd481d890b2ea34778fd09d6 # v2.7.8
 
+    - name: Cargo Check (fast compile gate)
+      run: cargo check --workspace --all-targets
+
     - name: Check Formatting
       run: cargo fmt --all -- --check
 
@@ -68,7 +71,7 @@ jobs:
     - name: Check Error Docs Sync
       run: |
         python3 scripts/generate_error_docs.py
-        git diff --exit-code docs/ERRORS.md || (echo "ERROR: docs/ERRORS.md is out of sync with Error enum in contracts/raffle-instance/src/lib.rs. Run 'python scripts/generate_error_docs.py' to update." && exit 1)
+        git diff --exit-code docs/ERRORS.md || (echo "ERROR: docs/ERRORS.md is out of sync with Error enums in contracts/raffle-instance/src/lib.rs and ContractError in contracts/raffle-factory/src/lib.rs. Run 'python3 scripts/generate_error_docs.py' to update." && exit 1)
 
     - name: Check Events Docs Sync
       run: |
