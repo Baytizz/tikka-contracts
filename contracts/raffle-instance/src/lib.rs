@@ -43,6 +43,7 @@ use crate::events::{
     RaffleFinalized, RaffleStatusChanged, RandomnessFallbackTriggered, RandomnessReceived,
     RandomnessRequested, StorageWiped, SwapDeadlineUpdated, TicketNftMinted, TicketPurchased,
     TicketRefunded, TicketSalesPaused, TicketSalesResumed, TokensRescued, WinnerDrawn,
+    OracleSeedDelivered,
 };
 
 const RANDOMNESS_MIN_DELAY_LEDGERS: u32 = 10;
@@ -189,7 +190,6 @@ pub enum Error {
     InsufficientAccumulatedFees = 56,
     PrizeConfigurationLocked = 57,
     ExceedsMaxTicketsPerTx = 58,
-    ExceedsMaxTicketsPerAddress = 65,
     DrawingAlreadyInProgress = 59,
     InvalidStatusForDrawingTransition = 60, // Note: This seems to be a copy-paste error in the original code.
     DrawingAlreadyComplete = 61,
@@ -198,6 +198,9 @@ pub enum Error {
     RandomnessTooEarly = 64,
     CancelTimelockActive = 65,
     CancelNotScheduled = 66,
+    ExceedsMaxTicketsPerAddress = 67,
+    OracleNotRegistered = 68,
+    DuplicateOracleSubmission = 69,
 }
 
 #[contractimpl]
