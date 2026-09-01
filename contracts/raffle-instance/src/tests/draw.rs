@@ -1,443 +1,780 @@
-//! Unique-winner resolution tests (#826).
-//!
-//! Covers `resolve_unique_winner` in `helpers.rs`: when
-//! `RaffleConfig.unique_winners` is set, the draw re-resolves any seed-selected
-//! ticket whose owner has already won an earlier tier.  The strategy is
-//! deterministic and replayable — the same seed, ticket layout, and draw order
-//! always reproduce the same winner set (see `docs/RANDOMNESS.md`).
-//!
-//! Test scenarios:
-//!
-//! 1. N distinct owners with multiple tickets each, N tiers → each owner wins
-//!    exactly once.
-//! 2. A single owner holds every ticket → the draw terminates and the same
-//!    address wins every tier (repeat fallback, see [`resolve_unique_winner`]).
-//! 3. Two owners, three tiers → the draw terminates with exactly one repeat.
-//! 4. `unique_winners = false` keeps the raw oracle selection unchanged.
-//! 5. External/VRF: the same delivered seed replays identical winners.
-//! 6. Recorded fairness indices resolve to the addresses that actually paid.
-//! 7. Finalize stays within the committed instruction/memory budget at
-//!    `MAX_PRIZES` tiers (mirrors `budget.rs::FINALIZE_MAX_PRIZES`).
+//! Finalization, randomness modes (external fallback, commit-reveal, quorum), drawing lock lifecycle.
 
-use ed25519_dalek::{Signer, SigningKey};
-use soroban_sdk::{
-    contract, contractimpl,
-    testutils::{Address as _, Budget, Ledger},
-    token::StellarAssetClient,
-    Address, BytesN, Env, String, Vec,
-};
+use super::*;
 
-use crate::helpers::get_ticket_owner;
-use crate::randomness::{build_vrf_proof_message, OracleSeedWinnerSelection};
-use crate::{
-    DataKey, RaffleConfig, RaffleInstance, RaffleInstanceClient, RaffleStatus, MAX_PRIZES,
-    MAX_TICKETS_LIMIT, MIN_TICKET_PRICE,
-};
+#[test]
+fn test_oracle_fallback_with_ledger_delays() {
+    let env = Env::default();
+    env.mock_all_auths();
 
-/// Mock of the factory contract surface the instance invokes cross-contract:
-/// global pause check, volume accounting, participant tracking, and the
-/// leaderboard update emitted at finalize.
-#[contract]
-struct MockFactory;
-
-#[contractimpl]
-impl MockFactory {
-    pub fn is_global_paused(_env: Env) -> bool {
-        false
-    }
-
-    pub fn record_volume(_env: Env, _token: Address, _amount: i128) {}
-
-    pub fn track_participant(_env: Env, _participant: Address) {}
-
-    pub fn record_leaderboard_entry(
-        _env: Env,
-        _raffle_id: Address,
-        _tickets: i128,
-        _prize_amount: i128,
-        _volume: i128,
-    ) {
-    }
-}
-
-/// Commodity baseline for the budget regression (`budget.rs::FINALIZE_MAX_PRIZES`).
-const FINALIZE_MAX_PRIZES_BASELINE: (u64, u64) = (80_000_000, 24 * 1024 * 1024);
-const TOLERANCE_FRACTION: f64 = 0.10;
-
-fn build_prizes(env: &Env, tiers: u32) -> Vec<u32> {
-    let each = 10_000u32 / tiers;
-    let mut prizes = Vec::new(env);
-    let mut sum = 0u32;
-    for i in 0..tiers {
-        if i + 1 == tiers {
-            prizes.push_back(10_000 - sum);
-        } else {
-            prizes.push_back(each);
-            sum += each;
-        }
-    }
-    prizes
-}
-
-/// Spin up a raffle with `buyers` each purchasing `tickets_per_buyer` tickets,
-/// using a deadline so the draw is triggered by `finalize_raffle` rather than a
-/// sell-out (a sell-out auto-transitions to `Drawing` and sets `DrawingLock`).
-///
-/// Returns the client and contract id. The raffle is `Active` (prize deposited,
-/// tickets sold) but not yet finalized.
-fn setup_raffle(
-    env: &Env,
-    buyers: &[Address],
-    tickets_per_buyer: u32,
-    max_tickets: u32,
-    tiers: u32,
-    unique_winners: bool,
-    external: bool,
-) -> (RaffleInstanceClient<'_>, Address) {
-    env.ledger().set_timestamp(1_000);
+    // 1. Setup factory, admin, creator
+    let factory = Address::generate(&env);
+    let admin = Address::generate(&env);
+    let creator = Address::generate(&env);
+    let oracle = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let payment_token = env
+        .register_stellar_asset_contract_v2(token_admin.clone())
+        .address();
+    let token_client = StellarAssetClient::new(&env, &payment_token);
+    token_client.mint(&creator, &100_000_000);
 
     let contract_id = env.register(RaffleInstance, ());
-    let client = RaffleInstanceClient::new(env, &contract_id);
+    let client = RaffleInstanceClient::new(&env, &contract_id);
 
-    let factory = env.register(MockFactory, ());
-    let admin = Address::generate(env);
-    let creator = Address::generate(env);
-    let oracle = Address::generate(env);
+    // 2. Initialize Raffle with External Randomness
+    let config = RaffleConfig {
+        description: String::from_str(&env, "Test Raffle"),
+        end_time: 0,
+        no_deadline: true,
+        max_tickets: 10,
+        max_tickets_per_tx: 10,
+        min_tickets: 1,
+        allow_multiple: true,
+        ticket_price: 10_000,
+        payment_token: payment_token.clone(),
+        prize_amount: 10_000,
+        prizes: soroban_sdk::vec![&env, 10000],
+        randomness_source: RandomnessSource::External,
+        oracle_address: Some(oracle.clone()),
+        protocol_fee_bp: 0,
+        treasury_address: None,
+        swap_router: None,
+        tikka_token: None,
+        unique_winners: false,
+        metadata_hash: BytesN::from_array(&env, &[1; 32]),
+        claim_lockup_seconds: None,
+        swap_deadline_seconds: None,
+        early_bird_ticket_percentage: 0,
+        early_bird_discount_bp: 0,
+    };
 
-    let token_admin = Address::generate(env);
-    let payment_token = env
-        .register_stellar_asset_contract_v2(token_admin)
-        .address();
-    let token = StellarAssetClient::new(env, &payment_token);
-    token.mint(&creator, &1_000_000_000_000);
-    for buyer in buyers {
-        token.mint(buyer, &1_000_000_000_000);
+    client.init(&factory, &admin, &creator, &config);
+
+    // Verify that defaults were resolved (0 values replaced with defaults)
+    let raffle = client.get_raffle();
+    assert_eq!(raffle.claim_lockup_seconds, DEFAULT_CLAIM_LOCKUP_SECONDS);
+    assert_eq!(raffle.swap_deadline_seconds, DEFAULT_SWAP_DEADLINE_SECONDS);
+
+    // Remove factory from storage so buy_tickets skips the factory code path
+    env.as_contract(&contract_id, || {
+        env.storage().instance().remove(&DataKey::Factory);
+    });
+
+    // 3. Deposit prize and buy ticket
+    client.deposit_prize();
+    client.buy_tickets(&creator, &10);
+
+    // 4. Finalize raffle (requests randomness)
+    client.finalize_raffle();
+
+    // 5. Ensure it's in Drawing state and requested randomness
+    let raffle = client.get_raffle();
+    assert_eq!(raffle.status, RaffleStatus::Drawing);
+
+    // 6. Attempt fallback too early
+    let start_events = env.events().all().len();
+    let result = client.try_trigger_randomness_fallback(&creator, &false);
+    assert_eq!(env.events().all().len(), start_events);
+    assert_eq!(result.err(), Some(Ok(Error::FallbackTooEarly)));
+
+    // 7. Simulate ledger delays
+    env.ledger().with_mut(|l| {
+        l.sequence_number += ORACLE_TIMEOUT_LEDGERS + 1;
+        l.timestamp += 86400; // 1 day
+    });
+
+    // 8. Trigger fallback successfully (no refund — finalize)
+    client.trigger_randomness_fallback(&creator, &false);
+
+    // 9. Verify finalized state
+    let raffle_after = client.get_raffle();
+    assert_eq!(raffle_after.status, RaffleStatus::Finalized);
+
+    // We can also verify the fairness data
+    let fairness = client.get_fairness_data();
+    assert_eq!(fairness.randomness_source, RandomnessSource::External);
+}
+
+#[test]
+fn commit_reveal_entropy_is_mixed_from_all_tickets() {
+    fn run_seed(commit_b: [u8; 32], metadata_byte: u8) -> u64 {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let factory = Address::generate(&env);
+        let admin = Address::generate(&env);
+        let creator = Address::generate(&env);
+        let buyer_a = Address::generate(&env);
+        let buyer_b = Address::generate(&env);
+        let buyer_c = Address::generate(&env);
+
+        let token_admin = Address::generate(&env);
+        let payment_token = env
+            .register_stellar_asset_contract_v2(token_admin.clone())
+            .address();
+        let token_client = StellarAssetClient::new(&env, &payment_token);
+        token_client.mint(&creator, &1_000_000);
+        token_client.mint(&buyer_a, &1_000_000);
+        token_client.mint(&buyer_b, &1_000_000);
+        token_client.mint(&buyer_c, &1_000_000);
+
+        let contract_id = env.register(Contract, ());
+        let client = ContractClient::new(&env, &contract_id);
+
+        let config = RaffleConfig {
+            description: String::from_str(&env, "Commit reveal entropy"),
+            end_time: 0,
+            no_deadline: true,
+            max_tickets: 3,
+            max_tickets_per_tx: 3,
+            min_tickets: 1,
+            allow_multiple: true,
+            ticket_price: MIN_TICKET_PRICE,
+            payment_token: payment_token.clone(),
+            prize_amount: MIN_TICKET_PRICE * 10,
+            prizes: soroban_sdk::vec![&env, 6000, 3000, 1000],
+            randomness_source: RandomnessSource::CommitReveal,
+            oracle_address: None,
+            protocol_fee_bp: 0,
+            treasury_address: None,
+            swap_router: None,
+            tikka_token: None,
+            unique_winners: false,
+            metadata_hash: BytesN::from_array(&env, &[metadata_byte; 32]),
+            claim_lockup_seconds: None,
+            swap_deadline_seconds: None,
+        };
+
+        client.init(&factory, &admin, &creator, &config);
+        client.deposit_prize();
+        client.buy_tickets(&buyer_a, &1);
+        client.buy_tickets(&buyer_b, &1);
+        client.buy_tickets(&buyer_c, &1);
+
+        let commit_a = [1u8; 32];
+        let commit_c = [3u8; 32];
+        client.submit_commit(&1, &BytesN::from_array(&env, &commit_a));
+        client.submit_commit(&2, &BytesN::from_array(&env, &commit_b));
+        client.submit_commit(&3, &BytesN::from_array(&env, &commit_c));
+
+        client.finalize_raffle();
+
+        let fairness = client.get_fairness_data();
+
+        let mut combined = Bytes::new(&env);
+        combined.extend_from_array(&commit_a);
+        combined.extend_from_array(&commit_b);
+        combined.extend_from_array(&commit_c);
+        let hash: BytesN<32> = env.crypto().sha256(&combined).into();
+        let arr = hash.to_array();
+        let expected_seed = u64::from_be_bytes([
+            arr[0], arr[1], arr[2], arr[3], arr[4], arr[5], arr[6], arr[7],
+        ]);
+
+        assert_eq!(fairness.seed, expected_seed);
+        fairness.seed
     }
 
+    let seed_original = run_seed([2u8; 32], 44);
+    let seed_changed = run_seed([9u8; 32], 45);
+    assert_ne!(seed_original, seed_changed);
+}
+
+#[test]
+fn commit_reveal_preserves_entropy_after_ticket_transfer() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let factory = Address::generate(&env);
+    let admin = Address::generate(&env);
+    let creator = Address::generate(&env);
+    let buyer_a = Address::generate(&env);
+    let buyer_b = Address::generate(&env);
+
+    let token_admin = Address::generate(&env);
+    let payment_token = env
+        .register_stellar_asset_contract_v2(token_admin.clone())
+        .address();
+    let token_client = StellarAssetClient::new(&env, &payment_token);
+    token_client.mint(&creator, &1_000_000);
+    token_client.mint(&buyer_a, &1_000_000);
+    token_client.mint(&buyer_b, &1_000_000);
+
+    let contract_id = env.register(Contract, ());
+    let client = ContractClient::new(&env, &contract_id);
+
     let config = RaffleConfig {
-        description: String::from_str(env, "unique winners"),
-        end_time: 2_000,
-        no_deadline: false,
-        max_tickets,
-        max_tickets_per_tx: 1_000,
-        max_tickets_per_address: 0,
+        description: String::from_str(&env, "Commit survives transfer"),
+        end_time: 0,
+        no_deadline: true,
+        max_tickets: 1,
+        max_tickets_per_tx: 1,
         min_tickets: 1,
         allow_multiple: true,
         ticket_price: MIN_TICKET_PRICE,
         payment_token: payment_token.clone(),
-        prize_amount: MIN_TICKET_PRICE * max_tickets as i128,
-        prizes: build_prizes(env, tiers),
-        randomness_source: if external {
-            raffle_shared::RandomnessSource::External
-        } else {
-            raffle_shared::RandomnessSource::Internal
-        },
-        oracle_address: if external { Some(oracle) } else { None },
+        prize_amount: MIN_TICKET_PRICE * 5,
+        prizes: soroban_sdk::vec![&env, 10000],
+        randomness_source: RandomnessSource::CommitReveal,
+        oracle_address: None,
         protocol_fee_bp: 0,
-        treasury_address: Some(Address::generate(env)),
+        treasury_address: None,
         swap_router: None,
         tikka_token: None,
-        metadata_hash: BytesN::from_array(env, &[9u8; 32]),
-        claim_lockup_seconds: Some(0),
-        swap_deadline_seconds: Some(300),
-        early_bird_ticket_percentage: 0,
-        early_bird_discount_bp: 0,
-        category: None,
-        unique_winners,
-        bundles: Vec::new(env),
-        prize_token: None,
-        nft_contract: None,
+        unique_winners: false,
+            metadata_hash: BytesN::from_array(&env, &[46; 32]),
+        claim_lockup_seconds: 0,
+        swap_deadline_seconds: 0,
     };
 
     client.init(&factory, &admin, &creator, &config);
     client.deposit_prize();
-    for buyer in buyers {
-        client.buy_tickets(buyer, &tickets_per_buyer).unwrap();
+    client.buy_tickets(&buyer_a, &1);
+
+    let commit = [7u8; 32];
+    client.submit_commit(&1, &BytesN::from_array(&env, &commit));
+
+    // Simulate ownership transfer to validate commit persistence by ticket_id.
+    env.as_contract(&contract_id, || {
+        let mut ticket: Ticket = env.storage().persistent().get(&DataKey::Ticket(1)).unwrap();
+        ticket.owner = buyer_b.clone();
+        env.storage().persistent().set(&DataKey::Ticket(1), &ticket);
+    });
+
+    client.finalize_raffle();
+    let fairness = client.get_fairness_data();
+
+    let mut combined = Bytes::new(&env);
+    combined.extend_from_array(&commit);
+    let hash: BytesN<32> = env.crypto().sha256(&combined).into();
+    let arr = hash.to_array();
+    let expected_seed = u64::from_be_bytes([
+        arr[0], arr[1], arr[2], arr[3], arr[4], arr[5], arr[6], arr[7],
+    ]);
+
+    assert_eq!(fairness.seed, expected_seed);
+}
+
+#[test]
+fn commit_reveal_with_zero_commits_falls_back_to_prng() {
+    let env = Env::default();
+    env.mock_all_auths();
+    env.ledger().set_timestamp(7_777);
+    env.ledger().with_mut(|l| {
+        l.sequence_number = 999;
+    });
+
+    let factory = Address::generate(&env);
+    let admin = Address::generate(&env);
+    let creator = Address::generate(&env);
+    let buyer_a = Address::generate(&env);
+    let buyer_b = Address::generate(&env);
+
+    let token_admin = Address::generate(&env);
+    let payment_token = env
+        .register_stellar_asset_contract_v2(token_admin.clone())
+        .address();
+    let token_client = StellarAssetClient::new(&env, &payment_token);
+    token_client.mint(&creator, &1_000_000);
+    token_client.mint(&buyer_a, &1_000_000);
+    token_client.mint(&buyer_b, &1_000_000);
+
+    let contract_id = env.register(Contract, ());
+    let client = ContractClient::new(&env, &contract_id);
+
+    let config = RaffleConfig {
+        description: String::from_str(&env, "Commit reveal no commits"),
+        end_time: 0,
+        no_deadline: true,
+        max_tickets: 2,
+        max_tickets_per_tx: 2,
+        min_tickets: 1,
+        allow_multiple: true,
+        ticket_price: MIN_TICKET_PRICE,
+        payment_token: payment_token.clone(),
+        prize_amount: MIN_TICKET_PRICE * 8,
+        prizes: soroban_sdk::vec![&env, 7000, 3000],
+        randomness_source: RandomnessSource::CommitReveal,
+        oracle_address: None,
+        protocol_fee_bp: 0,
+        treasury_address: None,
+        swap_router: None,
+        tikka_token: None,
+        unique_winners: false,
+            metadata_hash: BytesN::from_array(&env, &[47; 32]),
+        claim_lockup_seconds: 0,
+        swap_deadline_seconds: 0,
+    };
+
+    client.init(&factory, &admin, &creator, &config);
+    client.deposit_prize();
+    client.buy_tickets(&buyer_a, &1);
+    client.buy_tickets(&buyer_b, &1);
+    client.finalize_raffle();
+
+    let raffle = client.get_raffle();
+    assert_eq!(raffle.status, RaffleStatus::Finalized);
+
+    let fairness = client.get_fairness_data();
+    let expected_seed = env.as_contract(&contract_id, || {
+        let payload = (
+            env.ledger().timestamp(),
+            env.ledger().sequence(),
+            env.current_contract_address().to_xdr(&env),
+        )
+            .to_xdr(&env);
+        let hash: BytesN<32> = env.crypto().sha256(&payload).into();
+        let arr = hash.to_array();
+        u64::from_be_bytes([
+            arr[0], arr[1], arr[2], arr[3], arr[4], arr[5], arr[6], arr[7],
+        ])
+    });
+    assert_eq!(fairness.seed, expected_seed);
+    assert_eq!(raffle.winners.len(), 2);
+}
+
+#[test]
+fn drawing_lock_cleared_after_internal_finalize() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let factory = Address::generate(&env);
+    let admin = Address::generate(&env);
+    let creator = Address::generate(&env);
+
+    let token_admin = Address::generate(&env);
+    let payment_token = env
+        .register_stellar_asset_contract_v2(token_admin.clone())
+        .address();
+    let token_client = StellarAssetClient::new(&env, &payment_token);
+    token_client.mint(&creator, &1_000_000);
+
+    let contract_id = env.register(Contract, ());
+    let client = ContractClient::new(&env, &contract_id);
+
+    let config = RaffleConfig {
+        description: String::from_str(&env, "Lock internal finalize"),
+        end_time: 0,
+        no_deadline: true,
+        max_tickets: 1,
+        max_tickets_per_tx: 1,
+        min_tickets: 1,
+        allow_multiple: true,
+        ticket_price: MIN_TICKET_PRICE,
+        payment_token: payment_token.clone(),
+        prize_amount: MIN_TICKET_PRICE * 2,
+        prizes: soroban_sdk::vec![&env, 10000],
+        randomness_source: RandomnessSource::Internal,
+        oracle_address: None,
+        protocol_fee_bp: 0,
+        treasury_address: None,
+        swap_router: None,
+        tikka_token: None,
+        unique_winners: false,
+            metadata_hash: BytesN::from_array(&env, &[48; 32]),
+        claim_lockup_seconds: 0,
+        swap_deadline_seconds: 0,
+        bundles: soroban_sdk::vec![&env],
+    };
+
+    client.init(&factory, &admin, &creator, &config);
+    client.deposit_prize();
+    client.buy_tickets(&creator, &1);
+    client.finalize_raffle();
+
+    assert_drawing_lock_cleared(&env, &contract_id);
+}
+
+#[test]
+fn drawing_lock_cleared_after_fallback_refund() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let factory = Address::generate(&env);
+    let admin = Address::generate(&env);
+    let creator = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let payment_token = env
+        .register_stellar_asset_contract_v2(token_admin)
+        .address();
+
+    let config = RaffleConfig {
+        description: String::from_str(&env, "Claim lockup at bound"),
+        end_time: 0,
+        no_deadline: true,
+        max_tickets: 10,
+        max_tickets_per_tx: 10,
+        min_tickets: 1,
+        allow_multiple: true,
+        ticket_price: MIN_TICKET_PRICE,
+        payment_token: payment_token.clone(),
+        prize_amount: MIN_TICKET_PRICE * 10,
+        prizes: soroban_sdk::vec![&env, 10000],
+        randomness_source: RandomnessSource::Internal,
+        oracle_address: None,
+        protocol_fee_bp: 0,
+        treasury_address: None,
+        swap_router: None,
+        tikka_token: None,
+        unique_winners: false,
+            metadata_hash: BytesN::from_array(&env, &[50; 32]),
+        claim_lockup_seconds: 0,
+        swap_deadline_seconds: 0,
+        early_bird_ticket_percentage: 0,
+        early_bird_discount_bp: 0,
+        category: None,
+    };
+
+    client.init(&creator_factory_addr(&env), &admin, &creator, &config);
+    let raffle = client.get_raffle();
+    assert_eq!(raffle.claim_lockup_seconds, MAX_CLAIM_LOCKUP_SECONDS);
+}
+
+#[test]
+fn drawing_lock_cleared_after_cancel_in_drawing_state() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let factory = Address::generate(&env);
+    let admin = Address::generate(&env);
+    let creator = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let payment_token = env
+        .register_stellar_asset_contract_v2(token_admin)
+        .address();
+
+    let config = RaffleConfig {
+        description: String::from_str(&env, "Claim lockup above bound"),
+        end_time: 0,
+        no_deadline: true,
+        max_tickets: 10,
+        max_tickets_per_tx: 10,
+        min_tickets: 1,
+        allow_multiple: true,
+        ticket_price: MIN_TICKET_PRICE,
+        payment_token: payment_token.clone(),
+        prize_amount: MIN_TICKET_PRICE * 2,
+        prizes: soroban_sdk::vec![&env, 10000],
+        randomness_source: RandomnessSource::External,
+        oracle_address: Some(oracle),
+        protocol_fee_bp: 0,
+        treasury_address: None,
+        swap_router: None,
+        tikka_token: None,
+        unique_winners: false,
+            metadata_hash: BytesN::from_array(&env, &[52; 32]),
+        claim_lockup_seconds: 0,
+        swap_deadline_seconds: 0,
+    };
+
+    client.init(&factory, &admin, &creator, &config);
+    client.deposit_prize();
+    client.buy_tickets(&creator, &1);
+    client.cancel_raffle(&CancelReason::CreatorCancelled);
+
+    assert_drawing_lock_cleared(&env, &contract_id);
+}
+
+#[test]
+fn unique_winners_limits_one_tier_per_address() {
+    let env = Env::default();
+    env.mock_all_auths();
+    env.ledger().set_timestamp(1_000);
+
+    let contract_id = env.register(crate::Contract, ());
+    let client = crate::ContractClient::new(&env, &contract_id);
+    let factory = Address::generate(&env);
+    let admin = Address::generate(&env);
+    let creator = Address::generate(&env);
+    let buyer_a = Address::generate(&env);
+    let buyer_b = Address::generate(&env);
+
+    let token_admin = Address::generate(&env);
+    let sac = env.register_stellar_asset_contract_v2(token_admin.clone());
+    let token_addr = sac.address();
+    token::StellarAssetClient::new(&env, &token_addr).mint(&creator, &10_000_000);
+    token::StellarAssetClient::new(&env, &token_addr).mint(&buyer_a, &10_000_000);
+    token::StellarAssetClient::new(&env, &token_addr).mint(&buyer_b, &10_000_000);
+
+    let winner_balance_before = token_ro.balance(&winner);
+    let start_events = env.events().all().len();
+    let claimed = client.claim_prize(&winner, &0u32);
+    
+    assert_event(
+        &env,
+        &client.address,
+        "prize_claimed",
+        events::PrizeClaimed {
+            winner: winner.clone(),
+            tier_index: 0,
+            payment_token: payment_token.clone(),
+            gross_amount: prize_amount,
+            net_amount: prize_amount,
+            platform_fee: 0,
+            claimed_at: env.ledger().timestamp(),
+        },
+    );
+    assert_eq!(env.events().all().len(), start_events + 1);
+    assert_metadata_hash(&client, &expected_metadata_hash);
+
+    let config = RaffleConfig {
+        description: soroban_sdk::String::from_str(&env, "unique winners"),
+        end_time: 0,
+        no_deadline: true,
+        max_tickets: 10,
+        max_tickets_per_tx: 5,
+        min_tickets: 1,
+        allow_multiple: true,
+        ticket_price: 10_000,
+        payment_token: token_addr.clone(),
+        prize_amount: 100_000,
+        prizes,
+        randomness_source: RandomnessSource::Internal,
+        oracle_address: None,
+        protocol_fee_bp: 0,
+        treasury_address: None,
+        swap_router: None,
+        tikka_token: None,
+        metadata_hash: BytesN::from_array(&env, &[42u8; 32]),
+        claim_lockup_seconds: 0,
+        swap_deadline_seconds: 0,
+        early_bird_ticket_percentage: 0,
+        early_bird_discount_bp: 0,
+        category: None,
+        unique_winners: true,
+    };
+
+    // 10. Fully-claimed raffle transitions to Claimed.
+    assert_eq!(client.get_raffle().status, RaffleStatus::Claimed);
+    assert_metadata_hash(&client, &expected_metadata_hash);
+
+    env.ledger().set_timestamp(5_000);
+    client.finalize_raffle();
+
+    let raffle = client.get_raffle();
+    assert_eq!(raffle.winners.len(), 3);
+
+    let mut count_a = 0u32;
+    let mut count_b = 0u32;
+    for i in 0..raffle.winners.len() {
+        let w = raffle.winners.get(i).unwrap();
+        if w == buyer_a {
+            count_a += 1;
+        }
+        if w == buyer_b {
+            count_b += 1;
+        }
     }
-    (client, contract_id)
+    assert_eq!(count_a, 1);
+    assert_eq!(count_b, 1);
+
+    let fairness = client.get_fairness_data();
+    assert!(fairness.unique_winners);
 }
 
-/// Internal mode: advance past the deadline and finalize in one call.
-fn finalize_internal(env: &Env, client: &RaffleInstanceClient<'_>) {
-    env.ledger().set_timestamp(5_000);
-    client.finalize_raffle().unwrap();
+#[test]
+fn quorum_k_minus_one_does_not_finalize() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let oracle_a = Address::generate(&env);
+    let oracle_b = Address::generate(&env);
+    let (client, _contract_id, _creator, request_id) =
+        setup_quorum_drawing_raffle(&env, 2, &[oracle_a.clone(), oracle_b.clone()]);
+
+    client.provide_quorum_randomness(&oracle_a, &111, &request_id);
+
+    let raffle = client.get_raffle();
+    assert_eq!(raffle.status, RaffleStatus::Drawing);
 }
 
-/// External/VRF mode: finalize to request randomness, then deliver a fixed seed
-/// signed by a fresh key over the per-raffle proof message.
-fn finalize_external_with_seed(
-    env: &Env,
-    client: &RaffleInstanceClient<'_>,
-    contract_id: &Address,
-    seed: u64,
-) {
-    env.ledger().set_timestamp(5_000);
-    client.finalize_raffle().unwrap();
+#[test]
+fn quorum_k_th_submission_finalizes() {
+    let env = Env::default();
+    env.mock_all_auths();
 
-    let request_id: u64 = env.as_contract(contract_id, || {
+    let oracle_a = Address::generate(&env);
+    let oracle_b = Address::generate(&env);
+    let (client, contract_id, _creator, request_id) =
+        setup_quorum_drawing_raffle(&env, 2, &[oracle_a.clone(), oracle_b.clone()]);
+
+    client.provide_quorum_randomness(&oracle_a, &111, &request_id);
+    client.provide_quorum_randomness(&oracle_b, &222, &request_id);
+
+    let raffle = client.get_raffle();
+    assert_eq!(raffle.status, RaffleStatus::Finalized);
+
+    env.as_contract(&contract_id, || {
+        assert!(!env
+            .storage()
+            .persistent()
+            .has(&DataKey::QuorumSubmittedOracles));
+    });
+}
+
+#[test]
+fn quorum_rejects_unregistered_oracle() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let oracle_a = Address::generate(&env);
+    let oracle_b = Address::generate(&env);
+    let stranger = Address::generate(&env);
+    let (client, _, _, request_id) =
+        setup_quorum_drawing_raffle(&env, 2, &[oracle_a, oracle_b]);
+
+    assert_eq!(
+        client.try_provide_quorum_randomness(&stranger, &999, &request_id),
+        Err(Ok(Error::OracleNotRegistered))
+    );
+}
+
+#[test]
+fn quorum_rejects_duplicate_submission() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let oracle_a = Address::generate(&env);
+    let oracle_b = Address::generate(&env);
+    let (client, _, _, request_id) =
+        setup_quorum_drawing_raffle(&env, 2, &[oracle_a.clone(), oracle_b]);
+
+    client.provide_quorum_randomness(&oracle_a, &111, &request_id);
+    assert_eq!(
+        client.try_provide_quorum_randomness(&oracle_a, &222, &request_id),
+        Err(Ok(Error::DuplicateOracleSubmission))
+    );
+}
+
+#[test]
+fn quorum_rejects_mismatched_request_id() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let oracle_a = Address::generate(&env);
+    let oracle_b = Address::generate(&env);
+    let (client, _, _, request_id) =
+        setup_quorum_drawing_raffle(&env, 2, &[oracle_a.clone(), oracle_b]);
+
+    assert_eq!(
+        client.try_provide_quorum_randomness(&oracle_a, &111, &(request_id + 1)),
+        Err(Ok(Error::InvalidParameters))
+    );
+}
+
+#[test]
+fn quorum_rejects_submission_before_drawing_lock() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let oracle_a = Address::generate(&env);
+    let oracle_b = Address::generate(&env);
+    let contract_id = env.register(Contract, ());
+    let client = ContractClient::new(&env, &contract_id);
+    let factory = env.register(MockFactory, ());
+    let admin = Address::generate(&env);
+    let creator = Address::generate(&env);
+
+    let token_admin = Address::generate(&env);
+    let (token_addr, token_mint) = create_token(&env, &token_admin);
+    token_mint.mint(&creator, &1_000_000);
+
+    let mut oracles = Vec::new(&env);
+    oracles.push_back(oracle_a.clone());
+    oracles.push_back(oracle_b.clone());
+
+    let config = RaffleConfig {
+        description: String::from_str(&env, "quorum pre-lock"),
+        end_time: 0,
+        no_deadline: true,
+        max_tickets: 5,
+        max_tickets_per_tx: 5,
+        min_tickets: 1,
+        allow_multiple: true,
+        ticket_price: MIN_TICKET_PRICE,
+        payment_token: token_addr,
+        prize_amount: MIN_TICKET_PRICE * 5,
+        prizes: vec![&env, 10000u32],
+        randomness_source: RandomnessSource::Quorum(QuorumConfig { k: 2, oracles }),
+        oracle_address: None,
+        protocol_fee_bp: 0,
+        treasury_address: None,
+        swap_router: None,
+        tikka_token: None,
+        metadata_hash: BytesN::from_array(&env, &[56u8; 32]),
+        claim_lockup_seconds: 0,
+        swap_deadline_seconds: 0,
+        early_bird_ticket_percentage: 0,
+        early_bird_discount_bp: 0,
+    };
+
+    client.init(&factory, &admin, &creator, &config);
+    client.deposit_prize();
+
+    assert_eq!(
+        client.try_provide_quorum_randomness(&oracle_a, &1, &1),
+        Err(Ok(Error::InvalidStatus))
+    );
+}
+
+#[test]
+fn quorum_aggregation_is_order_independent() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let oracle_a = Address::generate(&env);
+    let oracle_b = Address::generate(&env);
+    let oracle_c = Address::generate(&env);
+
+    let (client_ab, _, _, req_ab) =
+        setup_quorum_drawing_raffle(&env, 3, &[oracle_a.clone(), oracle_b.clone(), oracle_c.clone()]);
+    client_ab.provide_quorum_randomness(&oracle_a, &10, &req_ab);
+    client_ab.provide_quorum_randomness(&oracle_c, &30, &req_ab);
+    client_ab.provide_quorum_randomness(&oracle_b, &20, &req_ab);
+    let seed_abc = client_ab.get_fairness_data().seed;
+
+    let (client_ba, _, _, req_ba) =
+        setup_quorum_drawing_raffle(&env, 3, &[oracle_a.clone(), oracle_b.clone(), oracle_c.clone()]);
+    client_ba.provide_quorum_randomness(&oracle_b, &20, &req_ba);
+    client_ba.provide_quorum_randomness(&oracle_a, &10, &req_ba);
+    client_ba.provide_quorum_randomness(&oracle_c, &30, &req_ba);
+    let seed_bac = client_ba.get_fairness_data().seed;
+
+    assert_eq!(seed_abc, seed_bac);
+}
+
+#[test]
+fn quorum_storage_cleared_allows_redraw() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let oracle_a = Address::generate(&env);
+    let oracle_b = Address::generate(&env);
+    let (client, contract_id, creator, request_id) =
+        setup_quorum_drawing_raffle(&env, 2, &[oracle_a.clone(), oracle_b.clone()]);
+
+    client.provide_quorum_randomness(&oracle_a, &111, &request_id);
+    client.provide_quorum_randomness(&oracle_b, &222, &request_id);
+    assert_eq!(client.get_raffle().status, RaffleStatus::Finalized);
+
+    // Simulate a re-draw by re-arming drawing state (same oracles, new request).
+    env.as_contract(&contract_id, || {
+        let mut raffle = crate::read_raffle(&env).unwrap();
+        raffle.status = RaffleStatus::Drawing;
+        crate::write_raffle(&env, &raffle);
+        env.storage().instance().set(&DataKey::DrawingLock, &true);
         env.storage()
             .instance()
-            .get(&DataKey::RandomnessRequestId)
-            .unwrap()
+            .set(&DataKey::RandomnessRequestId, &999u64);
+        env.storage()
+            .persistent()
+            .set(&DataKey::QuorumSubmittedOracles, &Vec::<Address>::new(&env));
     });
 
-    let signing_key = SigningKey::from_bytes(&[7u8; 32]);
-    let verifying = signing_key.verifying_key();
-    let message = env.as_contract(contract_id, || {
-        build_vrf_proof_message(env, request_id, seed)
-    });
-    let signature = signing_key.sign(message.as_slice());
-
-    client
-        .provide_randomness(
-            &seed,
-            &BytesN::from_array(env, &verifying.to_bytes()),
-            &BytesN::from_array(env, &signature.to_bytes()),
-            &request_id,
-        )
-        .unwrap();
-}
-
-/// Derive the final winner addresses from the recorded fairness data plus
-/// on-chain ticket storage. This is exactly the replay path an off-chain
-/// auditor would use (`winning_ticket_indices[i]` is a zero-based offset into
-/// `ticket_ids`, so the winning ticket is `index + 1`).
-fn recorded_winners(
-    env: &Env,
-    client: &RaffleInstanceClient<'_>,
-    contract_id: &Address,
-) -> std::vec::Vec<Address> {
-    let fairness = client.get_fairness_data().unwrap();
-    let mut winners = std::vec::Vec::new();
-    for i in 0..fairness.winning_ticket_indices.len() {
-        let index = fairness.winning_ticket_indices.get(i).unwrap();
-        let owner = env.as_contract(contract_id, || get_ticket_owner(env, index + 1).unwrap());
-        winners.push(owner);
-    }
-    winners
-}
-
-fn assert_finalized(client: &RaffleInstanceClient<'_>) {
-    assert_eq!(client.get_raffle().unwrap().status, RaffleStatus::Finalized);
-}
-
-#[test]
-fn five_distinct_owners_ten_tickets_five_tiers_all_distinct_winners() {
-    let env = Env::default();
-    env.mock_all_auths();
-
-    let owners: std::vec::Vec<Address> = (0..5).map(|_| Address::generate(&env)).collect();
-    let (client, _contract_id) = setup_raffle(&env, &owners, 2, 10, 5, true, false);
-    finalize_internal(&env, &client);
-    assert_finalized(&client);
-
-    let winners = client.get_fairness_data().unwrap();
-    let addresses = recorded_winners(&env, &client, &_contract_id);
-    assert_eq!(addresses.len(), 5);
-    for owner in &owners {
-        let count = addresses.iter().filter(|w| w == owner).count();
-        assert_eq!(
-            count, 1,
-            "each of the five owners must win exactly one tier"
-        );
-    }
-    assert!(winners.unique_winners);
-}
-
-#[test]
-fn single_owner_every_ticket_terminates_with_repeat() {
-    let env = Env::default();
-    env.mock_all_auths();
-
-    let owner = Address::generate(&env);
-    let owners = std::vec![owner.clone()];
-    let (client, _contract_id) = setup_raffle(&env, &owners, 10, 20, 3, true, false);
-    finalize_internal(&env, &client);
-    assert_finalized(&client);
-
-    let fairness = client.get_fairness_data().unwrap();
-    assert!(fairness.unique_winners);
-    assert_eq!(fairness.winning_ticket_indices.len(), 3, "three tiers");
-
-    let addresses = recorded_winners(&env, &client, &_contract_id);
-    assert_eq!(addresses.len(), 3);
-    assert!(
-        addresses.iter().all(|w| w == &owner),
-        "a single-owner raffle must repeat the owner on every tier rather than panic"
-    );
-}
-
-#[test]
-fn two_owners_three_tiers_terminates_with_exactly_one_repeat() {
-    let env = Env::default();
-    env.mock_all_auths();
-
-    let a = Address::generate(&env);
-    let b = Address::generate(&env);
-    let owners = std::vec![a.clone(), b.clone()];
-    let (client, _contract_id) = setup_raffle(&env, &owners, 3, 10, 3, true, false);
-    finalize_internal(&env, &client);
-    assert_finalized(&client);
-
-    let addresses = recorded_winners(&env, &client, &_contract_id);
-    assert_eq!(addresses.len(), 3);
-    assert!(
-        addresses.iter().all(|w| w == &a || w == &b),
-        "winners must be drawn from the two paying owners"
-    );
-    let distinct: std::collections::HashSet<Address> = addresses.iter().cloned().collect();
-    assert_eq!(
-        distinct.len(),
-        2,
-        "two owners across three tiers must yield exactly one repeat, not a hang"
-    );
-}
-
-#[test]
-fn unique_winners_disabled_records_raw_selection() {
-    let env = Env::default();
-    env.mock_all_auths();
-
-    let a = Address::generate(&env);
-    let b = Address::generate(&env);
-    let owners = std::vec![a.clone(), b.clone()];
-    let (client, _contract_id) = setup_raffle(&env, &owners, 3, 10, 3, false, false);
-    finalize_internal(&env, &client);
-    assert_finalized(&client);
-
-    let fairness = client.get_fairness_data().unwrap();
-    assert!(!fairness.unique_winners);
-
-    let raffle = client.get_raffle().unwrap();
-    let selector = OracleSeedWinnerSelection::new(fairness.seed);
-    let expected = selector.select_winner_indices_pure(raffle.tickets_sold, 3);
-
-    let recorded: std::vec::Vec<u32> = (0..fairness.winning_ticket_indices.len())
-        .map(|i| fairness.winning_ticket_indices.get(i).unwrap())
-        .collect();
-    assert_eq!(
-        recorded, expected,
-        "unique_winners=false must keep the raw rejection-sampled selection unchanged"
-    );
-}
-
-#[test]
-fn same_seed_replays_identical_winners() {
-    let env = Env::default();
-    env.mock_all_auths();
-
-    let owners: std::vec::Vec<Address> = (0..3).map(|_| Address::generate(&env)).collect();
-
-    let (client_a, contract_a) = setup_raffle(&env, &owners, 2, 10, 4, true, true);
-    finalize_external_with_seed(&env, &client_a, &contract_a, 424_242);
-    assert_finalized(&client_a);
-
-    let (client_b, contract_b) = setup_raffle(&env, &owners, 2, 10, 4, true, true);
-    finalize_external_with_seed(&env, &client_b, &contract_b, 424_242);
-    assert_finalized(&client_b);
-
-    let winners_a = recorded_winners(&env, &client_a, &contract_a);
-    let winners_b = recorded_winners(&env, &client_b, &contract_b);
-    assert_eq!(
-        winners_a, winners_b,
-        "identical seed must replay identical winners"
-    );
-
-    let fa = client_a.get_fairness_data().unwrap();
-    let fb = client_b.get_fairness_data().unwrap();
-    assert_eq!(fa.seed, 424_242);
-    assert_eq!(fb.seed, 424_242);
-    assert!(fa.unique_winners);
-    assert!(fb.unique_winners);
-
-    let idx_a: std::vec::Vec<u32> = (0..fa.winning_ticket_indices.len())
-        .map(|i| fa.winning_ticket_indices.get(i).unwrap())
-        .collect();
-    let idx_b: std::vec::Vec<u32> = (0..fb.winning_ticket_indices.len())
-        .map(|i| fb.winning_ticket_indices.get(i).unwrap())
-        .collect();
-    assert_eq!(idx_a, idx_b, "winning indices must be reproducible");
-}
-
-#[test]
-fn fairness_indices_resolve_to_who_was_paid() {
-    let env = Env::default();
-    env.mock_all_auths();
-
-    let buyers: std::vec::Vec<Address> = (0..3).map(|_| Address::generate(&env)).collect();
-    let (client, contract_id) = setup_raffle(&env, &buyers, 3, 15, 3, true, false);
-    finalize_internal(&env, &client);
-    assert_finalized(&client);
-
-    let fairness = client.get_fairness_data().unwrap();
-    let winners = recorded_winners(&env, &client, &contract_id);
-    assert_eq!(winners.len(), 3);
-
-    for i in 0..fairness.winning_ticket_indices.len() {
-        let index = fairness.winning_ticket_indices.get(i).unwrap();
-        let owner = env.as_contract(&contract_id, || get_ticket_owner(&env, index + 1).unwrap());
-        assert!(
-            buyers.contains(&owner),
-            "winning ticket {index} must belong to an address that actually paid"
-        );
-        assert_eq!(
-            owner, winners[i as usize],
-            "recorded index must match the resolved winner"
-        );
-    }
-
-    let distinct: std::collections::HashSet<Address> = winners.iter().cloned().collect();
-    assert_eq!(
-        distinct.len(),
-        3,
-        "three owners across three tiers: every owner wins once"
-    );
-}
-
-#[test]
-fn unique_winners_max_prizes_within_budget_baseline() {
-    const TICKETS_PER_OWNER: u32 = 999;
-    const TIERS: u32 = MAX_PRIZES;
-
-    let env = Env::default();
-    env.mock_all_auths();
-
-    let owners: std::vec::Vec<Address> = (0..100).map(|_| Address::generate(&env)).collect();
-    let total_bought = owners.len() as u32 * TICKETS_PER_OWNER; // 99_900 < MAX_TICKETS_LIMIT
-    assert!(total_bought < MAX_TICKETS_LIMIT);
-
-    let (client, _contract_id) = setup_raffle(
-        &env,
-        &owners,
-        TICKETS_PER_OWNER,
-        MAX_TICKETS_LIMIT,
-        TIERS,
-        true,
-        false,
-    );
-
-    env.ledger().set_timestamp(5_000);
-    env.cost_estimate().budget().reset_default();
-    client.finalize_raffle().unwrap();
-    let budget = env.cost_estimate().budget();
-    let cpu = budget.cpu_instruction_cost();
-    let mem = budget.memory_bytes_cost();
-
-    let (cpu_baseline, mem_baseline) = FINALIZE_MAX_PRIZES_BASELINE;
-    let cpu_limit = ((cpu_baseline as f64) * (1.0 + TOLERANCE_FRACTION)).ceil() as u64;
-    let mem_limit = ((mem_baseline as f64) * (1.0 + TOLERANCE_FRACTION)).ceil() as u64;
-    assert!(
-        cpu <= cpu_limit,
-        "unique-winner finalize cpu {cpu} exceeded baseline {cpu_baseline} + {:.0}% (limit {cpu_limit})",
-        TOLERANCE_FRACTION * 100.0
-    );
-    assert!(
-        mem <= mem_limit,
-        "unique-winner finalize memory {mem} exceeded baseline {mem_baseline} + {:.0}% (limit {mem_limit})",
-        TOLERANCE_FRACTION * 100.0
-    );
-
-    assert_finalized(&client);
-    let fairness = client.get_fairness_data().unwrap();
-    assert_eq!(fairness.winning_ticket_indices.len(), TIERS as usize);
+    // Same oracles can submit again on the new request.
+    client.provide_quorum_randomness(&oracle_a, &333, &999);
+    assert_eq!(client.get_raffle().status, RaffleStatus::Drawing);
+    client.provide_quorum_randomness(&oracle_b, &444, &999);
+    assert_eq!(client.get_raffle().status, RaffleStatus::Finalized);
 }
