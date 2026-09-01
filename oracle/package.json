@@ -5,6 +5,7 @@
   "main": "dist/src/index.js",
   "scripts": {
     "build": "tsc",
+    "typecheck": "tsc --noEmit",
     "start": "node dist/src/index.js",
     "test": "jest",
     "test:ci": "jest --ci --coverage --runInBand",

@@ -1,8 +1,115 @@
 # Oracle Service Runbook
 
-## Crash-safety audit and deduplication
+Operational guide for the Tikka randomness oracle service.
 
-This document maps crash windows and explains the deduplication durability choices.
+## Health and Metrics Endpoints
+
+| Endpoint | Purpose |
+|----------|---------|
+| `GET /health` | Liveness probe — returns `{"status":"ok"}` |
+| `GET /metrics` | Prometheus text exposition format |
+
+Default port: `9090` (override with `HEALTH_PORT`).
+
+## Metrics Reference
+
+| Metric | Type | Labels | Description |
+|--------|------|--------|-------------|
+| `oracle_requests_observed_total` | Counter | `raffle` | `RandomnessRequested` events enqueued for this oracle |
+| `oracle_request_latency_seconds` | Histogram | — | Wall time from event observation to confirmed on-chain submission |
+| `oracle_submissions_total` | Counter | `outcome` | Submission results: `success`, `retry`, or `fatal` |
+| `oracle_queue_depth` | Gauge | — | Current number of pending randomness jobs |
+| `oracle_queue_oldest_age_seconds` | Gauge | — | Age of the oldest queued job in seconds |
+| `oracle_dead_letter_total` | Counter | — | Jobs permanently failed after exhausting retries |
+| `oracle_listener_ledger_lag` | Gauge | — | Ledgers between network tip and last processed checkpoint |
+| `oracle_rpc_errors_total` | Counter | `kind` | RPC errors by phase: `poll`, `simulate`, `send` |
+| `oracle_fees_spent_stroops_total` | Counter | — | Cumulative transaction fees paid for submissions |
+
+## Suggested Alert Rules
+
+These mirror the thresholds in `.env.example` and the existing webhook alerter.
+
+### Queue depth
+
+```yaml
+- alert: OracleQueueDepthHigh
+  expr: oracle_queue_depth > 10
+  for: 2m
+  labels:
+    severity: warning
+  annotations:
+    summary: Oracle request queue depth exceeds limit
+```
+
+Env: `ALERT_QUEUE_DEPTH_LIMIT=10`
+
+### Queue age
+
+```yaml
+- alert: OracleQueueAgeHigh
+  expr: oracle_queue_oldest_age_seconds > 300
+  for: 1m
+  labels:
+    severity: warning
+  annotations:
+    summary: Oldest queued randomness request is stale
+```
+
+Env: `ALERT_QUEUE_AGE_LIMIT_MS=300000` (300 seconds)
+
+### RPC unreachable
+
+```yaml
+- alert: OracleRpcUnreachable
+  expr: increase(oracle_rpc_errors_total{kind="poll"}[5m]) >= 3
+  for: 1m
+  labels:
+    severity: critical
+  annotations:
+    summary: Oracle cannot reach Soroban RPC
+```
+
+Env: `ALERT_RPC_UNREACHABLE_THRESHOLD=3`
+
+### Submission failures
+
+```yaml
+- alert: OracleSubmissionFailures
+  expr: increase(oracle_submissions_total{outcome="fatal"}[10m]) > 0
+  for: 0m
+  labels:
+    severity: critical
+  annotations:
+    summary: Oracle failed to submit provide_randomness
+```
+
+Env: `ALERT_FAILURE_THRESHOLD=3` (consecutive failures before webhook alert)
+
+### Listener lag
+
+```yaml
+- alert: OracleListenerLag
+  expr: oracle_listener_ledger_lag > 50
+  for: 5m
+  labels:
+    severity: warning
+  annotations:
+    summary: Oracle event listener is falling behind chain tip
+```
+
+### Fee burn rate
+
+```yaml
+- alert: OracleFeeBurnHigh
+  expr: rate(oracle_fees_spent_stroops_total[1h]) > 1000000
+  for: 15m
+  labels:
+    severity: info
+  annotations:
+    summary: Oracle transaction fee spend rate is elevated
+```
+
+## Crash-safety and Deduplication
 
 ### Failure windows
 
@@ -84,6 +191,7 @@ Optional configuration:
 
 - `LOG_LEVEL`: Logging verbosity (`debug`, `info`, `warn`, `error`; default: `info`)
 - `POLL_INTERVAL_MS`: Event polling interval in milliseconds (default: 5000)
+- `HEALTH_PORT`: Port for `/health` and `/metrics` (default: 9090)
 - `ALERT_WEBHOOK_URL`: Webhook URL for operational alerts
 - `ALERT_FAILURE_THRESHOLD`: Consecutive failures before alerting (default: 3)
 - `ALERT_RATE_LIMIT_MS`: Minimum time between alerts (default: 60000)
