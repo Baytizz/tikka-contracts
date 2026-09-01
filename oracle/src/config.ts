@@ -2,7 +2,6 @@ import { Keypair } from '@stellar/stellar-sdk';
 import { decodeSecretKey } from './keys/secret-key';
 
 export interface OracleConfig {
-  secretKey: string;
   rpcUrl: string;
   factoryContractId: string;
   logLevel: string;
@@ -53,14 +52,7 @@ function isValidSecretKey(secret: string): boolean {
 export function loadAndValidateConfig(): OracleConfig {
   const errors: string[] = [];
 
-  const secretKey = process.env['ORACLE_SECRET_KEY'];
-  if (!secretKey) {
-    errors.push('ORACLE_SECRET_KEY is required');
-  } else if (!isValidSecretKey(secretKey)) {
-    errors.push('ORACLE_SECRET_KEY is not a valid Ed25519 secret key');
-  }
-
-  const rpcUrl = process.env['STELLAR_RPC_URL'];
+  const rpcUrl = process.env.STELLAR_RPC_URL;
   if (!rpcUrl) {
     errors.push('STELLAR_RPC_URL is required');
   }
@@ -97,10 +89,9 @@ export function loadAndValidateConfig(): OracleConfig {
   }
 
   return {
-    secretKey,
-    rpcUrl,
-    factoryContractId,
-    logLevel: process.env['LOG_LEVEL'] ?? 'info',
+    rpcUrl: rpcUrl!,
+    factoryContractId: factoryContractId!,
+    logLevel: process.env.LOG_LEVEL ?? 'info',
     pollIntervalMs,
     alertWebhookUrl,
     alertFailureThreshold,

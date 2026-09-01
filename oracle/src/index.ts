@@ -1,7 +1,6 @@
 import { Alerter } from './alert/alerter';
 import { loadAndValidateConfig } from './config';
-import { startHealthServer } from './health/health.server';
-import { OraclePipeline } from './pipeline';
+import { createPipeline } from './pipeline';
 
 /**
  * Bootstrap entry point. Wires the full oracle pipeline and exposes /health and
@@ -28,11 +27,23 @@ async function main(): Promise<void> {
     });
   }
 
-  const pipeline = new OraclePipeline({
-    config,
+  // Create and start the oracle pipeline
+  const pipeline = createPipeline(config, {
     alerter,
   });
 
+  // Register signal handlers
+  process.on('SIGINT', () => {
+    console.log('SIGINT received. Initiating graceful shutdown...');
+    void pipeline.shutdown();
+  });
+
+  process.on('SIGTERM', () => {
+    console.log('SIGTERM received. Initiating graceful shutdown...');
+    void pipeline.shutdown();
+  });
+
+  // Start listening for events from the factory contract
   await pipeline.start([config.factoryContractId]);
 }
 
