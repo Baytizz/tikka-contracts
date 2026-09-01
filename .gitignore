@@ -1,7 +1,9 @@
-# Rust's output and lock files
+# Rust's output
 target/
 *.wasm
-Cargo.lock
+
+# Cargo.lock is deliberately tracked: these are deployable contracts, not a
+# library, and byte-reproducible builds need the exact dependency graph (#843).
 
 # Node dependencies and build artifacts
 node_modules/
