@@ -12,7 +12,7 @@ use soroban_sdk::{contracttype, Address, BytesN, String, Vec};
 ///
 /// Transitions are enforced by contract logic and represent the canonical
 /// on-chain lifecycle used by indexers and clients.
-#[derive(Clone, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[contracttype]
 pub enum RaffleStatus {
     /// Raffle exists in storage but the creator has not yet deposited the prize.
@@ -32,6 +32,60 @@ pub enum RaffleStatus {
     Failed = 4,
     /// Finalized raffle where all winners have completed claims.
     Claimed = 5,
+}
+
+impl RaffleStatus {
+    /// Returns true when no further lifecycle transitions are permitted.
+    pub fn is_terminal(self) -> bool {
+        matches!(
+            self,
+            RaffleStatus::Cancelled | RaffleStatus::Failed | RaffleStatus::Claimed
+        )
+    }
+
+    /// Legal on-chain transitions from `self` to `target`.
+    ///
+    /// Internal rollbacks (e.g. `Drawing → Active` after a failed randomness
+    /// request) are not part of the canonical graph and must use
+    /// [`RaffleStatus::can_internal_revert_to`] instead.
+    pub fn can_transition_to(self, target: RaffleStatus) -> bool {
+        if self == target {
+            return false;
+        }
+        self.allowed_targets().contains(&target)
+    }
+
+    /// Recovery transitions used only when rolling back a partially-applied draw.
+    pub fn can_internal_revert_to(self, target: RaffleStatus) -> bool {
+        self == RaffleStatus::Drawing && target == RaffleStatus::Active
+    }
+
+    fn allowed_targets(self) -> &'static [RaffleStatus] {
+        match self {
+            RaffleStatus::PendingPrize => &[RaffleStatus::Active],
+            RaffleStatus::Active => &[
+                RaffleStatus::Drawing,
+                RaffleStatus::Failed,
+                RaffleStatus::Cancelled,
+            ],
+            RaffleStatus::Drawing => &[RaffleStatus::Finalized, RaffleStatus::Cancelled],
+            RaffleStatus::Finalized => &[RaffleStatus::Claimed],
+            RaffleStatus::Cancelled | RaffleStatus::Failed | RaffleStatus::Claimed => &[],
+        }
+    }
+
+    /// Every variant for exhaustive matrix tests.
+    pub fn all() -> &'static [RaffleStatus] {
+        &[
+            RaffleStatus::PendingPrize,
+            RaffleStatus::Active,
+            RaffleStatus::Drawing,
+            RaffleStatus::Finalized,
+            RaffleStatus::Cancelled,
+            RaffleStatus::Failed,
+            RaffleStatus::Claimed,
+        ]
+    }
 }
 
 /// Canonical reason explaining why a raffle entered `Cancelled`.
@@ -131,8 +185,8 @@ pub struct RaffleConfig {
     /// Maximum tickets a single address may purchase per transaction.
     /// Zero is invalid and rejected during initialization with `Error::InvalidParameters` (must be in 1..=max_tickets).
     pub max_tickets_per_tx: u32,
-    /// Maximum total tickets a single address may own (0 = unlimited).
-    /// When set, must be <= max_tickets. Supersedes allow_multiple.
+    /// Reserved per-address ticket cap (0 = unlimited). Enforcement and
+    /// initialization validation are not implemented yet.
     pub max_tickets_per_address: u32,
     /// Minimum number of tickets required for a successful draw.
     pub min_tickets: u32,
@@ -150,9 +204,8 @@ pub struct RaffleConfig {
     pub randomness_source: RandomnessSource,
     /// Optional oracle contract address for external randomness flows.
     pub oracle_address: Option<Address>,
-    /// Protocol fee in basis points (100 = 1%).
-    /// Charged at two points: ticket purchase and prize claim.
-    /// See docs/FEE_MODEL.md for full fee model details.
+    /// Protocol fee in basis points (100 = 1%). Currently charged at ticket
+    /// purchase only. See docs/FEE_MODEL.md for the implemented fee model.
     pub protocol_fee_bp: u32,
     /// Optional treasury recipient address for protocol fees.
     pub treasury_address: Option<Address>,
@@ -165,6 +218,10 @@ pub struct RaffleConfig {
     /// Seconds after finalization before winners may claim.
     /// Must be in [0, 604800] (0 to 7 days). Defaults to 3600 (1 hour) if not provided (None).
     pub claim_lockup_seconds: Option<u64>,
+    /// Seconds after finalization before unclaimed prizes may be swept to the
+    /// treasury.  Must be at least [`MIN_CLAIM_EXPIRY_SECONDS`] and strictly
+    /// greater than `claim_lockup_seconds`.  Defaults to 30 days if not set.
+    pub claim_expiry_seconds: Option<u64>,
     /// Swap deadline window in seconds (added to current timestamp for token swaps).
     /// Defaults to 300 (5 minutes) if not provided (None). Configurable to handle network congestion.
     pub swap_deadline_seconds: Option<u64>,
@@ -182,7 +239,8 @@ pub struct RaffleConfig {
     pub unique_winners: bool,
     /// Optional tiered bundle pricing for ticket purchases.
     pub bundles: Vec<TicketBundle>,
-    /// Optional prize token override (defaults to `payment_token`).
+    /// Optional prize token override. The raffle-instance initializer does not
+    /// currently apply this field and always uses `payment_token`.
     pub prize_token: Option<Address>,
     /// Optional NFT contract for ticket receipts.
     pub nft_contract: Option<Address>,
@@ -202,6 +260,9 @@ impl RaffleConfig {
         }
         if self.swap_deadline_seconds.is_none() {
             self.swap_deadline_seconds = Some(DEFAULT_SWAP_DEADLINE_SECONDS);
+        }
+        if self.claim_expiry_seconds.is_none() {
+            self.claim_expiry_seconds = Some(DEFAULT_CLAIM_EXPIRY_SECONDS);
         }
         self
     }
@@ -233,7 +294,13 @@ impl Ticket {
     /// Create a ticket with the canonical invariant that the human-facing ticket
     /// number matches the monotonic storage id.
     pub fn new(id: u32, owner: Address, purchase_time: u64) -> Self {
-        Self { id, owner, purchase_time, ticket_number: id }
+        Self {
+            id,
+            owner: owner.clone(),
+            purchase_time,
+            ticket_number: id,
+            payer: owner,
+        }
     }
 }
 
@@ -317,8 +384,9 @@ pub enum AdminOp {
 
 // Re-export constants from the single source of truth
 pub use constants::{
-    DEFAULT_CLAIM_LOCKUP_SECONDS, DEFAULT_PAGE_LIMIT, DEFAULT_SWAP_DEADLINE_SECONDS,
-    MAX_PAGE_LIMIT,
+    DEFAULT_CLAIM_EXPIRY_SECONDS, DEFAULT_CLAIM_LOCKUP_SECONDS, DEFAULT_PAGE_LIMIT,
+    DEFAULT_SWAP_DEADLINE_SECONDS, MAX_PAGE_LIMIT, MAX_SWEEP_UNCLAIMED_PER_CALL,
+    MIN_CLAIM_EXPIRY_SECONDS,
 };
 
 /// Returns a safe pagination limit clamped to supported bounds.
@@ -437,6 +505,7 @@ mod test {
             no_deadline: true,
             max_tickets: 10,
             max_tickets_per_tx: 10,
+            max_tickets_per_address: 0,
             min_tickets: 1,
             allow_multiple: true,
             ticket_price: 10_000,
@@ -451,10 +520,15 @@ mod test {
             tikka_token: None,
             metadata_hash: BytesN::from_array(env, &[0; 32]),
             claim_lockup_seconds: None,
+            claim_expiry_seconds: None,
             swap_deadline_seconds: None,
             early_bird_ticket_percentage: 0,
             early_bird_discount_bp: 0,
             category: None,
+            unique_winners: false,
+            bundles: Vec::new(env),
+            prize_token: None,
+            nft_contract: None,
         }
     }
 
@@ -513,6 +587,10 @@ mod test {
         let resolved2 = config2.resolve_defaults();
         assert_eq!(resolved2.claim_lockup_seconds, Some(DEFAULT_CLAIM_LOCKUP_SECONDS));
         assert_eq!(resolved2.swap_deadline_seconds, Some(0));
+    }
+}
+
+#[cfg(test)]
 mod effective_limit_tests {
     use super::{effective_limit, DEFAULT_PAGE_LIMIT, MAX_PAGE_LIMIT};
 
@@ -554,5 +632,28 @@ mod effective_limit_tests {
     #[test]
     fn u32_max_clamps_to_max() {
         assert_eq!(effective_limit(u32::MAX), MAX_PAGE_LIMIT);
+    }
+}
+
+#[cfg(test)]
+mod raffle_status_tests {
+    use super::RaffleStatus;
+
+    #[test]
+    fn terminal_states_have_no_outgoing_transitions() {
+        for status in [RaffleStatus::Cancelled, RaffleStatus::Failed, RaffleStatus::Claimed] {
+            assert!(status.is_terminal());
+            for target in RaffleStatus::all() {
+                if *target != status {
+                    assert!(!status.can_transition_to(*target));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn pending_prize_only_moves_to_active() {
+        assert!(RaffleStatus::PendingPrize.can_transition_to(RaffleStatus::Active));
+        assert!(!RaffleStatus::PendingPrize.can_transition_to(RaffleStatus::Drawing));
     }
 }

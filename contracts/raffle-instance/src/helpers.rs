@@ -1,6 +1,6 @@
-use soroban_sdk::{auth::InvokerContractAuthEntry, Address, Env, IntoVal, Symbol, Val, Vec};
+use soroban_sdk::{auth::InvokerContractAuthEntry, Address, BytesN, Env, IntoVal, Symbol, Val, Vec, token};
 
-use crate::events::{RaffleFinalized, WinnerDrawn};
+use crate::events::{RaffleFinalized, RaffleStatusChanged, WinnerDrawn};
 use crate::randomness::{OracleSeedWinnerSelection, WinnerSelectionStrategy};
 use crate::{DataKey, Error, FairnessMetadata, Raffle, RaffleStatus, RandomnessType, Ticket};
 
@@ -15,10 +15,43 @@ pub(crate) fn write_raffle(env: &Env, raffle: &Raffle) {
     env.storage().instance().set(&DataKey::Raffle, raffle);
 }
 
+/// Checked lifecycle transition. All status writes must go through this helper
+/// (or [`revert_status`] for internal draw rollbacks).
+pub(crate) fn transition_status(
+    env: &Env,
+    raffle: &mut Raffle,
+    new_status: RaffleStatus,
+    timestamp: u64,
+) -> Result<(), Error> {
+    if !raffle.status.can_transition_to(new_status) {
+        return Err(Error::InvalidStateTransition);
+    }
+    let old_status = raffle.status.clone();
+    raffle.status = new_status.clone();
+    write_raffle(env, raffle);
+    RaffleStatusChanged {
+        old_status,
+        new_status,
+        timestamp,
+    }
+    .publish(env);
+    Ok(())
+}
+
+/// Internal rollback when a draw step fails after transitioning to `Drawing`.
+pub(crate) fn revert_status(env: &Env, raffle: &mut Raffle, target: RaffleStatus) -> Result<(), Error> {
+    if !raffle.status.can_internal_revert_to(target) {
+        return Err(Error::InvalidStateTransition);
+    }
+    raffle.status = target;
+    write_raffle(env, raffle);
+    Ok(())
+}
+
 pub(crate) fn require_admin(env: &Env) -> Result<Address, Error> {
     let admin: Address = env
         .storage()
-        .persistent()
+        .instance()
         .get(&DataKey::Admin)
         .ok_or(Error::NotAuthorized)?;
     admin.require_auth();
@@ -129,22 +162,11 @@ pub(crate) fn transition_to_drawing(
         return Err(Error::DrawingAlreadyInProgress);
     }
 
-    if raffle.status != RaffleStatus::Active {
-        if raffle.status == RaffleStatus::Drawing {
-            return Err(Error::DrawingAlreadyInProgress);
-        }
-        return Err(Error::InvalidStatusForDrawingTransition);
+    if raffle.status == RaffleStatus::Drawing {
+        return Err(Error::DrawingAlreadyInProgress);
     }
 
-    let old_status = raffle.status.clone();
-    raffle.status = RaffleStatus::Drawing;
-    write_raffle(env, raffle);
-    RaffleStatusChanged {
-        old_status,
-        new_status: RaffleStatus::Drawing,
-        timestamp,
-    }
-    .publish(env);
+    transition_status(env, raffle, RaffleStatus::Drawing, timestamp)?;
     env.storage().instance().set(&DataKey::DrawingLock, &true);
     Ok(())
 }
@@ -229,9 +251,6 @@ pub(crate) fn calculate_tier_prize(raffle: &Raffle, tier_index: u32) -> Result<i
         .map(|a| a / 10000)
 }
 
-    initial_index
-}
-
 /// Finalize the raffle using a pre-computed `u64` seed.
 ///
 /// This is the common finalization path shared by all three randomness modes
@@ -309,7 +328,7 @@ pub(crate) fn do_finalize_with_seed(
         winners.push_back(winner.clone());
         WinnerDrawn {
             winner,
-            ticket_id: idx,
+            ticket_id: idx + 1,
             tier_index: i,
             timestamp: env.ledger().timestamp(),
         }
@@ -344,9 +363,15 @@ pub(crate) fn do_finalize_with_seed(
         },
     );
 
-    let winner_addresses: Vec<Address> = winners.iter().map(|w| w.address.clone()).collect();
-    raffle.status = RaffleStatus::Finalized;
-    raffle.winners = winners;
+    raffle.winners = winners.clone();
+    raffle.claimed_winners = claimed_winners;
+    raffle.finalized_at = Some(env.ledger().timestamp());
+    transition_status(
+        env,
+        &mut raffle,
+        RaffleStatus::Finalized,
+        env.ledger().timestamp(),
+    )?;
     raffle.finalized_at = Some(env.ledger().timestamp());
     write_raffle(env, &raffle);
 

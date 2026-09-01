@@ -20,13 +20,17 @@ surface, and commit-reveal randomness sequencing.
 
 | Target name | Contract entrypoint | What is fuzzed |
 |---|---|---|
-| `fuzz_buy_ticket` | `buy_ticket` | Deadline guard, sold-out cap, single-ticket policy, tickets_sold increment |
-| `fuzz_finalize_raffle` | `finalize_raffle` + `provide_randomness` | Winner-index in-bounds invariant (internal & external randomness paths) |
-| `fuzz_winner_selection` | `OracleSeedWinnerSelection` | Index bounds, uniqueness, and termination of the rejection-sampling loop |
-| `fuzz_refund_cancel` | `refund_ticket` + `cancel_raffle` | Arbitrary interleavings of buys, cancels (creator/admin/unauthorized), and refunds; see invariant list below |
-| `fuzz_commit_reveal` | `submit_commit` + `finalize_raffle` (CommitReveal) | Adversarial sequencing of commits, honest & wrong-preimage reveals, replays, and out-of-window submissions; see invariant list below |
+| `fuzz_buy_ticket` | `buy_tickets` | Real-environment purchase validation and state updates |
+| `fuzz_finalize_raffle` | `finalize_raffle` | Real-environment finalization |
+| `fuzz_winner_selection` | `buy_tickets` | Real-contract draw preconditions |
+| `fuzz_refund_cancel` | `cancel_raffle` + `refund_ticket` | Real cancellation and refund sequencing |
+| `fuzz_commit_reveal` | `submit_commit` | Real commit entrypoint behavior |
+| `fuzz_lifecycle` | Multiple entrypoints | Stateful calls with status and escrow invariants |
 
-### `fuzz_refund_cancel` invariants
+All targets use `Env::default()` and generated `ContractClient` calls. Panics from
+the host or contract are intentionally not caught and are therefore fuzz failures.
+
+### `fuzz_lifecycle` invariants
 
 | # | Invariant |
 |---|-----------|
@@ -39,13 +43,9 @@ surface, and commit-reveal randomness sequencing.
 | 7 | **Only authorised roles may cancel** — `Unauthorized` returns `NotAuthorized`, state unchanged |
 | 8 | **tickets_sold ≤ max_tickets** — buy cap is never breached |
 
-### `fuzz_commit_reveal` invariants
+### Real commit checks
 
-The target models the CommitReveal path end-to-end: accepted commits are stored
-per ticket (`DataKey::CommitEntry(ticket_id)`), the draw seed is
-`u64::from_be_bytes(sha256(commit_1 ‖ … ‖ commit_n)[..8])` over the accepted
-commits in ticket order, and a zero-commit finalize falls back to a
-deterministic internal PRNG seed.
+The target invokes the CommitReveal entrypoint against a real contract instance.
 
 | # | Invariant |
 |---|-----------|
@@ -81,6 +81,9 @@ cargo fuzz run fuzz_refund_cancel -- -max_total_time=1800
 
 # Commit-reveal target — 30-minute run (issue #632)
 cargo fuzz run fuzz_commit_reveal -- -max_total_time=1800
+
+# Stateful lifecycle target
+cargo fuzz run fuzz_lifecycle -- -max_total_time=1800
 ```
 
 `-max_total_time=1800` instructs libFuzzer to stop after 1 800 s (30 min).
@@ -113,6 +116,9 @@ Reproduce it with:
 cargo fuzz run <target-name> fuzz/artifacts/<target-name>/crash-<hash>
 ```
 
+The input is replayed against the same real-contract `Env` harness, so the
+crash can be investigated from the exact generated call sequence.
+
 ---
 
 ## Corpus
@@ -134,4 +140,5 @@ Commit this directory to seed future runs and prevent regression.
 - [x] Fuzz target for `winner_selection` (issue #86)
 - [x] Fuzz target for `refund_cancel` (issue #466)
 - [x] Fuzz target for `commit_reveal` (issue #632)
+- [x] Nightly CI job runs all targets with corpus caching (see `.github/workflows/fuzz.yml`)
 - [ ] Fuzzer runs for at least 30 minutes without discovery of panics *(run in CI or locally)*

@@ -68,7 +68,7 @@ describe('DeduplicationStore', () => {
     const dirPath = path.dirname(testStorePath);
     const badStore = new DeduplicationStore(dirPath);
 
-    // It should still work in-memory
+    // It should still work in-memory (disk write errors are caught and logged)
     expect(badStore.isDuplicate(1n, 'addr1')).toBe(false);
     expect(badStore.isDuplicate(1n, 'addr1')).toBe(true);
   });
