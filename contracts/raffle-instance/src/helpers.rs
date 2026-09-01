@@ -183,6 +183,27 @@ pub(crate) fn require_not_paused(env: &Env) -> Result<(), Error> {
     Ok(())
 }
 
+/// Blocks ticket purchases (and other guarded ops) while the protocol-wide
+/// **global pause** is engaged.
+///
+/// This intentionally consults the factory's `is_global_paused` flag — the one
+/// toggled by `emergency_pause_all` / `emergency_unpause_all`. That is the
+/// single switch that halts every deployed instance at once, which is why an
+/// `emergency_pause_all` call stops ticket purchases here even though this
+/// contract was already deployed.
+///
+/// It does **not** consult the factory's `DataKey::Paused` (`pause_factory`)
+/// or `DataKey::CreationPaused` (`set_creation_paused`) flags: `pause_factory`
+/// only stops new activity at the factory level and `set_creation_paused` only
+/// blocks `create_raffle`. Neither reaches existing instances by design.
+///
+/// Precedence (highest to lowest, factory-side):
+///   1. global pause  (`emergency_pause_all`)   → blocks everything, all instances
+///   2. factory pause  (`pause_factory`)         → blocks factory-level ops only
+///   3. creation pause (`set_creation_paused`)   → blocks `create_raffle` only
+///
+/// See `contracts/raffle-factory/src/pause.rs` for the authoritative table and
+/// `docs/ARCHITECTURE.md` / `oracle/RUNBOOK.md` for the incident-response call.
 pub(crate) fn require_global_not_paused(env: &Env) -> Result<(), Error> {
     let factory: Address = env
         .storage()
@@ -251,6 +272,12 @@ pub(crate) fn calculate_tier_prize(raffle: &Raffle, tier_index: u32) -> Result<i
             .ok_or(Error::ArithmeticOverflow)
             .map(|a| a / 10000)
     }
+    let bp = raffle.prizes.get(tier_index).ok_or(Error::InvalidIndex)?;
+    raffle
+        .prize_amount
+        .checked_mul(bp as i128)
+        .ok_or(Error::ArithmeticOverflow)
+        .map(|a| a / 10000)
 }
 
 /// Finalize the raffle using a pre-computed `u64` seed.
@@ -330,7 +357,7 @@ pub(crate) fn do_finalize_with_seed(
         winners.push_back(winner.clone());
         WinnerDrawn {
             winner,
-            ticket_id: idx,
+            ticket_id: idx + 1,
             tier_index: i,
             timestamp: env.ledger().timestamp(),
         }
@@ -350,22 +377,12 @@ pub(crate) fn do_finalize_with_seed(
             winning_ticket_indices: winning_ticket_ids.clone(),
             draw_timestamp: env.ledger().timestamp(),
             draw_sequence: env.ledger().sequence(),
-        },
-    );
-
-    env.storage().persistent().set(
-        &DataKey::RandomnessSeed,
-        &FairnessMetadata {
-            seed,
-            randomness_source: raffle.randomness_source.clone(),
-            winning_ticket_indices: winning_ticket_ids.clone(),
-            draw_timestamp: env.ledger().timestamp(),
-            draw_sequence: env.ledger().sequence(),
             unique_winners: raffle.unique_winners,
         },
     );
 
     raffle.winners = winners.clone();
+    raffle.claimed_winners = claimed_winners;
     raffle.finalized_at = Some(env.ledger().timestamp());
     transition_status(
         env,
@@ -375,6 +392,7 @@ pub(crate) fn do_finalize_with_seed(
     )?;
     raffle.finalized_at = Some(env.ledger().timestamp());
     write_raffle(env, &raffle);
+    record_leaderboard(env, &raffle);
 
     env.storage()
         .instance()
@@ -385,6 +403,7 @@ pub(crate) fn do_finalize_with_seed(
     env.storage()
         .instance()
         .remove(&DataKey::RandomnessRequestLedger);
+    clear_quorum_storage(env);
     env.storage().instance().set(&DataKey::DrawingLock, &false);
 
     RaffleFinalized {
@@ -435,4 +454,22 @@ fn record_leaderboard(env: &Env, raffle: &Raffle) {
         &Symbol::new(env, "record_leaderboard_entry"),
         args,
     );
+}
+
+/// Remove all quorum seed storage so a re-draw can accept the same oracles again.
+pub(crate) fn clear_quorum_storage(env: &Env) {
+    if let Some(submitted) = env
+        .storage()
+        .persistent()
+        .get::<_, Vec<Address>>(&DataKey::QuorumSubmittedOracles)
+    {
+        for i in 0..submitted.len() {
+            if let Some(addr) = submitted.get(i) {
+                env.storage().persistent().remove(&DataKey::QuorumSeed(addr));
+            }
+        }
+        env.storage()
+            .persistent()
+            .remove(&DataKey::QuorumSubmittedOracles);
+    }
 }
