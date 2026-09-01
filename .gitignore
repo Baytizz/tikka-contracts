@@ -39,6 +39,10 @@ CLAUDE.md
 # Test snapshots
 test_snapshots/
 
+# Python tooling cache (scripts/*.py)
+__pycache__/
+*.pyc
+
 # Skills
 .windsurf/
 # ./skills
@@ -57,4 +61,9 @@ test_output*.txt
 check_out*.txt
 error*.txt
 *.tar.gz
-patch*.py
+# Agent / scratch artefacts
+patch_*.txt
+scratch_*.rs
+test_*.rs
+update_*.py
+inject_*.py

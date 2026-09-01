@@ -9,6 +9,9 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: false
 
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
   # Must match STELLAR_CLI_VERSION in scripts/common.sh (issues #841, #843).
