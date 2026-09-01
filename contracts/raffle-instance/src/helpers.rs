@@ -328,7 +328,7 @@ pub(crate) fn do_finalize_with_seed(
         winners.push_back(winner.clone());
         WinnerDrawn {
             winner,
-            ticket_id: idx,
+            ticket_id: idx + 1,
             tier_index: i,
             timestamp: env.ledger().timestamp(),
         }

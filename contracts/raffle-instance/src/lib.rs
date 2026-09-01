@@ -49,6 +49,7 @@ use crate::events::{
     RaffleFinalized, RaffleStatusChanged, RandomnessFallbackTriggered, RandomnessReceived,
     RandomnessRequested, StorageWiped, SwapDeadlineUpdated, TicketNftMinted, TicketPurchased,
     TicketRefunded, TicketSalesPaused, TicketSalesResumed, TokensRescued, WinnerDrawn,
+    OracleSeedDelivered,
 };
 
 const RANDOMNESS_MIN_DELAY_LEDGERS: u32 = 10;
@@ -239,7 +240,6 @@ pub enum Error {
     PrizeConfigurationLocked = 57,
     /// Ticket purchase exceeds per-transaction cap. Code 58.
     ExceedsMaxTicketsPerTx = 58,
-    /// Draw already in progress. Code 59.
     DrawingAlreadyInProgress = 59,
     /// Invalid status for entering the drawing phase. Code 60.
     InvalidStatusForDrawingTransition = 60,
@@ -251,16 +251,11 @@ pub enum Error {
     InvalidAdminAddress = 63,
     /// Randomness callback received before the minimum delay. Code 64.
     RandomnessTooEarly = 64,
-    /// Per-address ticket cap would be exceeded. Code 65.
-    ExceedsMaxTicketsPerAddress = 65,
-    /// Admin cancellation timelock has not elapsed. Code 67.
-    CancelTimelockActive = 67,
-    /// Admin cancellation was not scheduled. Code 68.
-    CancelNotScheduled = 68,
-    /// Oracle address is not in the quorum allowlist. Code 69.
-    OracleNotRegistered = 69,
-    /// Oracle already submitted a seed for this draw. Code 70.
-    DuplicateOracleSubmission = 70,
+    CancelTimelockActive = 65,
+    CancelNotScheduled = 66,
+    ExceedsMaxTicketsPerAddress = 67,
+    OracleNotRegistered = 68,
+    DuplicateOracleSubmission = 69,
 }
 
 #[contractimpl]
