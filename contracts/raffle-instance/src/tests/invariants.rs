@@ -1,4 +1,3 @@
-use super::*;
 use proptest::prelude::*;
 use crate::{
     assert_solvent, calculate_tier_prize, DataKey, Raffle, RaffleStatus, Ticket, MAX_PRIZE_AMOUNT,
@@ -43,6 +42,7 @@ fn test_raffle(env: &Env, weights: &[u32], prize_amount: i128) -> Raffle {
         status: RaffleStatus::PendingPrize,
         prize_deposited: false,
         winners: Vec::new(env),
+        claimed_winners: Vec::new(env),
         randomness_source: raffle_shared::RandomnessSource::Internal,
         oracle_address: None,
         protocol_fee_bp: 0,
@@ -51,6 +51,7 @@ fn test_raffle(env: &Env, weights: &[u32], prize_amount: i128) -> Raffle {
         tikka_token: None,
         finalized_at: None,
         claim_lockup_seconds: 0,
+        claim_expiry_seconds: 1,
         swap_deadline_seconds: 0,
         ticket_sales_paused: false,
         early_bird_ticket_percentage: 0,
@@ -97,7 +98,10 @@ fn one_tier_receives_the_entire_prize() {
 
 #[test]
 fn final_tier_absorbs_maximum_rounding_dust() {
-    assert_tier_sum(&[101; 99].iter().copied().chain([1]).collect::<std::vec::Vec<_>>(), 10_000);
+    assert_tier_sum(
+        &[101; 99].iter().copied().chain([1]).collect::<std::vec::Vec<_>>(),
+        10_000,
+    );
 }
 
 #[test]
