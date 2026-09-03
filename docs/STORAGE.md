@@ -86,6 +86,23 @@ Source of truth: `DataKey` enum (and admin-cancel flow keys noted below).
 | `TicketRefunded(u32)` | **Persistent** | Once per refunded/claimed ticket | Yes | After full settlement | Idempotency marker |
 | `CommitEntry(u32)` | **Persistent** | `submit_commit` (CommitReveal mode) | Yes until draw | After finalize OK | Hash keyed by **ticket ID** (survives transfer) |
 
+### `Winner` entry (within the `Raffle` blob)
+
+`Raffle.winners` is a `Vec<Winner>` holding one entry per prize tier in draw
+order. It is a unified winner record that replaces the old parallel-array
+pattern (`winners: Vec<Address>` + `claimed_winners: Vec<bool>`). Each entry is
+written at finalization, and its `claimed` flag flips true on claim or sweep:
+
+| Field          | Type     | Meaning                                                                 |
+|----------------|----------|-------------------------------------------------------------------------|
+| `address`      | `Address`| Address that owned the winning ticket at draw time.                     |
+| `claimed`      | `bool`   | True once this tier's prize has been paid out or swept.                 |
+| `tier_index`   | `u32`    | Index into `Raffle::prizes` identifying the tier won.                   |
+
+`tier_index` names the tier consistently with `WinnerDrawn`, `PrizeClaimed`,
+`PrizeSwept`, and `claim_prize`. The type is defined in `raffle-shared` with
+`#[contracttype]` so it can be shared across contracts.
+
 ### Admin-cancel timelock key
 
 Admin cancellation scheduling (`execute_admin_cancel` / related flows) stores a unlock timestamp under **instance** storage as `PendingAdminCancel` (u64). Treat it as consensus-critical while a cancel is scheduled; remove after execution. If your checkout’s `DataKey` enum is mid-refactor, keep this key’s tier/lifetime aligned with those call sites.
