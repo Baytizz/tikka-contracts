@@ -245,6 +245,12 @@ pub(crate) fn build_internal_seed_u64(env: &Env) -> u64 {
 }
 
 pub(crate) fn calculate_tier_prize(raffle: &Raffle, tier_index: u32) -> Result<i128, Error> {
+    if raffle.prizes.is_empty() {
+        return Err(Error::InvalidParameters);
+    }
+    if tier_index >= raffle.prizes.len() {
+        return Err(Error::InvalidIndex);
+    }
     let last_tier_index = raffle.prizes.len() - 1;
     if tier_index == last_tier_index {
         let mut allocated = 0i128;
@@ -345,8 +351,12 @@ pub(crate) fn do_finalize_with_seed(
             idx = resolve_unique_winner(env, seed, i as u32, total_tickets, &winners, idx);
             winning_ticket_ids.set(i, idx);
         }
-        let winner = get_ticket_owner(env, idx + 1).ok_or(Error::TicketNotFound)?;
-        winners.push_back(winner.clone());
+        let owner = get_ticket_owner(env, idx + 1).ok_or(Error::TicketNotFound)?;
+        winners.push_back(crate::Winner {
+            address: owner.clone(),
+            claimed: false,
+            prize_index: i as u32,
+        });
         WinnerDrawn {
             winner,
             ticket_id: idx + 1,
@@ -398,9 +408,14 @@ pub(crate) fn do_finalize_with_seed(
     clear_quorum_storage(env);
     env.storage().instance().set(&DataKey::DrawingLock, &false);
 
+    let mut winner_addresses = Vec::new(env);
+    for w in winners.iter() {
+        winner_addresses.push_back(w.address);
+    }
+
     RaffleFinalized {
         raffle_id: env.current_contract_address(),
-        winners,
+        winners: winner_addresses,
         winning_ticket_ids,
         total_tickets_sold: raffle.tickets_sold,
         randomness_source: raffle.randomness_source.clone(),
