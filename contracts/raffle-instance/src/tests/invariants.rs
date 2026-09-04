@@ -337,3 +337,41 @@ fn final_tier_absorbs_maximum_rounding_dust() {
         10_000,
     );
 }
+
+/// Refund solvency invariant (#827).
+///
+/// After any refund operation the contract must hold at least as much as it
+/// still owes to ticket holders (`per_ticket_refund` for each not-yet-refunded
+/// ticket id) plus any un-refunded prize escrowed on behalf of the creator.
+///
+/// Called by the refund-path lifecycle tests (`tests/claim.rs`) after every
+/// refund/prize-recovery operation, and asserted inline by the fuzz harness
+/// (`fuzz/fuzz_targets/real_harness.rs::refund_cancel`).
+pub fn assert_refund_solvency(
+    env: &Env,
+    contract_id: &Address,
+    payment_token: &Address,
+    prize_token: &Address,
+    ticket_ids_owing: &[u32],
+    per_ticket_refund: i128,
+    prize_owing: i128,
+) {
+    let payment_balance = soroban_sdk::token::Client::new(env, payment_token).balance(contract_id);
+    // When prize and payment tokens are the same address (the current wiring)
+    // the prize pot is part of the payment balance and must not be counted twice.
+    let prize_balance = if payment_token == prize_token {
+        0
+    } else {
+        soroban_sdk::token::Client::new(env, prize_token).balance(contract_id)
+    };
+    let held = payment_balance + prize_balance;
+    let outstanding = ticket_ids_owing.len() as i128 * per_ticket_refund + prize_owing;
+    assert!(
+        held >= outstanding,
+        "refund solvency violated: contract holds {held} but owes {outstanding} \
+         ({} tickets outstanding, prize owing {prize_owing}, payment {}, prize {})",
+        ticket_ids_owing.len(),
+        payment_balance,
+        prize_balance,
+    );
+}
