@@ -319,6 +319,9 @@ impl RaffleInstance {
         if config.prizes.len() > MAX_PRIZES {
             return Err(Error::TooManyPrizes);
         }
+        if config.prizes.len() > config.max_tickets {
+            return Err(Error::InvalidParameters);
+        }
         let mut total_prizes_bp = 0u32;
         for prize_bp in config.prizes.iter() {
             if prize_bp > 10_000 {
@@ -847,8 +850,8 @@ if config.randomness_source == RandomnessSource::External {
     pub fn extend_ttl(env: Env) -> Result<(), Error> {
         let _raffle = read_raffle(&env)?;
         Err(Error::InvalidParameters)
-    }
 }
+
 #[cfg(test)]
 mod test;
 #[cfg(test)]
