@@ -104,47 +104,40 @@ fn final_tier_absorbs_maximum_rounding_dust() {
     );
 }
 
-#[test]
-fn assert_solvent_accepts_storage_derived_combined_token_obligations() {
-    let env = Env::default();
-    env.mock_all_auths();
-    let token_admin = Address::generate(&env);
-    let token_address = env
-        .register_stellar_asset_contract_v2(token_admin.clone())
-        .address();
-    let token = soroban_sdk::token::StellarAssetClient::new(&env, &token_address);
-    let contract_id = env.register(crate::RaffleInstance, ());
-    let creator = Address::generate(&env);
-    let buyer = Address::generate(&env);
-
-    let mut raffle = test_raffle(&env, &[10_000], 50_000);
-    raffle.creator = creator;
-    raffle.max_tickets = 2;
-    raffle.max_tickets_per_tx = 2;
-    raffle.max_tickets_per_address = 0;
-    raffle.ticket_price = 10_000;
-    raffle.payment_token = token_address.clone();
-    raffle.prize_token = token_address.clone();
-    raffle.tickets_sold = 2;
-    raffle.status = RaffleStatus::Active;
-    raffle.prize_deposited = true;
-    raffle.early_bird_ticket_percentage = 50;
-    raffle.early_bird_discount_bp = 5_000;
-
-    env.as_contract(&contract_id, || {
-        env.storage().instance().set(&DataKey::Raffle, &raffle);
-        env.storage().instance().set(&DataKey::AccumulatedFees, &300i128);
-        env.storage()
-            .persistent()
-            .set(&DataKey::Ticket(1), &Ticket::new(1, buyer.clone(), 0));
-        env.storage()
-            .persistent()
-            .set(&DataKey::Ticket(2), &Ticket::new(2, buyer, 0));
-    });
-
-    token.mint(&contract_id, &65_300);
-
-    env.as_contract(&contract_id, || {
-        assert_solvent(&env);
-    });
+/// Refund solvency invariant (#827).
+///
+/// After any refund operation the contract must hold at least as much as it
+/// still owes to ticket holders (`per_ticket_refund` for each not-yet-refunded
+/// ticket id) plus any un-refunded prize escrowed on behalf of the creator.
+///
+/// Called by the refund-path lifecycle tests (`tests/claim.rs`) after every
+/// refund/prize-recovery operation, and asserted inline by the fuzz harness
+/// (`fuzz/fuzz_targets/real_harness.rs::refund_cancel`).
+pub fn assert_refund_solvency(
+    env: &Env,
+    contract_id: &Address,
+    payment_token: &Address,
+    prize_token: &Address,
+    ticket_ids_owing: &[u32],
+    per_ticket_refund: i128,
+    prize_owing: i128,
+) {
+    let payment_balance = soroban_sdk::token::Client::new(env, payment_token).balance(contract_id);
+    // When prize and payment tokens are the same address (the current wiring)
+    // the prize pot is part of the payment balance and must not be counted twice.
+    let prize_balance = if payment_token == prize_token {
+        0
+    } else {
+        soroban_sdk::token::Client::new(env, prize_token).balance(contract_id)
+    };
+    let held = payment_balance + prize_balance;
+    let outstanding = ticket_ids_owing.len() as i128 * per_ticket_refund + prize_owing;
+    assert!(
+        held >= outstanding,
+        "refund solvency violated: contract holds {held} but owes {outstanding} \
+         ({} tickets outstanding, prize owing {prize_owing}, payment {}, prize {})",
+        ticket_ids_owing.len(),
+        payment_balance,
+        prize_balance,
+    );
 }

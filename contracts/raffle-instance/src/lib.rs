@@ -1,5 +1,7 @@
 #![no_std]
 #![cfg_attr(not(test), deny(clippy::unwrap_used))]
+#![warn(clippy::arithmetic_side_effects)]
+#![deny(unused)]
 
 use soroban_sdk::{
     auth::{ContractContext, InvokerContractAuthEntry, SubContractInvocation},
@@ -325,9 +327,17 @@ impl RaffleInstance {
         if config.prizes.len() > MAX_PRIZES {
             return Err(Error::TooManyPrizes);
         }
+        if config.prizes.len() > config.max_tickets {
+            return Err(Error::InvalidParameters);
+        }
         let mut total_prizes_bp = 0u32;
         for prize_bp in config.prizes.iter() {
-            total_prizes_bp += prize_bp;
+            if prize_bp > 10_000 {
+                return Err(Error::InvalidParameters);
+            }
+            total_prizes_bp = total_prizes_bp
+                .checked_add(prize_bp)
+                .ok_or(Error::InvalidParameters)?;
         }
         if total_prizes_bp != 10000 {
             return Err(Error::InvalidParameters);
@@ -751,21 +761,16 @@ if config.randomness_source == RandomnessSource::External {
         result
     }
 
-    pub fn refund_ticket(env: Env, ticket_id: u32) -> Result<i128, Error> {
-        let result = claim::refund_ticket(env.clone(), ticket_id);
-        #[cfg(any(test, feature = "testutils"))]
-        assert_solvent_after_success(&env, &result);
-        result
+    pub fn refund_ticket(env: Env, caller: Address, ticket_id: u32) -> Result<i128, Error> {
+        claim::refund_ticket(env, caller, ticket_id)
     }
 
     pub fn batch_refund_tickets(
         env: Env,
-        owner: Address,
+        caller: Address,
         ticket_ids: Vec<u32>,
     ) -> Result<i128, Error> {
-        // This function was not implemented in the modules, keeping it inline for now.
-        // To complete the refactor, this logic should be moved to `claim.rs`.
-        Err(Error::InvalidParameters)
+        claim::batch_refund_tickets(env, caller, ticket_ids)
     }
 
     pub fn get_raffle(env: Env) -> Result<Raffle, Error> {
@@ -928,8 +933,8 @@ if config.randomness_source == RandomnessSource::External {
     pub fn extend_ttl(env: Env) -> Result<(), Error> {
         let _raffle = read_raffle(&env)?;
         Err(Error::InvalidParameters)
-    }
 }
+
 #[cfg(test)]
 mod test;
 #[cfg(test)]
